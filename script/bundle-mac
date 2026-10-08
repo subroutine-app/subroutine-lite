@@ -1,0 +1,94 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    printf '%s\n' 'Usage: script/bundle-mac [--release] [--installer] [--offline] [--install] [--open]' \
+        'Native, ad-hoc-signed Subroutine Lite.app; debug by default.' \
+        '--installer  Also create an unsigned .pkg for /Applications/Subroutine Lite.app.' \
+        '--offline    Cached dependencies only; otherwise downloads missing crates.' \
+        '--install    Replace ~/Applications/Subroutine Lite.app; register with Launch Services.' \
+        '--open       Launch the app (installed copy with --install).' \
+        'Requires macOS, Xcode + Metal tools, Python 3.9+, Rust, cargo-bundle 0.11.0.' \
+        'Release/installer licenses need cargo-about 0.9.2 with its cli feature.' \
+        'No tool installs, Developer ID, notarization or deployment.'
+}
+
+profile=debug
+installer=false
+install=false
+open_app=false
+for argument in "$@"; do
+    case "$argument" in
+        --release) profile=release ;;
+        --installer) installer=true ;;
+        --offline) export CARGO_NET_OFFLINE=true ;;
+        --install) install=true ;;
+        --open) open_app=true ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+
+if [ "$(uname -s)" != Darwin ]; then
+    printf '%s\n' 'bundle-mac requires macOS.' >&2
+    exit 1
+fi
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+if [ "$(cargo bundle --version 2>/dev/null || true)" != 'cargo-bundle v0.11.0' ]; then
+    printf '%s\n' 'Install cargo-bundle first: cargo install cargo-bundle --version 0.11.0 --locked' >&2
+    exit 1
+fi
+target=$(rustc -vV | sed -n 's/^host: //p')
+case "$target" in
+    aarch64-apple-darwin|x86_64-apple-darwin) ;;
+    *) printf 'Unsupported native target: %s\n' "$target" >&2; exit 1 ;;
+esac
+
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
+case "$CARGO_TARGET_DIR" in
+    /*) ;;
+    *) CARGO_TARGET_DIR="$root/$CARGO_TARGET_DIR" ;;
+esac
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'
+xcrun --find metal >/dev/null
+xcrun --find metallib >/dev/null
+command -v codesign >/dev/null
+if [ "$installer" = true ]; then command -v pkgbuild >/dev/null; fi
+if [ "$profile" = release ] || [ "$installer" = true ]; then
+    if [ "$(cargo about --version 2>/dev/null || true)" != 'cargo-about 0.9.2' ]; then
+        printf '%s\n' 'Install cargo-about first: cargo install cargo-about --version 0.9.2 --locked --features cli' >&2
+        exit 1
+    fi
+fi
+
+# cargo-bundle lacks --locked and reads metadata for all platforms.
+cargo metadata --locked --format-version 1 >/dev/null
+set --
+if [ "$profile" = release ]; then set -- --release; fi
+cargo build --locked --package desktop --bin subroutine-lite --target "$target" "$@"
+CARGO_BUNDLE_SKIP_BUILD=true CARGO_NET_OFFLINE=true \
+    cargo bundle --package desktop --bin subroutine-lite --format osx --target "$target" "$@"
+
+app="$CARGO_TARGET_DIR/$target/$profile/bundle/osx/Subroutine Lite.app"
+set -- "$app" --target "$target"
+if [ "$profile" = release ]; then set -- "$@" --release; fi
+if [ "$installer" = true ]; then set -- "$@" --installer; fi
+python3 crates/desktop/resources/packaging/mac.py "$@"
+
+if [ "$install" = true ]; then
+    installed_app="$HOME/Applications/Subroutine Lite.app"
+    # Replace, not merge: drop stale resources and cached icons.
+    rm -rf "$installed_app"
+    mkdir -p "$(dirname "$installed_app")"
+    ditto "$app" "$installed_app"
+    codesign --verify --deep --strict "$installed_app"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$installed_app"
+    touch "$installed_app"
+    app="$installed_app"
+    printf 'Installed: %s\n' "$app"
+fi
+if [ "$open_app" = true ]; then
+    open -n "$app"
+fi

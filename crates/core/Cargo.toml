@@ -1,0 +1,18 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lib]
+name = "subroutine_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uuid.workspace = true
+chrono.workspace = true
+chronoutil.workspace = true
+serde = { workspace = true }
+tracing = { workspace = true }
+

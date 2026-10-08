@@ -1,0 +1,24 @@
+[package]
+name = "subroutine-auth"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+client = ["dep:oauth2", "dep:subtle", "dep:chrono", "dep:reqwest", "dep:serde", "dep:serde_json"]
+server = ["dep:jsonwebtoken", "dep:tokio", "dep:reqwest", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+thiserror = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+oauth2 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+

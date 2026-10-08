@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    printf '%s\n' 'Usage: script/bundle-linux [--release]' \
+        'Native Linux tar.gz + per-user install script; debug by default.' \
+        'Requires Python 3, Rust, cached dependencies and native GPUI libraries (not bundled).' \
+        'Release licenses need cargo-about 0.9.2.' \
+        'No tool downloads, install or launch.'
+}
+
+profile=debug
+for argument in "$@"; do
+    case "$argument" in
+        --release) profile=release ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+if [ "$(uname -s)" != Linux ]; then
+    printf '%s\n' 'bundle-linux requires Linux.' >&2
+    exit 1
+fi
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+command -v python3 >/dev/null
+target=$(rustc -vV | sed -n 's/^host: //p')
+case "$target" in
+    x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+    *) printf 'Unsupported native target: %s\n' "$target" >&2; exit 1 ;;
+esac
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
+case "$CARGO_TARGET_DIR" in
+    /*) ;;
+    *) CARGO_TARGET_DIR="$root/$CARGO_TARGET_DIR" ;;
+esac
+export CARGO_NET_OFFLINE=true
+set --
+if [ "$profile" = release ]; then set -- --release; fi
+cargo build --offline --locked --package desktop --bin subroutine-lite --target "$target" "$@"
+python3 crates/desktop/resources/packaging/linux.py "$CARGO_TARGET_DIR/$target/$profile" "$target" "$@"

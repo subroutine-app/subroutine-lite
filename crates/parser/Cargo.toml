@@ -1,0 +1,13 @@
+[package]
+name = "parser"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+chrono.workspace = true
+serde.workspace = true
+logos.workspace = true
+subroutine-core = { package = "core", path = "../core" }

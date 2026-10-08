@@ -1,0 +1,829 @@
+{
+  "$schema": "https://raw.githubusercontent.com/subroutine-app/gpui-box/9627fb8838dfc3bceb0e37b006c53c7e519516bb/crates/gpui-kit-tokens/tokens/schema.json",
+  "meta": {
+    "id": "subroutine-light",
+    "name": "Subroutine Light",
+    "appearance": "light"
+  },
+  "color": {
+    "onMediaForeground": "#FAF0CA",
+    "onMediaBackground": "#2E282A",
+    "onMediaHairline": "#FAF0CA33",
+    "palette": {
+      "neutral": {
+        "0": "#000000",
+        "10": "#DEDCDA",
+        "25": "#E4E2DF",
+        "50": "#EFEFED",
+        "100": "#F8F8F7",
+        "150": "#FCFCFB",
+        "200": "#FEFEFD",
+        "300": "#D5D2CF",
+        "500": "#9B9491",
+        "600": "#77716E",
+        "700": "#514E4F",
+        "800": "#2E282A",
+        "850": "#201E1F",
+        "900": "#FFFFFC",
+        "ink": "#FFFFFC"
+      },
+      "indigo": {
+        "50": "#edf2ff",
+        "100": "#dbe4ff",
+        "200": "#bac8ff",
+        "300": "#91a7ff",
+        "400": "#4952c9",
+        "500": "#5c7cfa",
+        "600": "#363fa8",
+        "700": "#4263eb",
+        "800": "#3b5bdb",
+        "900": "#364fc7"
+      },
+      "red": {
+        "50": "#fff5f5",
+        "100": "#ffe3e3",
+        "200": "#ffc9c9",
+        "300": "#ffa8a8",
+        "400": "#d5322f",
+        "500": "#ff6b6b",
+        "600": "#fa5252",
+        "700": "#f03e3e",
+        "800": "#e03131",
+        "900": "#c92a2a"
+      },
+      "amber": {
+        "500": "#a76a00"
+      },
+      "green": {
+        "50": "#ebfbee",
+        "100": "#d3f9d8",
+        "200": "#b2f2bb",
+        "300": "#8ce99a",
+        "400": "#69db7c",
+        "500": "#237a48",
+        "600": "#40c057",
+        "700": "#37b24f",
+        "800": "#2f9e44",
+        "900": "#2b8a3e"
+      },
+      "cyan": {
+        "50": "#e3fafc",
+        "100": "#c5f6fa",
+        "200": "#99e9f2",
+        "300": "#66d9e8",
+        "400": "#2a6f8f",
+        "500": "#22b8cf",
+        "600": "#15aabf",
+        "700": "#1098ad",
+        "800": "#0c8599",
+        "900": "#0b7285"
+      },
+      "syntax": {
+        "keyword": "#B0413E",
+        "string": "#536342",
+        "number": "#925B2D",
+        "inline": "#514E4F",
+        "inlineWash": "#514E4F"
+      },
+      "agent": {
+        "read": "#3F6566",
+        "network": "#3F6566",
+        "shell": "#925B2D",
+        "edit": "#536342",
+        "external": "#514E4F"
+      },
+      "terminal": {
+        "background": "#F8F8F7",
+        "wash": "#2E282A"
+      },
+      "ansi": {
+        "0": "#1f1f1f",
+        "1": "#dc2626",
+        "2": "#16803D",
+        "3": "#b45309",
+        "4": "#2563eb",
+        "5": "#9333ea",
+        "6": "#0e7490",
+        "7": "#3f3f46",
+        "8": "#71717a",
+        "9": "#b91c1c",
+        "10": "#15803d",
+        "11": "#92400e",
+        "12": "#1d4ed8",
+        "13": "#7e22ce",
+        "14": "#155e75",
+        "15": "#18181b"
+      },
+      "gray": {
+        "50": "#f8f9fa",
+        "100": "#f1f3f5",
+        "200": "#e9ecef",
+        "300": "#dee2e6",
+        "400": "#ced4da",
+        "500": "#adb5bd",
+        "600": "#868e96",
+        "700": "#495057",
+        "800": "#343a40",
+        "900": "#212529"
+      },
+      "pink": {
+        "50": "#fff0f6",
+        "100": "#ffdeeb",
+        "200": "#fcc2d7",
+        "300": "#faa2c1",
+        "400": "#f783ac",
+        "500": "#f06595",
+        "600": "#e64980",
+        "700": "#d6336c",
+        "800": "#c2255c",
+        "900": "#a61e4d"
+      },
+      "grape": {
+        "50": "#f8f0fc",
+        "100": "#f3d9fa",
+        "200": "#eebefa",
+        "300": "#e599f7",
+        "400": "#da77f2",
+        "500": "#cc5de8",
+        "600": "#be4bdb",
+        "700": "#ae3ec9",
+        "800": "#9c36b5",
+        "900": "#862e9c"
+      },
+      "violet": {
+        "50": "#f3f0ff",
+        "100": "#e5dbff",
+        "200": "#d0bfff",
+        "300": "#b197fc",
+        "400": "#9775fa",
+        "500": "#845ef7",
+        "600": "#7950f2",
+        "700": "#7048e8",
+        "800": "#6741d9",
+        "900": "#5f3dc4"
+      },
+      "blue": {
+        "50": "#e7f5ff",
+        "100": "#d0ebff",
+        "200": "#a5d8ff",
+        "300": "#74c0fc",
+        "400": "#4dabf7",
+        "500": "#339af0",
+        "600": "#228be6",
+        "700": "#1c7ed6",
+        "800": "#1971c2",
+        "900": "#1864ab"
+      },
+      "teal": {
+        "50": "#e6fcf5",
+        "100": "#c3fae8",
+        "200": "#96f2d7",
+        "300": "#63e6be",
+        "400": "#38d9a9",
+        "500": "#20c997",
+        "600": "#12b886",
+        "700": "#0ca678",
+        "800": "#099268",
+        "900": "#087f5b"
+      },
+      "lime": {
+        "50": "#f4fce3",
+        "100": "#e9fac8",
+        "200": "#d8f5a2",
+        "300": "#c0eb75",
+        "400": "#a9e34b",
+        "500": "#94d82d",
+        "600": "#82c91e",
+        "700": "#74b816",
+        "800": "#66a80f",
+        "900": "#5c940d"
+      },
+      "yellow": {
+        "50": "#fff9db",
+        "100": "#fff3bf",
+        "200": "#ffec99",
+        "300": "#ffe066",
+        "400": "#ffd43b",
+        "500": "#fcc419",
+        "600": "#fab005",
+        "700": "#f59f00",
+        "800": "#f08c00",
+        "900": "#e67700"
+      },
+      "orange": {
+        "50": "#fff4e6",
+        "100": "#ffe8cc",
+        "200": "#ffd8a8",
+        "300": "#ffc078",
+        "400": "#ffa94d",
+        "500": "#ff922b",
+        "600": "#fd7e14",
+        "700": "#f76707",
+        "800": "#e8590c",
+        "900": "#d9480f"
+      },
+      "series": {
+        "1": "#7b252b",
+        "2": "#975800",
+        "3": "#4d4c00",
+        "4": "#187c49",
+        "5": "#00576a",
+        "6": "#196ea9",
+        "7": "#493883",
+        "8": "#924b84"
+      },
+      "brand": {
+        "brick": "#B0413E",
+        "charcoal": "#2E282A",
+        "cream": "#FAF0CA",
+        "teal": "#548687",
+        "tangerine": "#EE964B",
+        "gold": "#F4D35E",
+        "sage": "#7D9463",
+        "oxblood": "#A4031F",
+        "aubergine": "#240B36"
+      },
+      "brick": {
+        "50": "#F8ECEA",
+        "100": "#F0D5D2",
+        "300": "#CF7772",
+        "500": "#B0413E",
+        "700": "#812F2D",
+        "900": "#4D1D1C"
+      },
+      "brandUi": {
+        "brick": "#B0413E",
+        "brickStrong": "#812F2D",
+        "context": "#3F6566",
+        "action": "#925B2D",
+        "attention": "#9A8122",
+        "stable": "#536342",
+        "critical": "#A4031F",
+        "currentTime": "#CE2738",
+        "primaryFill": "#B0413E",
+        "onPrimaryFill": "#FFFFFC"
+      },
+      "recognition": {
+        "fill": "#3F656647",
+        "border": "#3F656699"
+      }
+    },
+    "paletteSteps": {
+      "filled": [
+        "600",
+        "500",
+        "400"
+      ],
+      "hover": [
+        "700",
+        "600",
+        "500"
+      ],
+      "active": [
+        "800",
+        "700",
+        "600"
+      ],
+      "readableDark": [
+        "300",
+        "200",
+        "400"
+      ],
+      "readableLight": [
+        "700",
+        "800",
+        "600"
+      ]
+    },
+    "surface": {
+      "backdrop": "#EFEFED",
+      "canvas": "#F8F8F7",
+      "sunken": "#EFEFED",
+      "panel": "#FCFCFB",
+      "raised": "#FEFEFD",
+      "overlay": "#FEFEFD",
+      "scrim": "{brand.charcoal}",
+      "control": "#FAFAF9",
+      "controlHover": "#FEFEFD",
+      "controlPressed": "#EAEAE8"
+    },
+    "text": {
+      "primary": "{brand.charcoal}",
+      "muted": "#514E4F",
+      "faint": "#656062",
+      "placeholder": "#77716E",
+      "disabled": "#88817E",
+      "onAccent": "#FFFFFC",
+      "onPrimaryFill": "{brandUi.onPrimaryFill}"
+    },
+    "interactive": {
+      "hover": "{brand.charcoal}/0F",
+      "active": "{brand.brick}/1C",
+      "selected": "{brand.brick}/20",
+      "hairline": "#BDB7B570",
+      "hairlineStrong": "#514E4FA8",
+      "track": "#514E4FA8",
+      "divider": "#BDB7B570",
+            "choiceIndicator": "{neutral.700}",
+      "controlHairline": "#514E4F24",
+      "controlHighlight": "#FFFFFCCC",
+      "focus": "{brandUi.brick}",
+      "primaryFill": "{brandUi.primaryFill}",
+      "whiteFill": "#FFFFFC",
+      "whiteFillHover": "#F8F8F7",
+      "whiteFillActive": "#EFEFED"
+    },
+    "semantic": {
+      "accent": "{brandUi.brick}",
+      "accentStrong": "{brandUi.brickStrong}",
+      "danger": "{brandUi.critical}",
+      "warning": "{brandUi.action}",
+      "success": "{brandUi.stable}",
+      "info": "{brandUi.context}"
+    },
+    "sequence": {
+      "categorical": [
+        "{series.1}",
+        "{series.2}",
+        "{series.3}",
+        "{series.4}",
+        "{series.5}",
+        "{series.6}",
+        "{series.7}",
+        "{series.8}"
+      ]
+    },
+    "node": {
+      "headerWash": "{brand.brick}/0F",
+      "portIdle": "#88817E",
+      "portHover": "{brandUi.brick}",
+      "portConnected": "{brandUi.stable}",
+      "edge": "#88817E",
+      "edgeTarget": "{brandUi.brick}",
+      "edgeActive": "{brandUi.action}",
+      "edgeFlowHighlight": "{brandUi.action}",
+      "edgeFeedback": "{brandUi.attention}/B8",
+      "edgeFeedbackActive": "{brandUi.attention}",
+      "auraActive": "{brandUi.action}",
+      "auraSuccess": "{brandUi.stable}",
+      "auraAttention": "{brandUi.attention}",
+      "auraDanger": "{brandUi.critical}",
+      "labelWash": "#FEFEFDF0",
+      "grid": "#514E4F14",
+      "gridStrong": "{brand.brick}/29",
+      "gridAxis": "#514E4F4D"
+    },
+    "agent": {
+      "read": "{brandUi.context}",
+      "network": "{brandUi.context}",
+      "shell": "{brandUi.action}",
+      "edit": "{brandUi.stable}",
+      "external": "#514E4F",
+      "evidenceWash": "{brand.teal}/14"
+    },
+    "loader": {
+      "mark": "{brandUi.brick}",
+      "track": "{brand.charcoal}/1F",
+      "placeholder": "{brand.charcoal}/17",
+      "sheen": "#FFFFFC8C"
+    },
+    "syntax": {
+      "keyword": "{brandUi.brick}",
+      "string": "{brandUi.stable}",
+      "comment": "#77716E",
+      "number": "{brandUi.action}",
+      "inline": "#514E4F",
+      "inlineWash": "#514E4F14",
+      "added": "{brandUi.stable}",
+      "addedWash": "{brand.sage}/24",
+      "removed": "{brandUi.critical}",
+      "removedWash": "{brand.oxblood}/18"
+    },
+    "terminal": {
+      "background": "{terminal.background}",
+      "selection": "{brand.brick}/20",
+      "ansi": [
+        "{ansi.0}",
+        "{ansi.1}",
+        "{ansi.2}",
+        "{ansi.3}",
+        "{ansi.4}",
+        "{ansi.5}",
+        "{ansi.6}",
+        "{ansi.7}",
+        "{ansi.8}",
+        "{ansi.9}",
+        "{ansi.10}",
+        "{ansi.11}",
+        "{ansi.12}",
+        "{ansi.13}",
+        "{ansi.14}",
+        "{ansi.15}"
+      ]
+    }
+  },
+  "space": {
+    "xxs": 2,
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "xxl": 32
+  },
+  "measure": {
+    "settingsLabel": 120,
+    "readableWidth": 360,
+    "dialogWidth": 360,
+    "menuMinWidth": 200,
+    "compactMenuMinWidth": 180,
+    "menuMaxHeight": 320,
+    "compactMenuMaxHeight": 240,
+    "standaloneIcon": 20,
+    "scrollbarTrack": 10,
+    "scrollbarThumb": 6,
+    "scrollbarMinThumb": 24,
+    "caretWidth": 1.5,
+    "textDecorationWidth": 1,
+    "progressTrackHeight": 4,
+    "sliderTrackHeight": 6,
+    "sliderVerticalHeight": 160,
+    "containerSmall": 640,
+    "containerMedium": 768,
+    "containerLarge": 1024,
+    "containerExtraLarge": 1280,
+    "compactOverlayWidth": 320,
+    "mediaViewerHeight": 320,
+    "timelineRailWidth": 16,
+    "statusMark": 7,
+    "nodeEdgeWidth": 2,
+    "nodeEdgeCorner": 18,
+    "nodeEdgeLead": 36,
+    "nodeEdgeCorridor": 48,
+    "nodeEdgeLane": 16,
+    "nodePort": 20,
+    "nodeProgress": 3
+  },
+  "radius": {
+    "small": 5,
+    "control": 8,
+    "card": 12,
+    "dialog": 19,
+    "bubble": 16,
+    "pill": 999
+  },
+  "control": {
+    "xs": {
+      "height": 20,
+      "paddingX": 6,
+      "gap": 4,
+      "fontSize": 11,
+      "iconSize": 12
+    },
+    "sm": {
+      "height": 24,
+      "paddingX": 8,
+      "gap": 5,
+      "fontSize": 12,
+      "iconSize": 14
+    },
+    "md": {
+      "height": 28,
+      "paddingX": 12,
+      "gap": 6,
+      "fontSize": 13,
+      "iconSize": 15
+    },
+    "lg": {
+      "height": 34,
+      "paddingX": 16,
+      "gap": 8,
+      "fontSize": 14,
+      "iconSize": 17
+    },
+    "touch": {
+      "height": 48,
+      "paddingX": 16,
+      "gap": 8,
+      "fontSize": 16,
+      "iconSize": 20
+    }
+  },
+  "border": {
+    "hairline": 1,
+    "thick": 2
+  },
+  "opacity": {
+    "disabled": 0.58,
+    "muted": 0.68,
+    "scrim": 0.35
+  },
+  "elevation": {
+    "flat": [],
+    "raised": [
+      {
+        "y": 1,
+        "blur": 3,
+        "spread": 0,
+        "color": "{neutral.0}/0c"
+      },
+      {
+        "y": 2,
+        "blur": 6,
+        "spread": -1,
+        "color": "{neutral.0}/14"
+      }
+    ],
+    "overlay": [
+      {
+        "y": 2,
+        "blur": 6,
+        "spread": -1,
+        "color": "{neutral.0}/10"
+      },
+      {
+        "y": 8,
+        "blur": 24,
+        "spread": -4,
+        "color": "{neutral.0}/1a"
+      }
+    ],
+    "modal": [
+      {
+        "y": 4,
+        "blur": 12,
+        "spread": -2,
+        "color": "{neutral.0}/16"
+      },
+      {
+        "y": 16,
+        "blur": 48,
+        "spread": -8,
+        "color": "{neutral.0}/24"
+      }
+    ]
+  },
+  "zIndex": {
+    "content": 0,
+    "sticky": 100,
+    "dock": 200,
+    "popover": 300,
+    "tooltip": 400,
+    "modal": 500,
+    "toast": 600
+  },
+  "density": {
+    "compact": {
+      "space": 0.75,
+      "control": 0.86,
+      "font": 0.94
+    },
+    "comfortable": {
+      "space": 1,
+      "control": 1,
+      "font": 1
+    }
+  },
+  "typography": {
+    "sans": {
+      "family": "Geist",
+      "fallbackMacos": "Helvetica",
+      "fallbackWindows": "Segoe UI",
+      "fallbackLinux": "DejaVu Sans"
+    },
+    "mono": {
+      "family": "Geist Mono",
+      "fallbackMacos": "Menlo",
+      "fallbackWindows": "Consolas",
+      "fallbackLinux": "DejaVu Sans Mono"
+    },
+    "readoutScale": 1.6,
+    "scale": {
+      "caption": {
+        "size": 10.5,
+        "lineHeight": 14,
+        "weight": 400
+      },
+      "label": {
+        "size": 12,
+        "lineHeight": 16,
+        "weight": 500
+      },
+      "body": {
+        "size": 13,
+        "lineHeight": 19,
+        "weight": 400
+      },
+      "strong": {
+        "size": 13,
+        "lineHeight": 19,
+        "weight": 600
+      },
+      "subtitle": {
+        "size": 14,
+        "lineHeight": 20,
+        "weight": 600
+      },
+      "title": {
+        "size": 16,
+        "lineHeight": 22,
+        "weight": 600
+      },
+      "code": {
+        "size": 12,
+        "lineHeight": 18,
+        "weight": 400
+      }
+    }
+  },
+  "motion": {
+    "durationMs": {
+      "instant": 90,
+      "quick": 150,
+      "exit": 120,
+      "menu": 140,
+      "dialog": 180,
+      "resize": 200,
+      "entrance": 500,
+      "slow": 320,
+      "staggerStep": 16,
+      "microBounce": 360,
+      "microWobble": 280,
+      "microPop": 240,
+      "spin": 900,
+      "pulse": 2400,
+      "nodeAuraPulse": 2800,
+      "nodeFlow": 1800,
+      "shimmer": 1400,
+      "toast": 6000,
+      "hoverCardOpen": 400,
+      "hoverCardGrace": 300,
+      "feedback": 900,
+      "celebration": 1600,
+      "confirmation": 1600
+    },
+    "easing": {
+      "linear": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "standard": [
+        0.4,
+        0,
+        0.2,
+        1
+      ],
+      "easeIn": [
+        0.42,
+        0,
+        1,
+        1
+      ],
+      "easeOut": [
+        0,
+        0,
+        0.58,
+        1
+      ],
+      "easeInOut": [
+        0.42,
+        0,
+        0.58,
+        1
+      ],
+      "emphasized": [
+        0.2,
+        0,
+        0,
+        1
+      ],
+      "overshoot": [
+        0.34,
+        1.56,
+        0.64,
+        1
+      ],
+      "exit": [
+        0.4,
+        0,
+        1,
+        1
+      ],
+      "settle": [
+        0.16,
+        1,
+        0.3,
+        1
+      ]
+    },
+    "spring": {
+      "snappy": {
+        "stiffness": 380,
+        "damping": 30,
+        "mass": 1
+      },
+      "smooth": {
+        "stiffness": 180,
+        "damping": 26,
+        "mass": 1
+      },
+      "bouncy": {
+        "stiffness": 260,
+        "damping": 16,
+        "mass": 1
+      },
+      "grab": {
+        "stiffness": 520,
+        "damping": 42,
+        "mass": 1
+      }
+    },
+    "staggerMaxItems": 8,
+    "pressOffsetPx": 1,
+    "hoverLiftPx": 1,
+    "flickVelocityPxPerSec": 420,
+    "rubberBandTension": 0.55
+  },
+  "effect": {
+    "fieldFocus": "ring",
+    "edgeFadeBand": 20,
+    "focusRingWidth": 3,
+    "focusRingAlpha": 1,
+    "glowAlpha": 0.18,
+    "glowBlur": 12,
+    "glowSpread": -5,
+    "glassAlpha": 0.78,
+    "glassLiquidBlur": 8,
+    "glassFrostBlur": 24,
+    "glassSaturation": 1.5,
+    "glassWash": 0.55,
+    "glassBevelRatio": 0.225,
+    "glassBevelMin": 8,
+    "glassBevelMax": 36,
+    "glassDimming": 0.35,
+    "glassFlipMaxExtent": 72,
+    "glassShadowMin": 0.8,
+    "glassShadowMax": 1.5,
+    "glassRefraction": 0.34,
+    "glassThickness": 0,
+    "glassRefractiveIndex": 1.5,
+    "glassBackdropDepth": 0,
+    "glassDispersion": 0.005,
+    "glassSpecular": 0.06,
+    "glassTransmissionGain": 1.042,
+    "glassOpticalLift": 0.075,
+    "glassHairline": 1,
+    "glassSpecularSharpness": 12,
+    "glassLightAngle": 0.7853982,
+    "glassMergeDistance": 28,
+    "glassContrastFlipLow": 0.42,
+    "glassContrastFlipHigh": 0.58,
+    "glassPressDepth": 1.5,
+    "glassPressScale": 1.014,
+    "scrollEdgeBand": 28,
+    "scrollEdgeBlur": 16,
+    "sheenAlpha": 0.05,
+    "areaWashAlpha": 0.16,
+    "headerTintAlpha": 0.14,
+    "nodeActiveWashAlpha": 0.14,
+    "nodeActiveStrokeAlpha": 0.72,
+    "nodeTrafficAlpha": 0.82,
+    "nodePreviewAlpha": 0.88,
+    "nodeMinimapAlpha": 0.7,
+    "nodeOverviewVeilAlpha": 0.55,
+    "nodeAuraRestingAlpha": 0.72,
+    "nodeAuraPulseFloorAlpha": 0.54,
+    "nodeAuraPulsePeakAlpha": 1,
+    "nodeAuraSettlePeakAlpha": 1,
+    "nodeAuraSettleExpansion": 0.65,
+    "nodeEdgeHoverWidthScale": 1.8,
+    "nodeEdgeSelectedWidthScale": 2.4,
+    "nodeEdgeGlowWidthScale": 5.5,
+    "railWidth": 3,
+    "semanticWashFaintAlpha": 0.06,
+    "semanticWashAlpha": 0.1,
+    "semanticWashStrongAlpha": 0.16,
+    "semanticBorderAlpha": 0.4,
+    "accentBorderAlpha": 0.55,
+    "accentBorderStrongAlpha": 0.7,
+    "subtleHoverAlpha": 0.3,
+    "softContrastAlpha": 0.18,
+    "contrastTintAlpha": 0.28,
+    "trackRestingAlpha": 0.55,
+    "contentVeilAlpha": 0.88,
+    "criticalFillAlpha": 0.84,
+    "criticalInactiveAlpha": 0.1,
+    "variantLightAlpha": 0.15,
+    "variantLightHoverAlpha": 0.22,
+    "variantLightActiveAlpha": 0.28,
+    "variantSubtleHoverAlpha": 0.12,
+    "variantSubtleActiveAlpha": 0.18,
+    "primaryHoverOpacity": 0.9,
+    "customColorReadableDarkFloor": 0.72,
+    "customColorReadableLightCeiling": 0.4,
+    "customColorHoverLightnessDelta": 0.05,
+    "customColorActiveLightnessDelta": 0.1
+  }
+}

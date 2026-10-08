@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+set -eu
+PID=$(adb shell pidof com.example.subroutine_lite | tr -d '\r')
+if [ -z "$PID" ]; then
+  echo "Subroutine Lite is not running. Start it with ./script/android-run." >&2
+  exit 1
+fi
+exec adb logcat --pid="$PID" -v time

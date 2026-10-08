@@ -1,0 +1,100 @@
+[package]
+name = "desktop"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "subroutine-lite"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+gpui = {
+    package = "gpui-box",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+
+gpui_kit = {
+    package = "gpui-box-kit",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+gpui_kit_theme = {
+    package = "gpui-box-kit-theme",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+gpui_kit_assets = {
+    package = "gpui-box-kit-assets",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+gpui_kit_semantics = {
+    package = "gpui-box-kit-semantics",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+
+subroutine-core = { package = "core", path = "../core" }
+parser = { path = "../parser" }
+flume = { workspace = true }
+chrono = { workspace = true }
+chronoutil = { workspace = true }
+dirs = { workspace = true }
+uuid = { workspace = true }
+rust-embed = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smallvec = "1"
+
+local-store = { path = "../local-store" }
+open = { workspace = true }
+notify = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+futures-util = "0.3"
+tracing-subscriber = { workspace = true }
+subroutine-auth = { workspace = true, features = ["client"] }
+
+keyring = "4.2"
+sha2 = "0.10"
+
+
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui = {
+    package = "gpui-box",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+    features = ["windows-manifest"],
+}
+gpui_windows = {
+    package = "gpui-box-windows",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_linux = {
+    package = "gpui-box-linux",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+}
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_macos = {
+    package = "gpui-box-macos",
+    git = "https://github.com/subroutine-app/gpui-box.git",
+    features = ["font-kit"],
+}
+
+
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSHapticFeedback"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSBundle", "NSString"] }
+
+notify-rust = { workspace = true }
+
+
+
+[package.metadata.bundle.bin.subroutine-lite]
+icon = ["crates/desktop/resources/Subroutine.icns"]
+identifier = "com.subroutine.SubroutineLite"
+name = "Subroutine Lite"
+osx_minimum_system_version = "10.15.7"
+

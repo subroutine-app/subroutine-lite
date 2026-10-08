@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+
+
+import argparse
+import shutil
+from pathlib import Path
+
+APP_ID = "com.subroutine.SubroutineLite"
+
+
+def desktop_value(value):
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+
+def desktop_exec(path):
+
+    value = str(path).replace("%", "%%")
+    for character in ('\\', '"', '`', '$'):
+        value = value.replace(character, "\\" + character)
+    return desktop_value('"' + value + '"')
+
+
+def install(prefix):
+    if not prefix.is_absolute():
+        raise SystemExit('--prefix must be an absolute path')
+    bundle = Path(__file__).resolve().parent
+    launcher = Path("share/applications") / f"{APP_ID}.desktop"
+    files = [Path("bin/subroutine-lite"), launcher]
+    notices = Path("share/doc/subroutine-lite")
+    files.extend(notices / name for name in ("LICENSE", "ICON-LICENSES"))
+    third_party = notices / "THIRD-PARTY-LICENSES.html"
+    if (bundle / third_party).exists():
+        files.append(third_party)
+    for size in (16, 24, 32, 48, 64, 128, 256, 512, 1024, "scalable"):
+        group = "scalable" if size == "scalable" else f"{size}x{size}"
+        extension = "svg" if size == "scalable" else "png"
+        files.append(Path("share/icons/hicolor") / group / "apps" / f"{APP_ID}.{extension}")
+    for relative in files:
+        if not (bundle / relative).is_file():
+            raise SystemExit(f"Incomplete bundle: {relative}")
+    if third_party not in files:
+        obsolete = prefix / third_party
+        if obsolete.is_symlink():
+            raise SystemExit(f"Refusing to remove a symlink: {obsolete}")
+        obsolete.unlink(missing_ok=True)
+    for relative in files:
+        destination = prefix / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.is_symlink():
+            raise SystemExit(f"Refusing to overwrite a symlink: {destination}")
+        if relative == launcher:
+            content = (bundle / relative).read_text(encoding="utf-8")
+            executable = prefix / "bin/subroutine-lite"
+            content = content.replace("Exec=subroutine-lite\n", f"Exec={desktop_exec(executable)}\n")
+            content = content.replace("TryExec=subroutine-lite\n", f"TryExec={desktop_value(str(executable))}\n")
+            destination.write_text(content, encoding="utf-8")
+        else:
+            shutil.copyfile(bundle / relative, destination)
+        destination.chmod(0o755 if relative == Path("bin/subroutine-lite") else 0o644)
+    print(f"Installed Subroutine Lite into {prefix}; not launched.")
+    print('For a custom prefix, add its share directory to XDG_DATA_DIRS for menu/icon discovery.')
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Install only Subroutine Lite files under a per-user prefix; never launch it."
+    )
+    parser.add_argument("--prefix", type=Path, default=Path.home() / ".local")
+    args = parser.parse_args()
+    install(args.prefix)

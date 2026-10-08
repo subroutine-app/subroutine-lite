@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+cd "$(dirname "$0")/../android"
+if [ -z "${JAVA_HOME:-}" ] && [ -d "/Applications/Android Studio.app/Contents/jbr/Contents/Home" ]; then
+  JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+  export JAVA_HOME
+fi
+./gradlew --no-daemon :app:assembleDebug "$@"
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.example.subroutine_lite/com.example.subroutine_simple.MainActivity

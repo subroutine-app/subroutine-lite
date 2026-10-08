@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Subroutine Lite
+GenericName=Task Manager
+Comment=A personal task and routine manager
+Exec=subroutine-lite
+TryExec=subroutine-lite
+Icon=com.subroutine.SubroutineLite
+Terminal=false
+Categories=Utility;Office;
+StartupNotify=true
+StartupWMClass=com.subroutine.SubroutineLite

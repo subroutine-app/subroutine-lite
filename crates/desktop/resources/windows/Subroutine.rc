@@ -1,0 +1,33 @@
+#include <winver.h>
+#include "version.h"
+
+
+1 ICON "Subroutine.ico"
+
+1 VERSIONINFO
+FILEVERSION LITE_VERSION_NUMERIC
+PRODUCTVERSION LITE_VERSION_NUMERIC
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Subroutine"
+            VALUE "FileDescription", "Subroutine Lite"
+            VALUE "FileVersion", LITE_VERSION_STRING
+            VALUE "InternalName", "subroutine-lite"
+            VALUE "OriginalFilename", "subroutine-lite.exe"
+            VALUE "ProductName", "Subroutine Lite"
+            VALUE "ProductVersion", LITE_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

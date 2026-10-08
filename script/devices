@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+echo "Connected devices (adb)"
+adb devices -l
+echo ""
+echo "Available emulators (android CLI)"
+android emulator list
