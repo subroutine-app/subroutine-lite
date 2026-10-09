@@ -11,10 +11,16 @@ use subroutine_core::{
 };
 use uuid::Uuid;
 
-use super::{Database, sync::load_sync_state};
+use super::{
+    Database,
+    projection::{commit_projection, load_projection},
+    sync::load_sync_state,
+};
 use crate::{LocalStoreError, Projection, Result, WorkspaceIdentity};
-pub(super) use receipts::{confirmed_fifo_head_seq, rebase_fifo_head, retire_confirmed};
-pub(super) use rows::{load_oldest_outbox, outbox_count};
+pub(super) use blocked::block_outbox;
+use conflict::patches_overlap;
+pub(super) use receipts::retire_confirmed;
+pub(super) use rows::{load_oldest_outbox, load_outbox_entries, outbox_count};
 use rows::{load_outbox, require_outbox_change};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,8 +61,7 @@ impl OutboxEntry {
 }
 
 impl Database {
-    pub(crate) fn enqueue(&mut self, mutation: ClientMutation) -> Result<Projection> {
-        let request_json = serde_json::to_vec(&mutation.request)?;
+    pub(crate) fn enqueue(&mut self, mut mutation: ClientMutation) -> Result<Projection> {
         let patch_json = serde_json::to_vec(&mutation.optimistic_patch)?;
         let tx = self
             .connection
@@ -95,6 +100,15 @@ impl Database {
             )));
         }
 
+        for entry in load_outbox_entries(&tx)? {
+            if patches_overlap(&mutation.optimistic_patch, &entry.mutation.optimistic_patch) {
+                mutation.request.base_seq = mutation
+                    .request
+                    .base_seq
+                    .min(entry.mutation.request.base_seq);
+            }
+        }
+        let request_json = serde_json::to_vec(&mutation.request)?;
         tx.execute(
             "INSERT INTO outbox (
                 mutation_id, request_json, patch_json, created_at_ms
@@ -107,8 +121,7 @@ impl Database {
             ],
         )?;
 
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 
     pub(crate) fn oldest_outbox(&self) -> Result<Option<OutboxEntry>> {
@@ -119,6 +132,7 @@ impl Database {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        load_projection(&tx)?;
         let Some(mut entry) = load_oldest_outbox(&tx)? else {
             tx.commit()?;
             return Ok(None);
@@ -130,16 +144,21 @@ impl Database {
             return Ok(None);
         }
 
+        entry.attempt_count = entry.attempt_count.checked_add(1).ok_or_else(|| {
+            LocalStoreError::InvalidMutation("outbox attempt count overflow".into())
+        })?;
+        entry.sealed = true;
+        entry.last_error = None;
         tx.execute(
             "UPDATE outbox
-             SET sealed = 1, attempt_count = attempt_count + 1, last_error = NULL
-             WHERE mutation_id = ?1",
-            [entry.mutation.request.mutation_id.to_string()],
+             SET sealed = 1, attempt_count = ?1, last_error = NULL
+             WHERE mutation_id = ?2",
+            params![
+                entry.attempt_count,
+                entry.mutation.request.mutation_id.to_string()
+            ],
         )?;
         tx.commit()?;
-        entry.sealed = true;
-        entry.attempt_count += 1;
-        entry.last_error = None;
         Ok(Some(entry))
     }
 
@@ -154,7 +173,7 @@ impl Database {
                 state.canonical_seq
             )));
         }
-        let Some(mut entry) = load_outbox(&tx, mutation_id)? else {
+        let Some(entry) = load_outbox(&tx, mutation_id)? else {
             return Err(LocalStoreError::OutboxMutationNotFound(mutation_id));
         };
         if entry.sealed || entry.status != OutboxStatus::Pending {
@@ -162,12 +181,11 @@ impl Database {
                 "only an unsealed pending mutation may be rebased".into(),
             ));
         }
-        entry.mutation.request.base_seq = new_base_seq;
-        let request_json = serde_json::to_vec(&entry.mutation.request)?;
-        tx.execute(
-            "UPDATE outbox SET request_json = ?1 WHERE mutation_id = ?2",
-            params![request_json, mutation_id.to_string()],
-        )?;
+        if entry.mutation.request.base_seq != new_base_seq {
+            return Err(LocalStoreError::InvalidMutation(
+                "rebasing requires a checked stale delta or explicit conflict resolution".into(),
+            ));
+        }
         tx.commit()?;
         Ok(())
     }

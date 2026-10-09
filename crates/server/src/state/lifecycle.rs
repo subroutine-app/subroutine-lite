@@ -43,7 +43,7 @@ impl AppState {
         };
         match self
             .apply_from_snapshot_in(scope, |snapshot| {
-                Ok(crate::ops::pipeline::auto_queue(snapshot))
+                Ok(crate::ops::pipeline::auto_queue(snapshot)?)
             })
             .await
         {
@@ -58,7 +58,7 @@ impl AppState {
     async fn reconcile_recurrence_in(&self, scope: &db::TenantScope) -> Result<usize> {
         let mut mutation = scope.begin_mutation().await?;
         let snapshot = db::snapshot_in(mutation.connection(), scope.user_id, self.settings).await?;
-        let recurrence = crate::ops::recurrence::reconcile(&snapshot);
+        let recurrence = crate::ops::recurrence::reconcile(&snapshot)?;
         let total = recurrence.value.total();
         let mut events = recurrence.changes.change_events();
 
@@ -90,7 +90,7 @@ impl AppState {
         if total > 0 {
             let snapshot =
                 db::snapshot_in(mutation.connection(), scope.user_id, self.settings).await?;
-            let refresh = crate::ops::pipeline::refresh(&snapshot);
+            let refresh = crate::ops::pipeline::refresh(&snapshot)?;
             for event in refresh.changes.change_events() {
                 if !events.contains(&event) {
                     events.push(event);

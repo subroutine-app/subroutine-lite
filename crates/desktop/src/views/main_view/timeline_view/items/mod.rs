@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration as ChronoDuration, Local};
 use chronoutil::RelativeDuration;
 use gpui::{App, FocusHandle, Focusable, Pixels, SharedString, px};
-use std::time::Duration;
+
 use subroutine_core::{AnyItem, SchedulePoint, Signal, StartPrecision};
 
 pub(super) use super::super::item_inspection_matches_press;
@@ -56,7 +56,6 @@ fn timeline_selection_ids<'a>(
 
 pub(super) const FALLBACK_ITEM_DURATION: ChronoDuration = ChronoDuration::minutes(5);
 
-pub(super) const COMPLETE_CHECKBOX_DURATION: Duration = Duration::from_millis(200);
 pub(super) const ATTACHED_ITEM_LEFT: Pixels = px(16. * 4.);
 pub(super) const MIN_ITEM_WIDTH: Pixels = px(48. * 4.);
 pub(super) const MIN_ITEM_HEIGHT: Pixels = px(16. * 4.);

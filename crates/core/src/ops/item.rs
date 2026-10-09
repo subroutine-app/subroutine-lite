@@ -120,7 +120,7 @@ pub fn convert_event_to_marker(
     event: &Event,
     date: NaiveDate,
     local_end_date: Option<NaiveDate>,
-) -> Outcome<Marker> {
+) -> OpResult<Outcome<Marker>> {
     convert_event_to_marker_with_id(event, date, local_end_date, Uuid::now_v7())
 }
 
@@ -129,12 +129,13 @@ pub fn convert_event_to_marker_with_id(
     date: NaiveDate,
     local_end_date: Option<NaiveDate>,
     marker_id: Uuid,
-) -> Outcome<Marker> {
+) -> OpResult<Outcome<Marker>> {
     let marker = match local_end_date {
         Some(end_date) => event.to_marker_between_with_id(date, end_date, marker_id),
         None => event.to_marker_on_with_id(date, marker_id),
-    };
+    }
+    .map_err(OpError::rejected)?;
     let mut changes = super::Changes::default();
     changes.put(marker.clone()).delete(Delete::Event(event.id));
-    Outcome::new(marker, changes)
+    Ok(Outcome::new(marker, changes))
 }

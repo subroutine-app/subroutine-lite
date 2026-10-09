@@ -489,9 +489,7 @@ impl UnqueuedView {
                         cx,
                         move |_, cx| {
                             db_store.update(cx, |store, cx| {
-                                for id in ids {
-                                    store.backlog_action(id, cx);
-                                }
+                                let _ = store.backlog_actions(&ids, cx);
                             });
                         },
                     );

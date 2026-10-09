@@ -26,7 +26,7 @@ mod workspace;
 
 use history::StoreChange;
 use sync::{RecoveryBackoff, SseSignal, SyncRequestLatch};
-use transport::{Cmd, CommandSender};
+use transport::CommandSender;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreStatus {
@@ -46,6 +46,12 @@ pub enum SyncStatus {
 
 pub struct DatabaseError {
     pub _message: String,
+}
+
+pub type SaveResult<T = ()> = Result<T, String>;
+
+pub struct SaveFailed {
+    pub message: String,
 }
 
 pub struct DataChanged;
@@ -299,87 +305,6 @@ impl AppDatabaseStore {
         cx.notify();
     }
 
-    fn upsert_action_local(&mut self, action: Action) {
-        if let Some(pos) = self.actions.iter().position(|a| a.id == action.id) {
-            self.actions[pos] = action;
-        } else {
-            self.actions.push(action);
-        }
-    }
-
-    fn upsert_event_local(&mut self, event: Event) {
-        if let Some(pos) = self.events.iter().position(|e| e.id == event.id) {
-            self.events[pos] = event;
-        } else {
-            self.events.push(event);
-        }
-    }
-
-    fn upsert_routine_local(&mut self, routine: Routine) {
-        if let Some(pos) = self.routines.iter().position(|r| r.id == routine.id) {
-            self.routines[pos] = routine;
-        } else {
-            self.routines.push(routine);
-        }
-    }
-
-    fn upsert_item_local(&mut self, item: AnyItem) {
-        match item {
-            AnyItem::Action(action) => self.upsert_action_local(action),
-            AnyItem::Event(event) => self.upsert_event_local(event),
-            AnyItem::Routine(routine) => self.upsert_routine_local(routine),
-            AnyItem::Marker(marker) => {
-                if let Some(pos) = self.markers.iter().position(|m| m.id == marker.id) {
-                    self.markers[pos] = marker;
-                } else {
-                    self.markers.push(marker);
-                }
-            }
-            AnyItem::Signal(signal) => {
-                if let Some(pos) = self.signals.iter().position(|s| s.id == signal.id) {
-                    self.signals[pos] = signal;
-                } else {
-                    self.signals.push(signal);
-                }
-            }
-            AnyItem::ActionTemplate(template) => {
-                if let Some(pos) = self
-                    .action_templates
-                    .iter()
-                    .position(|t| t.id == template.id)
-                {
-                    self.action_templates[pos] = template;
-                } else {
-                    self.action_templates.push(template);
-                }
-            }
-            AnyItem::EventTemplate(template) => {
-                if let Some(pos) = self
-                    .event_templates
-                    .iter()
-                    .position(|t| t.id == template.id)
-                {
-                    self.event_templates[pos] = template;
-                } else {
-                    self.event_templates.push(template);
-                }
-            }
-        }
-    }
-
-    fn remove_item_local(&mut self, item: &AnyItem) {
-        let id = item.id();
-        match item {
-            AnyItem::Action(_) => self.actions.retain(|a| a.id != id),
-            AnyItem::Event(_) => self.events.retain(|e| e.id != id),
-            AnyItem::Routine(_) => self.routines.retain(|r| r.id != id),
-            AnyItem::Marker(_) => self.markers.retain(|m| m.id != id),
-            AnyItem::Signal(_) => self.signals.retain(|s| s.id != id),
-            AnyItem::ActionTemplate(_) => self.action_templates.retain(|t| t.id != id),
-            AnyItem::EventTemplate(_) => self.event_templates.retain(|t| t.id != id),
-        }
-    }
-
     fn emit_all_changed(cx: &mut Context<Self>) {
         cx.emit(ActionDataChanged);
         cx.emit(EventDataChanged);
@@ -388,32 +313,6 @@ impl AppDatabaseStore {
         cx.emit(SignalDataChanged);
         cx.emit(DataChanged);
         cx.notify();
-    }
-
-    fn dispatch<T: 'static>(
-        &self,
-        cmd: Cmd,
-        rx: flume::Receiver<Result<T, String>>,
-        cx: &mut Context<Self>,
-        apply: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
-    ) {
-        let generation = self.workspace_generation;
-        let scope = self.cmd_tx.scope;
-        let _ = self.cmd_tx.send(cmd);
-        cx.spawn(async move |this, cx| match rx.recv_async().await {
-            Ok(Ok(data)) => {
-                let _ = this.update(cx, |store, cx| {
-                    if store.workspace_generation == generation
-                        && AuthSession::global(cx).scope() == scope
-                    {
-                        apply(store, data, cx);
-                    }
-                });
-            }
-            Ok(Err(e)) => tracing::error!("{e}"),
-            Err(_) => {}
-        })
-        .detach();
     }
 
     pub fn status(&self) -> StoreStatus {
@@ -566,6 +465,7 @@ impl AppDatabaseStore {
 }
 
 impl EventEmitter<DatabaseError> for AppDatabaseStore {}
+impl EventEmitter<SaveFailed> for AppDatabaseStore {}
 impl EventEmitter<DataChanged> for AppDatabaseStore {}
 impl EventEmitter<ActionDataChanged> for AppDatabaseStore {}
 impl EventEmitter<EventDataChanged> for AppDatabaseStore {}

@@ -788,8 +788,9 @@ pub fn complete_selected(window: &mut Window, cx: &mut App) {
     if items.is_empty() {
         return;
     }
-    bulk::complete(&items, window, cx);
-    SelectionManager::clear_global(cx);
+    if bulk::complete(&items, window, cx) {
+        SelectionManager::clear_global(cx);
+    }
 }
 
 pub fn toggle_queued_selected(cx: &mut App) {
@@ -825,8 +826,9 @@ pub fn delete_selected(window: &mut Window, cx: &mut App) {
         if ids.is_empty() {
             return;
         }
-        bulk::delete_saved(&ids, window, cx);
-        SelectionManager::clear_global(cx);
+        if bulk::delete_saved(&ids, window, cx) {
+            SelectionManager::clear_global(cx);
+        }
         return;
     }
 
@@ -834,8 +836,9 @@ pub fn delete_selected(window: &mut Window, cx: &mut App) {
     if items.is_empty() {
         return;
     }
-    bulk::delete(&items, window, cx);
-    SelectionManager::clear_global(cx);
+    if bulk::delete(&items, window, cx) {
+        SelectionManager::clear_global(cx);
+    }
 }
 
 pub fn copy_selected(cx: &mut App) {
@@ -903,6 +906,9 @@ pub fn select_all_items(cx: &mut App) {
 }
 
 fn select_created(created: Vec<AnyItem>, scope: Option<SelectionScope>, cx: &mut App) {
+    if created.is_empty() {
+        return;
+    }
     let Some(scope) = scope else {
         return;
     };
@@ -954,7 +960,7 @@ pub mod bulk {
                 .action("Undo", move |window, cx| {
                     let undone = AppDatabaseStore::global(cx)
                         .update(cx, |store, cx| store.undo_transaction(transaction, cx));
-                    if !undone {
+                    if matches!(undone, Ok(false)) {
                         toast::push(
                             window,
                             cx,
@@ -969,20 +975,21 @@ pub mod bulk {
         );
     }
 
-    pub fn delete(items: &[AnyItem], window: &mut Window, cx: &mut App) {
+    pub fn delete(items: &[AnyItem], window: &mut Window, cx: &mut App) -> bool {
         let outcome = AppDatabaseStore::global(cx)
             .update(cx, |store, cx| store.delete_items(items.to_vec(), cx));
-        let Some((transaction, affected)) = outcome else {
-            return;
+        let Ok(Some((transaction, affected))) = outcome else {
+            return false;
         };
         show_deletion_undo("items.deleted", "item", transaction, affected, window, cx);
+        true
     }
 
-    pub fn delete_saved(ids: &[Uuid], window: &mut Window, cx: &mut App) {
+    pub fn delete_saved(ids: &[Uuid], window: &mut Window, cx: &mut App) -> bool {
         let outcome =
             AppDatabaseStore::global(cx).update(cx, |store, cx| store.delete_saved_items(ids, cx));
-        let Some((transaction, affected)) = outcome else {
-            return;
+        let Ok(Some((transaction, affected))) = outcome else {
+            return false;
         };
         show_deletion_undo(
             "saved-items.deleted",
@@ -992,13 +999,12 @@ pub mod bulk {
             window,
             cx,
         );
+        true
     }
 
     pub fn convert_events_to_markers(events: &[subroutine_core::Event], cx: &mut App) {
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for event in events {
-                store.convert_event_to_marker(event.clone(), cx);
-            }
+            let _ = store.convert_events_to_markers(events, cx);
         });
     }
 
@@ -1053,21 +1059,20 @@ pub mod bulk {
 
     pub fn duplicate(items: &[AnyItem], cx: &mut App) -> Vec<AnyItem> {
         let copies: Vec<AnyItem> = items.iter().map(copy_of).collect();
-        AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            store.create_items(copies.clone(), cx);
-        });
-        copies
+        let result = AppDatabaseStore::global(cx)
+            .update(cx, |store, cx| store.create_items(copies.clone(), cx));
+        if result.is_ok() { copies } else { Vec::new() }
     }
 
-    pub fn complete(items: &[AnyItem], window: &mut Window, cx: &mut App) {
+    pub fn complete(items: &[AnyItem], window: &mut Window, cx: &mut App) -> bool {
         let ids: Vec<Uuid> = actions(items)
             .filter(|action| !action.is_completed())
             .map(|action| action.id)
             .collect();
         let outcome =
             AppDatabaseStore::global(cx).update(cx, |store, cx| store.complete_actions(&ids, cx));
-        let Some((transaction, affected)) = outcome else {
-            return;
+        let Ok(Some((transaction, affected))) = outcome else {
+            return false;
         };
         let message = if affected == 1 {
             "Completed 1 action".to_owned()
@@ -1082,7 +1087,7 @@ pub mod bulk {
                 .action("Undo", move |window, cx| {
                     let undone = AppDatabaseStore::global(cx)
                         .update(cx, |store, cx| store.undo_transaction(transaction, cx));
-                    if !undone {
+                    if matches!(undone, Ok(false)) {
                         toast::push(
                             window,
                             cx,
@@ -1095,17 +1100,17 @@ pub mod bulk {
                     }
                 }),
         );
+        true
     }
 
     pub fn uncomplete(items: &[AnyItem], cx: &mut App) {
-        let ids: Vec<Uuid> = actions(items)
+        let changed = actions(items)
             .filter(|action| action.is_completed())
-            .map(|action| action.id)
+            .cloned()
+            .map(|action| AnyItem::Action(subroutine_core::ops::actions::uncomplete(action).value))
             .collect();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for id in ids {
-                store.uncomplete_action(id, cx);
-            }
+            let _ = store.update_items(changed, cx);
         });
     }
 
@@ -1115,33 +1120,37 @@ pub mod bulk {
             .map(|action| action.id)
             .collect();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for id in ids {
-                store.auto_queue_action(id, cx);
-            }
+            let _ = store.queue_actions(&ids, cx);
         });
     }
 
     pub fn unqueue(items: &[AnyItem], cx: &mut App) {
-        let ids: Vec<Uuid> = actions(items)
+        let changed = actions(items)
             .filter(|action| !action.is_completed() && action.queued)
-            .map(|action| action.id)
+            .cloned()
+            .map(|mut action| {
+                action.set_queued(false);
+                action.set_start(None);
+                action.set_pinned(false);
+                AnyItem::Action(action)
+            })
             .collect();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for id in ids {
-                store.backlog_action(id, cx);
-            }
+            let _ = store.update_items(changed, cx);
         });
     }
 
     pub fn clear_durations(items: &[AnyItem], cx: &mut App) {
-        let ids: Vec<Uuid> = actions(items)
+        let changed = actions(items)
             .filter(|action| !action.is_completed() && action.duration.is_some())
-            .map(|action| action.id)
+            .cloned()
+            .map(|mut action| {
+                action.duration = None;
+                AnyItem::Action(action)
+            })
             .collect();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for id in ids {
-                store.clear_action_duration(id, cx);
-            }
+            let _ = store.update_items(changed, cx);
         });
     }
 
@@ -1157,21 +1166,17 @@ pub mod bulk {
             })
             .collect();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for action in changed {
-                store.upsert_action(action, cx);
-            }
+            let _ = store.update_items(changed.into_iter().map(AnyItem::Action).collect(), cx);
         });
     }
 
     pub fn save_as_templates(items: &[AnyItem], cx: &mut App) {
-        let ids: Vec<Uuid> = actions(items)
+        let templates = actions(items)
             .filter(|action| action.template_id.is_none())
-            .map(|action| action.id)
+            .map(|action| AnyItem::ActionTemplate(action.as_template()))
             .collect();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            for id in ids {
-                store.save_action(id, cx);
-            }
+            let _ = store.create_items(templates, cx);
         });
     }
 
@@ -1195,7 +1200,7 @@ pub mod bulk {
         };
         let routine = Routine::new(first.title.clone()).with_steps(steps);
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            store.upsert_routine(routine, cx);
+            let _ = store.upsert_routine(routine, cx);
         });
     }
 
@@ -1205,20 +1210,21 @@ pub mod bulk {
         }
         let items = items.to_vec();
         AppDatabaseStore::global(cx).update(cx, |store, cx| {
+            let mut changed = Vec::new();
             for item in items {
                 match item {
                     AnyItem::Action(action) => {
                         if let Some(action) = shifted_action(action, delta) {
-                            store.upsert_action(action, cx);
+                            changed.push(AnyItem::Action(action));
                         }
                     }
                     AnyItem::Event(mut event) => {
                         event.start += delta;
-                        store.upsert_event(event, cx);
+                        changed.push(AnyItem::Event(event));
                     }
                     AnyItem::Signal(mut signal) => {
                         signal.datetime += delta;
-                        store.upsert_signal(signal, cx);
+                        changed.push(AnyItem::Signal(signal));
                     }
                     AnyItem::Marker(mut marker) => {
                         let days = ChronoDuration::days(delta.num_days());
@@ -1227,13 +1233,14 @@ pub mod bulk {
                         }
                         marker.date += days;
                         marker.end_date = marker.end_date.map(|end| end + days);
-                        store.upsert_marker(marker, cx);
+                        changed.push(AnyItem::Marker(marker));
                     }
                     AnyItem::Routine(_)
                     | AnyItem::ActionTemplate(_)
                     | AnyItem::EventTemplate(_) => {}
                 }
             }
+            let _ = store.update_items(changed, cx);
         });
     }
 
@@ -1307,8 +1314,9 @@ pub fn selection_context_menu(items: Vec<AnyItem>) -> MenuBuilder {
                 format!("Complete {incomplete}"),
                 CompleteSelected,
                 move |window, cx| {
-                    bulk::complete(&items, window, cx);
-                    SelectionManager::clear_global(cx);
+                    if bulk::complete(&items, window, cx) {
+                        SelectionManager::clear_global(cx);
+                    }
                 },
             )
         })
@@ -1423,8 +1431,9 @@ pub fn selection_context_menu(items: Vec<AnyItem>) -> MenuBuilder {
         .item_with_keybinding(format!("Delete {count} items"), DeleteSelected, {
             let items = items.clone();
             move |window, cx| {
-                bulk::delete(&items, window, cx);
-                SelectionManager::clear_global(cx);
+                if bulk::delete(&items, window, cx) {
+                    SelectionManager::clear_global(cx);
+                }
             }
         })
         .item("Clear selection", |_, cx| {

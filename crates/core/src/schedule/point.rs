@@ -75,6 +75,20 @@ impl SchedulePoint {
         }
     }
 
+    pub fn checked_add_days(self, days: Days) -> Option<Self> {
+        match self {
+            Self::DateTime(datetime) => datetime.checked_add_days(days).map(Self::DateTime),
+            Self::Date(date) => date.checked_add_days(days).map(Self::Date),
+        }
+    }
+
+    pub fn checked_add_months(self, months: Months) -> Option<Self> {
+        match self {
+            Self::DateTime(datetime) => datetime.checked_add_months(months).map(Self::DateTime),
+            Self::Date(date) => date.checked_add_months(months).map(Self::Date),
+        }
+    }
+
     pub fn now() -> Self {
         SchedulePoint::DateTime(Utc::now())
     }

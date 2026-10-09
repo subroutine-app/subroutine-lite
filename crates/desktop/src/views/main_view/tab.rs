@@ -97,7 +97,8 @@ pub trait MainViewTab: Render + Focusable + Sized {
             .key_context(Self::TAB.command_context())
             .on_action(cx.listener(|this, _: &GoToNow, window, cx| this.go_to_now(window, cx)))
             .on_action(|_: &RefreshPipeline, _, cx| {
-                AppDatabaseStore::global(cx).update(cx, |store, cx| store.refresh_pipeline(cx));
+                let _ =
+                    AppDatabaseStore::global(cx).update(cx, |store, cx| store.refresh_pipeline(cx));
             });
         self.bind_view_actions(element, cx)
     }

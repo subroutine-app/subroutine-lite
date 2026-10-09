@@ -1,14 +1,15 @@
-
 use std::collections::HashMap;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, Offset, TimeZone, Utc};
+use chrono_tz::Tz;
 use uuid::Uuid;
 
 use crate::{
     Action, Event, Marker, Recurrence, Routine, SchedulePoint, Signal, recurrence::occurrence_id,
+    schedule::duration_end,
 };
 
-use super::{Changes, Delete, Outcome, Snapshot};
+use super::{Changes, Delete, OpError, OpResult, Outcome, Snapshot};
 
 const MAX_ROUTINE_ADVANCES: usize = 4096;
 const ROUTINE_GRACE: chrono::Duration = chrono::Duration::hours(6);
@@ -34,7 +35,7 @@ impl ReconcileSummary {
     }
 }
 
-pub fn reconcile(snapshot: &Snapshot) -> Outcome<ReconcileSummary> {
+pub fn reconcile(snapshot: &Snapshot) -> OpResult<Outcome<ReconcileSummary>> {
     let now = snapshot.now_utc();
     let mut changes = Changes::default();
     let mut summary = ReconcileSummary::default();
@@ -42,13 +43,13 @@ pub fn reconcile(snapshot: &Snapshot) -> Outcome<ReconcileSummary> {
     retire_materialized_occurrences(snapshot, &mut changes, &mut summary);
 
     for routine in &snapshot.routines {
-        reconcile_routine(snapshot, routine, now, &mut changes, &mut summary);
+        reconcile_routine(snapshot, routine, now, &mut changes, &mut summary)?;
     }
 
     if summary.routine_actions > 0 {
         changes = changes.rescheduled();
     }
-    Outcome::new(summary, changes)
+    Ok(Outcome::new(summary, changes))
 }
 
 fn retire_materialized_occurrences(
@@ -121,7 +122,11 @@ fn retire_materialized_occurrences(
 
 fn same_series_rule(left: Option<Recurrence>, right: Option<Recurrence>) -> bool {
     match (left, right) {
-        (Some(left), Some(right)) => left.rule == right.rule && left.end_date == right.end_date,
+        (Some(left), Some(right)) => {
+            left.rule == right.rule
+                && left.end_date == right.end_date
+                && left.timezone == right.timezone
+        }
         _ => false,
     }
 }
@@ -163,28 +168,27 @@ fn reconcile_routine(
     now: DateTime<Utc>,
     changes: &mut Changes,
     summary: &mut ReconcileSummary,
-) {
+) -> OpResult<()> {
     let (Some(mut target), Some(mut recurrence)) = (routine.target, routine.recurrence) else {
-        return;
+        return Ok(());
     };
     let mut advanced = routine.clone();
     let mut changed = false;
 
     for _ in 0..MAX_ROUTINE_ADVANCES {
-        if !is_due(target, snapshot.now, now) {
+        if !is_due(target, recurrence.timezone, snapshot.now, now)? {
             break;
         }
-        if recurrence
-            .end_date
-            .is_some_and(|end_date| target.date_naive() > end_date)
+        if let Some(end_date) = recurrence.end_date
+            && rule_date(target, recurrence.timezone)? > end_date
         {
             advanced.target = None;
             changed = true;
             break;
         }
 
-        if should_run_routine(target, snapshot.now, now) {
-            let actions = routine_actions(snapshot, routine, target);
+        if should_run_routine(target, recurrence.timezone, snapshot.now, now)? {
+            let actions = routine_actions(snapshot, routine, target)?;
             summary.routine_runs += 1;
             summary.routine_actions += actions.len();
             changes.put_all(actions);
@@ -207,28 +211,78 @@ fn reconcile_routine(
     if changed {
         changes.put(advanced);
     }
+    Ok(())
 }
 
-fn is_due(target: SchedulePoint, now_local: DateTime<Local>, now_utc: DateTime<Utc>) -> bool {
+fn local_date<T: TimeZone>(datetime: DateTime<T>) -> OpResult<NaiveDate> {
+    let offset = datetime.offset().fix().local_minus_utc();
+    datetime
+        .naive_utc()
+        .checked_add_signed(Duration::seconds(i64::from(offset)))
+        .map(|datetime| datetime.date())
+        .ok_or_else(|| OpError::rejected("routine date is outside the supported calendar range"))
+}
+
+fn rule_date(target: SchedulePoint, timezone: Option<Tz>) -> OpResult<NaiveDate> {
+    match (target, timezone) {
+        (SchedulePoint::DateTime(datetime), Some(timezone)) => {
+            local_date(datetime.with_timezone(&timezone))
+        }
+        _ => Ok(target.date_naive()),
+    }
+}
+
+fn routine_today(now: DateTime<Local>, timezone: Option<Tz>) -> OpResult<NaiveDate> {
+    match timezone {
+        Some(timezone) => local_date(now.with_timezone(&timezone)),
+        None => local_date(now),
+    }
+}
+
+fn is_due(
+    target: SchedulePoint,
+    timezone: Option<Tz>,
+    now_local: DateTime<Local>,
+    now_utc: DateTime<Utc>,
+) -> OpResult<bool> {
     match target {
-        SchedulePoint::DateTime(datetime) => datetime <= now_utc,
-        SchedulePoint::Date(date) => date <= now_local.date_naive(),
+        SchedulePoint::DateTime(datetime) => Ok(datetime <= now_utc),
+        SchedulePoint::Date(date) => Ok(date <= routine_today(now_local, timezone)?),
     }
 }
 
 fn should_run_routine(
     target: SchedulePoint,
+    timezone: Option<Tz>,
     now_local: DateTime<Local>,
     now_utc: DateTime<Utc>,
-) -> bool {
+) -> OpResult<bool> {
     match target {
-        SchedulePoint::DateTime(datetime) => datetime >= now_utc - ROUTINE_GRACE,
-        SchedulePoint::Date(date) => date == now_local.date_naive(),
+        SchedulePoint::DateTime(datetime) => {
+            Ok(now_utc.signed_duration_since(datetime) <= ROUTINE_GRACE)
+        }
+        SchedulePoint::Date(date) => Ok(date == routine_today(now_local, timezone)?),
     }
 }
 
-fn routine_actions(snapshot: &Snapshot, routine: &Routine, target: SchedulePoint) -> Vec<Action> {
-    let mut cursor = DateTime::<Utc>::from(target);
+fn routine_actions(
+    snapshot: &Snapshot,
+    routine: &Routine,
+    target: SchedulePoint,
+) -> OpResult<Vec<Action>> {
+    let mut cursor = match (
+        target,
+        routine
+            .recurrence
+            .and_then(|recurrence| recurrence.timezone),
+    ) {
+        (SchedulePoint::Date(date), Some(timezone)) => (0..24 * 60)
+            .filter_map(|minute| date.and_hms_opt(minute / 60, minute % 60, 0))
+            .find_map(|local| local.and_local_timezone(timezone).earliest())
+            .map(|datetime| datetime.to_utc())
+            .ok_or_else(|| OpError::rejected("routine date does not exist in its timezone"))?,
+        _ => DateTime::<Utc>::from(target),
+    };
     routine
         .steps
         .iter()
@@ -245,8 +299,14 @@ fn routine_actions(snapshot: &Snapshot, routine: &Routine, target: SchedulePoint
                 .with_duration(Some(duration))
                 .with_queued(true)
                 .with_start(Some(SchedulePoint::DateTime(cursor)));
-            cursor = cursor + duration;
-            Action { id, ..action }
+            cursor = duration_end(cursor, duration).map_err(|reason| {
+                OpError::rejected(format!(
+                    "routine {} step {}: {reason}",
+                    routine.id,
+                    index + 1
+                ))
+            })?;
+            Ok(Action { id, ..action })
         })
         .collect()
 }

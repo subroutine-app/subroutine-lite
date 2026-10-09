@@ -86,21 +86,21 @@ fn action_context_menu(
     .when_some(restore_action_label(action), |menu, label| {
         menu.item(label, move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                store.uncomplete_action(action_id, cx);
+                let _ = store.uncomplete_action(action_id, cx);
             });
         })
     })
     .when(!completed && !action.queued, |menu| {
         menu.item_with_keybinding("Queue", ToggleQueuedSelected, move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                store.auto_queue_action(action_id, cx);
+                let _ = store.auto_queue_action(action_id, cx);
             });
         })
     })
     .when(!completed && action.queued, |menu| {
         menu.item_with_keybinding("Unqueue", ToggleQueuedSelected, move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                store.backlog_action(action_id, cx);
+                let _ = store.backlog_action(action_id, cx);
             });
         })
     })
@@ -121,7 +121,7 @@ fn action_context_menu(
     .when(!has_template, |menu| {
         menu.item("Save for reuse", move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                store.save_action(action_id, cx);
+                let _ = store.save_action(action_id, cx);
             });
         })
     })
@@ -134,7 +134,7 @@ fn action_context_menu(
     .when(action.duration.is_some(), |menu| {
         menu.item("Remove duration", move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                store.clear_action_duration(action_id, cx);
+                let _ = store.clear_action_duration(action_id, cx);
             });
         })
     })
@@ -146,7 +146,9 @@ fn action_context_menu(
     })
     .item_with_keybinding("Delete action", DeleteSelected, {
         let action = action.clone();
-        move |window, cx| bulk::delete(&[AnyItem::Action(action.clone())], window, cx)
+        move |window, cx| {
+            bulk::delete(&[AnyItem::Action(action.clone())], window, cx);
+        }
     })
 }
 
@@ -161,7 +163,7 @@ fn simple_item_menu(
     open_in_item_inspector(menu, edit_label, item_id, selection_scope)
         .separator()
         .item_with_keybinding(delete_label, DeleteSelected, move |window, cx| {
-            bulk::delete(std::slice::from_ref(&item), window, cx)
+            bulk::delete(std::slice::from_ref(&item), window, cx);
         })
 }
 
@@ -279,12 +281,12 @@ pub(crate) fn item_context_menu(
             event_availability_menu(menu, event, cx)
                 .item("Convert to date marker", move |_, cx| {
                     AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                        store.convert_event_to_marker(convert.clone(), cx);
+                        let _ = store.convert_event_to_marker(convert.clone(), cx);
                     });
                 })
                 .separator()
                 .item_with_keybinding("Delete event", DeleteSelected, move |window, cx| {
-                    bulk::delete(&[AnyItem::Event(delete.clone())], window, cx)
+                    bulk::delete(&[AnyItem::Event(delete.clone())], window, cx);
                 })
         }
         AnyItem::Routine(routine) => simple_item_menu(

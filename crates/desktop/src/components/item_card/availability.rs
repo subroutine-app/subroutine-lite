@@ -110,7 +110,7 @@ pub(super) fn event_availability_menu_for_target(
     let toggle_store = store.clone();
     menu.item(label, move |_, cx| {
         toggle_store.update(cx, |store, cx| {
-            store.set_event_busy_override(id, Some(!busy), cx);
+            let _ = store.set_event_busy_override(id, Some(!busy), cx);
         });
     })
     .when(current.busy_override.is_some(), |menu| {
@@ -122,7 +122,7 @@ pub(super) fn event_availability_menu_for_target(
             },
             move |_, cx| {
                 store.update(cx, |store, cx| {
-                    store.set_event_busy_override(id, None, cx);
+                    let _ = store.set_event_busy_override(id, None, cx);
                 });
             },
         )

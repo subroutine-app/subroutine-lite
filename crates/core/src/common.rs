@@ -69,8 +69,7 @@ pub trait CoreItem {
     }
 
     fn end(&self) -> Option<SchedulePoint> {
-        self.start()
-            .and_then(|start| self.duration().map(|duration| start + duration))
+        crate::checked_duration_end(self.start()?, self.duration()?).ok()
     }
 
     fn recurrence(&self) -> Option<Recurrence> {
@@ -226,9 +225,12 @@ impl AnyItem {
         self.start().into()
     }
 
-    pub fn occurrence_at(&self, start: SchedulePoint) -> Self {
+    pub fn occurrence_at(&self, start: SchedulePoint) -> Option<Self> {
+        if let Some(duration) = self.duration() {
+            crate::checked_duration_end(start, duration).ok()?;
+        }
         let lineage_id = self.lineage_id();
-        match self {
+        Some(match self {
             AnyItem::Action(source) => {
                 let mut occurrence = source.clone();
                 occurrence.id = occurrence_id(lineage_id, "action", start);
@@ -252,13 +254,13 @@ impl AnyItem {
                 occurrence.target = Some(start);
                 AnyItem::Routine(occurrence)
             }
-            AnyItem::Marker(source) => AnyItem::Marker(source.occurrence_on(start.date_naive())),
+            AnyItem::Marker(source) => AnyItem::Marker(source.occurrence_on(start.date_naive())?),
             AnyItem::Signal(source) => {
                 AnyItem::Signal(source.occurrence_at(DateTime::<Utc>::from(start)))
             }
             AnyItem::ActionTemplate(source) => AnyItem::ActionTemplate(source.clone()),
             AnyItem::EventTemplate(source) => AnyItem::EventTemplate(source.clone()),
-        }
+        })
     }
 
     fn is_local_materialized_copy(&self) -> bool {
@@ -306,7 +308,13 @@ impl AnyItem {
             AnyItem::Marker(marker) => marker.end_date.unwrap_or(marker.date),
             _ => self.end().map(NaiveDate::from).unwrap_or(source_start),
         };
-        let lookback_days = (source_end - source_start).num_days().max(0);
+        let lookback_days = self
+            .duration()
+            .and_then(|duration| crate::duration_lookback(duration).ok())
+            .map(|duration| {
+                duration.num_days() + i64::from(duration > Duration::days(duration.num_days()))
+            })
+            .unwrap_or_else(|| (source_end - source_start).num_days().max(0));
         let target = start
             .checked_sub_signed(Duration::days(lookback_days))
             .unwrap_or(start);
@@ -324,7 +332,9 @@ impl AnyItem {
             cursor = next;
             recurrence = next_recurrence;
 
-            let mut occurrence = self.occurrence_at(next);
+            let Some(mut occurrence) = self.occurrence_at(next) else {
+                break;
+            };
             occurrence.set_recurrence(next_recurrence);
             let Some(occurrence_start) = occurrence.start_date() else {
                 break;

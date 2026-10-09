@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     Database,
-    projection::patch::preserve_missing_availability,
+    projection::{commit_projection, patch::preserve_missing_availability},
     rows::{delete_rows, load_rows, rewrite_routine_ordinals, upsert_rows},
 };
 use crate::{LocalStoreError, Projection, Result, WorkspaceIdentity};
@@ -31,8 +31,7 @@ impl Database {
         };
         event.busy_override = busy_override;
         upsert_rows(&tx, "event", &[event], |row| row.id)?;
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 
     pub(crate) fn apply_local_patch(&mut self, mut patch: OptimisticPatch) -> Result<Projection> {
@@ -121,7 +120,6 @@ impl Database {
         if let Some(routine_order) = routine_order {
             rewrite_routine_ordinals(&tx, &routine_order)?;
         }
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 }

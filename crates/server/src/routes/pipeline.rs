@@ -13,7 +13,7 @@ pub fn router() -> Router<AppState> {
 async fn refresh(Tenant(state): Tenant) -> Result<Json<Vec<Action>>> {
     Ok(Json(
         state
-            .apply_from_snapshot(|snapshot| Ok(ops::pipeline::refresh(snapshot)))
+            .apply_from_snapshot(|snapshot| Ok(ops::pipeline::refresh(snapshot)?))
             .await?,
     ))
 }
@@ -21,7 +21,7 @@ async fn refresh(Tenant(state): Tenant) -> Result<Json<Vec<Action>>> {
 async fn expedite(Tenant(state): Tenant) -> Result<Json<Vec<Action>>> {
     Ok(Json(
         state
-            .apply_from_snapshot(|snapshot| Ok(ops::pipeline::expedite(snapshot)))
+            .apply_from_snapshot(|snapshot| Ok(ops::pipeline::expedite(snapshot)?))
             .await?,
     ))
 }

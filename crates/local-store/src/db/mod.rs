@@ -16,7 +16,7 @@ use crate::{
     LocalStoreError, Projection, Result, StoreDiagnostics, WorkspaceIdentity, WorkspaceSpec,
 };
 use identity::initialize_identity;
-use projection::load_projection;
+use projection::commit_projection;
 use schema::{configure_connection, diagnostics, migrate, verify_application_id};
 
 pub(crate) struct Database {
@@ -46,8 +46,11 @@ impl Database {
         diagnostics(&self.connection)
     }
 
-    pub(crate) fn projection(&self) -> Result<Projection> {
-        load_projection(&self.connection)
+    pub(crate) fn projection(&mut self) -> Result<Projection> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        commit_projection(tx)
     }
 
     pub(crate) fn purge_remote(&mut self) -> Result<()> {

@@ -253,12 +253,12 @@ impl TimelineView {
         match ti.item.clone() {
             AnyItem::Action(action) => {
                 let action = resized_action(action, new_time_utc, new_duration);
-                store.update(cx, |s, cx| s.upsert_action(action, cx));
+                let _ = store.update(cx, |s, cx| s.upsert_action(action, cx));
             }
             AnyItem::Event(mut event) => {
                 event.start = new_time_utc;
                 event.duration = new_duration.into();
-                store.update(cx, |s, cx| s.upsert_event(event, cx));
+                let _ = store.update(cx, |s, cx| s.upsert_event(event, cx));
             }
             AnyItem::Routine(_) => (),
             AnyItem::Marker(_) => (),

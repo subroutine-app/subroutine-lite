@@ -48,26 +48,40 @@ pub(in crate::db) fn load_outbox(
     )
 }
 
+pub(in crate::db) fn load_outbox_entries(connection: &Connection) -> Result<Vec<OutboxEntry>> {
+    let mut statement = connection.prepare(
+        "SELECT position, request_json, patch_json, state, sealed, attempt_count,
+                next_attempt_at_ms, last_error, receipt_json, blocked_error_json
+         FROM outbox ORDER BY position",
+    )?;
+    let stored = statement
+        .query_map([], stored_outbox)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    stored.into_iter().map(decode_outbox).collect()
+}
+
+fn stored_outbox(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredOutbox> {
+    Ok(StoredOutbox {
+        position: row.get(0)?,
+        request_json: row.get(1)?,
+        patch_json: row.get(2)?,
+        state: row.get(3)?,
+        sealed: row.get::<_, i64>(4)? != 0,
+        attempt_count: row.get(5)?,
+        next_attempt_at_ms: row.get(6)?,
+        last_error: row.get(7)?,
+        receipt_json: row.get(8)?,
+        blocked_error_json: row.get(9)?,
+    })
+}
+
 fn load_stored_outbox<P: rusqlite::Params>(
     connection: &Connection,
     sql: &str,
     params: P,
 ) -> Result<Option<OutboxEntry>> {
     let stored = connection
-        .query_row(sql, params, |row| {
-            Ok(StoredOutbox {
-                position: row.get(0)?,
-                request_json: row.get(1)?,
-                patch_json: row.get(2)?,
-                state: row.get(3)?,
-                sealed: row.get::<_, i64>(4)? != 0,
-                attempt_count: row.get(5)?,
-                next_attempt_at_ms: row.get(6)?,
-                last_error: row.get(7)?,
-                receipt_json: row.get(8)?,
-                blocked_error_json: row.get(9)?,
-            })
-        })
+        .query_row(sql, params, stored_outbox)
         .optional()?;
     stored.map(decode_outbox).transpose()
 }

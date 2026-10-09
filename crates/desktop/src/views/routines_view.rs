@@ -56,34 +56,31 @@ fn routine_editor_height(step_count: usize) -> Pixels {
         + STEP_EDITOR_PADDING
 }
 
-fn parse_step(raw: &str) -> Option<RoutineStep> {
+fn parse_step(raw: &str) -> Result<Option<RoutineStep>, parser::ParseError> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return None;
+        return Ok(None);
     }
-
-    Some(match parser::parse_routine_step(raw) {
-        Ok(parsed) if !parsed.title.trim().is_empty() => {
-            let step = RoutineStep::new(parsed.title.trim());
-            match parsed.duration {
-                Some(duration) => step.with_duration(RelativeDuration::from(duration)),
-                None => step,
-            }
-        }
-        Ok(parsed) => {
-            let step = RoutineStep::new(raw);
-            match parsed.duration {
-                Some(duration) => step.with_duration(RelativeDuration::from(duration)),
-                None => step,
-            }
-        }
-        Err(_) => RoutineStep::new(raw),
-    })
+    let parsed = parser::parse_routine_step(raw)?;
+    let title = if parsed.title.trim().is_empty() {
+        raw
+    } else {
+        parsed.title.trim()
+    };
+    let step = RoutineStep::new(title);
+    Ok(Some(match parsed.duration {
+        Some(duration) => step.with_duration(RelativeDuration::from(duration)),
+        None => step,
+    }))
 }
 
 fn format_step_duration(duration: RelativeDuration) -> String {
     let now = Utc::now();
-    let minutes = (now + duration - now).num_minutes();
+    let end = match subroutine_core::checked_duration_end(now.into(), duration) {
+        Ok(end) => chrono::DateTime::<Utc>::from(end),
+        Err(error) => return error.to_owned(),
+    };
+    let minutes = (end - now).num_minutes();
     match (minutes / 60, minutes % 60) {
         (0, minutes) => format!("{minutes}m"),
         (hours, 0) => format!("{hours}h"),
@@ -91,12 +88,10 @@ fn format_step_duration(duration: RelativeDuration) -> String {
     }
 }
 
-fn save_steps_later(routine_id: Uuid, steps: Vec<RoutineStep>, cx: &mut App) {
-    cx.defer(move |cx| {
-        AppDatabaseStore::global(cx).update(cx, |store, cx| {
-            store.replace_routine_steps(routine_id, steps, cx);
-        });
-    });
+fn save_steps(routine_id: Uuid, steps: Vec<RoutineStep>, cx: &mut App) -> bool {
+    AppDatabaseStore::global(cx).update(cx, |store, cx| {
+        store.replace_routine_steps(routine_id, steps, cx).is_ok()
+    })
 }
 
 #[derive(Clone)]
@@ -165,11 +160,9 @@ impl RoutineStepDelegate {
                 && self.steps.iter().zip(&routine.steps).all(|(entry, step)| {
                     entry.title == step.title && entry.duration == step.duration
                 });
-        if unchanged {
+        if unchanged || self.editing.is_some() {
             return false;
         }
-
-        self.editing = None;
         self.steps = routine
             .steps
             .iter()
@@ -199,23 +192,45 @@ impl RoutineStepDelegate {
         self.steps.retain(|step| step.id != id);
     }
 
-    fn adjust_duration(&mut self, id: Uuid, delta: i64) {
+    fn adjust_duration(&mut self, id: Uuid, delta: i64) -> Result<(), &'static str> {
         let Some(step) = self.steps.iter_mut().find(|step| step.id == id) else {
-            return;
+            return Ok(());
         };
         let now = Utc::now();
         let current = step
             .duration
-            .map(|duration| (now + duration - now).num_minutes())
-            .unwrap_or(0);
-        let minutes = current + delta * STEP_DURATION_MINUTES;
-        step.duration = (minutes > 0).then(|| RelativeDuration::minutes(minutes));
+            .map(|duration| {
+                subroutine_core::checked_duration_end(now.into(), duration)
+                    .map(|end| chrono::DateTime::<Utc>::from(end) - now)
+            })
+            .transpose()?;
+        step.duration =
+            crate::views::item_creator::stepped_duration(current, delta, STEP_DURATION_MINUTES)?
+                .map(Into::into);
+        Ok(())
     }
 }
 
 impl DynamicListState<RoutineStepDelegate> {
-    fn persist_steps(&self, cx: &mut Context<Self>) {
-        save_steps_later(self.delegate().routine_id, self.delegate().to_steps(), cx);
+    fn update_steps(
+        &mut self,
+        change: impl FnOnce(&mut RoutineStepDelegate) -> Result<(), &'static str>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut proposed = self.delegate().clone();
+        if let Err(error) = change(&mut proposed) {
+            AppDatabaseStore::global(cx).update(cx, |_, cx| {
+                cx.emit(crate::stores::SaveFailed {
+                    message: error.to_owned(),
+                });
+            });
+            return false;
+        }
+        if !save_steps(proposed.routine_id, proposed.to_steps(), cx) {
+            return false;
+        }
+        self.update_items(cx, |delegate, _| delegate.steps = proposed.steps);
+        true
     }
 
     fn begin_step_edit(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
@@ -225,6 +240,10 @@ impl DynamicListState<RoutineStepDelegate> {
             .as_ref()
             .is_some_and(|edit| edit.id == id)
         {
+            return;
+        }
+        self.commit_step_edit(window, cx);
+        if self.delegate().editing.is_some() {
             return;
         }
         let Some(title) = self
@@ -268,25 +287,45 @@ impl DynamicListState<RoutineStepDelegate> {
         cx.notify();
     }
 
-    fn commit_step_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn commit_step_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edit) = self.delegate_mut().editing.take() else {
             return;
         };
         let value = edit.input.read(cx).value().to_string();
-        let Some(parsed) = parse_step(&value) else {
-            cx.notify();
-            return;
+        let parsed = match parse_step(&value) {
+            Ok(Some(parsed)) => parsed,
+            Ok(None) => {
+                cx.notify();
+                return;
+            }
+            Err(error) => {
+                self.delegate_mut().editing = Some(edit);
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    crate::components::timed_toast("routine-step.invalid", error.to_string())
+                        .tone(gpui_kit::display::badge::Tone::Warning),
+                );
+                cx.notify();
+                return;
+            }
         };
 
-        self.update_items(cx, |delegate, _| {
-            if let Some(step) = delegate.steps.iter_mut().find(|step| step.id == edit.id) {
-                step.title = parsed.title;
-                if parsed.duration.is_some() {
-                    step.duration = parsed.duration;
+        if !self.update_steps(
+            |delegate| {
+                if let Some(step) = delegate.steps.iter_mut().find(|step| step.id == edit.id) {
+                    step.title = parsed.title;
+                    if parsed.duration.is_some() {
+                        step.duration = parsed.duration;
+                    }
                 }
-            }
-        });
-        self.persist_steps(cx);
+                Ok(())
+            },
+            cx,
+        ) {
+            self.delegate_mut().editing = Some(edit);
+            cx.notify();
+        }
     }
 }
 
@@ -315,8 +354,11 @@ impl DynamicListDelegate for RoutineStepDelegate {
         _window: &mut Window,
         cx: &mut Context<DynamicListState<Self>>,
     ) {
-        apply_reorder(&mut self.steps, from, to);
-        save_steps_later(self.routine_id, self.to_steps(), cx);
+        let mut proposed = self.clone();
+        apply_reorder(&mut proposed.steps, from, to);
+        if save_steps(self.routine_id, proposed.to_steps(), cx) {
+            self.steps = proposed.steps;
+        }
     }
 
     fn render_item(
@@ -401,10 +443,10 @@ impl DynamicListDelegate for RoutineStepDelegate {
                                 .tooltip("Shorten by 5 minutes")
                                 .child(Icon::new(AppIcon::Minus).size_3())
                                 .on_click(cx.listener(move |list, _, _window, cx| {
-                                    list.update_items(cx, |delegate, _| {
-                                        delegate.adjust_duration(id, -1)
-                                    });
-                                    list.persist_steps(cx);
+                                    list.update_steps(
+                                        |delegate| delegate.adjust_duration(id, -1),
+                                        cx,
+                                    );
                                 })),
                         )
                         .child(
@@ -421,10 +463,10 @@ impl DynamicListDelegate for RoutineStepDelegate {
                                 .tooltip("Add 5 minutes")
                                 .child(Icon::new(AppIcon::Plus).size_3())
                                 .on_click(cx.listener(move |list, _, _window, cx| {
-                                    list.update_items(cx, |delegate, _| {
-                                        delegate.adjust_duration(id, 1)
-                                    });
-                                    list.persist_steps(cx);
+                                    list.update_steps(
+                                        |delegate| delegate.adjust_duration(id, 1),
+                                        cx,
+                                    );
                                 })),
                         ),
                 )
@@ -435,8 +477,13 @@ impl DynamicListDelegate for RoutineStepDelegate {
                         .tooltip("Remove step")
                         .child(Icon::new(AppIcon::Close).size_3())
                         .on_click(cx.listener(move |list, _, _window, cx| {
-                            list.update_items(cx, |delegate, _| delegate.remove(id));
-                            list.persist_steps(cx);
+                            list.update_steps(
+                                |delegate| {
+                                    delegate.remove(id);
+                                    Ok(())
+                                },
+                                cx,
+                            );
                         })),
                 )
                 .into_any_element(),
@@ -510,21 +557,39 @@ impl RoutineStepsEditor {
         });
     }
 
-    fn submit_step(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn submit_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.input.read(cx).value().to_string();
-        let Some(step) = parse_step(&value) else {
-            return;
+        let step = match parse_step(&value) {
+            Ok(Some(step)) => step,
+            Ok(None) => return,
+            Err(error) => {
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    crate::components::timed_toast("routine-step.invalid", error.to_string())
+                        .tone(gpui_kit::display::badge::Tone::Warning),
+                );
+                return;
+            }
         };
 
-        let steps = self.list.update(cx, |list, cx| {
-            list.update_items(cx, |delegate, _| {
-                delegate.steps.push(StepEntry::new(step));
-            });
+        let saved = self.list.update(cx, |list, cx| {
+            if !list.update_steps(
+                |delegate| {
+                    delegate.steps.push(StepEntry::new(step));
+                    Ok(())
+                },
+                cx,
+            ) {
+                return false;
+            }
             let last = list.delegate().steps.len().saturating_sub(1);
             list.scroll_item_into_view(last, cx);
-            list.delegate().to_steps()
+            true
         });
-        save_steps_later(self.routine_id, steps, cx);
+        if !saved {
+            return;
+        }
         self.input
             .update(cx, |input, cx| input.set_text_quietly("", cx));
         cx.notify();
@@ -782,14 +847,15 @@ impl DynamicListDelegate for RoutinesDelegate {
             return;
         }
         let to = to.min(self.routines.len() - 1);
-        apply_reorder(&mut self.routines, from, to);
-        self.rebuild(cx);
-        let order = self.routines.iter().map(|routine| routine.id).collect();
-        cx.defer(move |cx| {
-            AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                store.reorder_routines(order, cx);
-            });
-        });
+        let mut routines = self.routines.clone();
+        apply_reorder(&mut routines, from, to);
+        let order = routines.iter().map(|routine| routine.id).collect();
+        let saved = AppDatabaseStore::global(cx)
+            .update(cx, |store, cx| store.reorder_routines(order, cx).is_ok());
+        if saved {
+            self.routines = routines;
+            self.rebuild(cx);
+        }
     }
 
     fn render_item(
@@ -853,7 +919,7 @@ impl DynamicListDelegate for RoutinesDelegate {
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                            store.instantiate_routine(routine_id, None, cx);
+                            let _ = store.instantiate_routine(routine_id, None, cx);
                         });
                     }),
             )

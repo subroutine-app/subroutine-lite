@@ -166,8 +166,12 @@ impl TemporalSnapshot {
         if let Some(moment) = self
             .events
             .iter()
-            .filter(|moment| matches!(moment, EventMoment::InProgress { .. }))
-            .min_by_key(|moment| moment.event().end_time())
+            .filter_map(|moment| match moment {
+                EventMoment::InProgress { remaining, .. } => Some((*remaining, moment)),
+                EventMoment::Upcoming { .. } => None,
+            })
+            .min_by_key(|(remaining, _)| *remaining)
+            .map(|(_, moment)| moment)
         {
             return Some(moment);
         }
@@ -188,42 +192,44 @@ fn event_moments(
     threshold: Duration,
     horizon: Duration,
 ) -> Vec<EventMoment> {
-    let horizon_end = now + horizon;
+    let Some(horizon_end) = now.checked_add_signed(horizon) else {
+        return Vec::new();
+    };
     let candidates = event_candidates(events, now, horizon_end);
     let mut active: Vec<_> = candidates
         .iter()
-        .filter(|event| event.start <= now && now < event.end_time())
+        .filter(|(event, end)| event.start <= now && now < *end)
         .collect();
-    active.sort_by_key(|event| (event.start, event.end_time(), event.id));
+    active.sort_by_key(|(event, end)| (event.start, *end, event.id));
 
     if !active.is_empty() {
         return active
             .into_iter()
-            .map(|event| in_progress_moment(events, event, now))
+            .map(|(event, end)| in_progress_moment(events, event, *end, now))
             .collect();
     }
 
-    let Some(anchor) = candidates
+    let Some((anchor, anchor_end)) = candidates
         .iter()
-        .filter(|event| event.start > now && event.start <= horizon_end)
-        .min_by_key(|event| (event.start, event.id))
+        .filter(|(event, _)| event.start > now && event.start <= horizon_end)
+        .min_by_key(|(event, _)| (event.start, event.id))
     else {
         return Vec::new();
     };
 
     let mut simultaneous: Vec<_> = candidates
         .iter()
-        .filter(|event| {
+        .filter(|(event, end)| {
             event.start > now
                 && event.start <= horizon_end
                 && (event.start == anchor.start
-                    || (event.start < anchor.end_time() && event.end_time() > anchor.start))
+                    || (event.start < *anchor_end && *end > anchor.start))
         })
         .collect();
-    simultaneous.sort_by_key(|event| (event.start, event.end_time(), event.id));
+    simultaneous.sort_by_key(|(event, end)| (event.start, *end, event.id));
     simultaneous
         .into_iter()
-        .map(|event| upcoming_moment(events, event, now, threshold))
+        .map(|(event, _)| upcoming_moment(events, event, now, threshold))
         .collect()
 }
 
@@ -233,18 +239,19 @@ pub(super) fn event_carousel_moments(
     threshold: Duration,
     horizon: Duration,
 ) -> Vec<EventMoment> {
-    let horizon_end = now + horizon;
+    let Some(horizon_end) = now.checked_add_signed(horizon) else {
+        return Vec::new();
+    };
     let mut candidates = event_candidates(events, now, horizon_end);
-    candidates.retain(|event| {
-        (event.start <= now && now < event.end_time())
-            || (event.start > now && event.start <= horizon_end)
+    candidates.retain(|(event, end)| {
+        (event.start <= now && now < *end) || (event.start > now && event.start <= horizon_end)
     });
-    candidates.sort_by_key(|event| (event.start, event.end_time(), event.id));
+    candidates.sort_by_key(|(event, end)| (event.start, *end, event.id));
     candidates
         .iter()
-        .map(|event| {
+        .map(|(event, end)| {
             if event.start <= now {
-                in_progress_moment(events, event, now)
+                in_progress_moment(events, event, *end, now)
             } else {
                 upcoming_moment(events, event, now, threshold)
             }
@@ -252,8 +259,13 @@ pub(super) fn event_carousel_moments(
         .collect()
 }
 
-fn in_progress_moment(events: &[Event], event: &Event, now: DateTime<Utc>) -> EventMoment {
-    let total = (event.end_time() - event.start).num_milliseconds();
+fn in_progress_moment(
+    events: &[Event],
+    event: &Event,
+    end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> EventMoment {
+    let total = (end - event.start).num_milliseconds();
     let elapsed = (now - event.start).num_milliseconds();
     let progress = if total <= 0 {
         1.0
@@ -264,7 +276,7 @@ fn in_progress_moment(events: &[Event], event: &Event, now: DateTime<Utc>) -> Ev
         event: event.clone(),
         card_event: stored_event_for_occurrence(events, event),
         progress,
-        remaining: event.end_time() - now,
+        remaining: end - now,
     }
 }
 
@@ -302,15 +314,14 @@ fn event_candidates(
     events: &[Event],
     now: DateTime<Utc>,
     horizon_end: DateTime<Utc>,
-) -> Vec<Event> {
+) -> Vec<(Event, DateTime<Utc>)> {
     let start_date = now.with_timezone(&Local).date_naive();
     let end_date = horizon_end.with_timezone(&Local).date_naive();
     let mut candidates = events.to_vec();
 
-    for event in events
-        .iter()
-        .filter(|event| event.source_provider.is_none() && event.recurrence.is_some())
-    {
+    for event in events.iter().filter(|event| {
+        event.source_provider.is_none() && event.recurrence.is_some() && event.end_time().is_ok()
+    }) {
         candidates.extend(
             AnyItem::Event(event.clone())
                 .projections_between(start_date, end_date)
@@ -327,8 +338,15 @@ fn event_candidates(
         );
     }
 
-    candidates.sort_by_key(|event| (event.start, event.lineage_id, event.id));
-    candidates.dedup_by_key(|event| (event.start, event.lineage_id));
+    let mut candidates: Vec<_> = candidates
+        .into_iter()
+        .filter_map(|event| match event.end_time() {
+            Ok(end) => Some((event, end)),
+            Err(_) => None,
+        })
+        .collect();
+    candidates.sort_by_key(|(event, _)| (event.start, event.lineage_id, event.id));
+    candidates.dedup_by_key(|(event, _)| (event.start, event.lineage_id));
     candidates
 }
 
@@ -433,27 +451,30 @@ pub(super) fn format_horizon(hours: u16) -> String {
     }
 }
 
-fn format_event_schedule(event: &Event, now: DateTime<Utc>) -> String {
+fn format_event_schedule(event: &Event, now: DateTime<Utc>) -> Option<String> {
     let start = event.start.with_timezone(&Local);
-    let end = event.end_time().with_timezone(&Local);
+    let end = match event.end_time() {
+        Ok(end) => end.with_timezone(&Local),
+        Err(_) => return None,
+    };
     let today = now.with_timezone(&Local).date_naive();
     let date = if start.date_naive() == today {
         "Today".to_owned()
-    } else if start.date_naive() == today.succ_opt().unwrap_or(today) {
+    } else if Some(start.date_naive()) == today.succ_opt() {
         "Tomorrow".to_owned()
     } else {
         start.format("%a, %b %-d").to_string()
     };
     let start_time = super::super::format_item_time(start);
     let end_time = super::super::format_item_time(end);
-    if start.date_naive() == end.date_naive() {
+    Some(if start.date_naive() == end.date_naive() {
         format!("{date} · {start_time}–{end_time}")
     } else {
         format!(
             "{date} at {start_time} – {} at {end_time}",
             end.format("%a, %b %-d")
         )
-    }
+    })
 }
 
 pub(super) fn event_carousel_card(
@@ -468,7 +489,7 @@ pub(super) fn event_carousel_card(
     ItemCard::new_with_id(
         format!("focus-event-card.{}", event.id),
         &item,
-        Some(schedule.into()),
+        schedule.map(Into::into),
         window,
         cx,
     )

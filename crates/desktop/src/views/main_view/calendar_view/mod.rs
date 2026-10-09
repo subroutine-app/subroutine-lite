@@ -1457,7 +1457,7 @@ impl CalendarView {
                                     local_time_on(target_date, chrono::NaiveTime::MIN)
                                 }
                             };
-                            routines.push((routine.id, start));
+                            routines.push((routine.id, Some(start)));
                         }
                         AnyItem::Marker(mut marker) => {
                             let span = marker.end_date.map(|end| end - marker.date);
@@ -1473,10 +1473,7 @@ impl CalendarView {
                         AnyItem::ActionTemplate(_) | AnyItem::EventTemplate(_) => {}
                     }
                 }
-                store.update_items(updated, cx);
-                for (routine_id, start) in routines {
-                    store.instantiate_routine(routine_id, Some(start), cx);
-                }
+                let _ = store.update_items_with_routines(updated, routines, cx);
             });
         });
     }

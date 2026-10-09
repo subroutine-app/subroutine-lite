@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use chronoutil::RelativeDuration;
 use sqlx::{Row, postgres::PgRow, types::Json};
 
-use subroutine_core::{Recurrence, SchedulePoint};
+use subroutine_core::{Recurrence, SchedulePoint, parse_iso8601_duration};
 
 pub(crate) fn duration_to_sql(duration: RelativeDuration) -> String {
     duration.format_to_iso8601()
@@ -13,8 +13,7 @@ pub(crate) fn opt_duration_to_sql(duration: Option<RelativeDuration>) -> Option<
 }
 
 fn parse_duration(raw: &str) -> Result<RelativeDuration, sqlx::Error> {
-    RelativeDuration::parse_from_iso8601(raw)
-        .map_err(|e| sqlx::Error::Decode(format!("invalid ISO-8601 duration '{raw}': {e}").into()))
+    parse_iso8601_duration(raw).map_err(|error| sqlx::Error::Decode(error.into()))
 }
 
 pub(crate) fn duration_from_row(

@@ -196,6 +196,9 @@ impl Action {
     pub fn next_occurrence(&self) -> Option<Self> {
         let rule = self.recurrence?;
         let (next_start, next_recurrence) = rule.advance(self.start?)?;
+        if let Some(duration) = self.duration {
+            crate::checked_duration_end(next_start, duration).ok()?;
+        }
 
         tracing::debug!(
             action_id = %self.id,
@@ -227,7 +230,16 @@ impl Action {
     }
 
     pub fn as_template(&self) -> ActionTemplate {
-        let naive_time = self.start.and_then(|start| start.time());
+        let naive_time = self.start.and_then(|start| match start {
+            SchedulePoint::DateTime(datetime) => Some(match self.recurrence {
+                Some(recurrence) => recurrence.timezone.map_or_else(
+                    || datetime.time(),
+                    |timezone| datetime.with_timezone(&timezone).time(),
+                ),
+                None => datetime.with_timezone(&Local).time(),
+            }),
+            SchedulePoint::Date(_) => None,
+        });
         ActionTemplate {
             id: Uuid::now_v7(),
             sort_order: i64::MAX,
@@ -333,20 +345,32 @@ impl ActionTemplate {
             .with_recurrence(self.recurrence)
     }
 
-    pub fn build_scheduled(self, start: SchedulePoint) -> Action {
+    pub fn build_scheduled(self, start: SchedulePoint) -> Result<Action, &'static str> {
         let start = match (start, self.naive_time) {
             (SchedulePoint::Date(date), Some(time)) => {
-                let naive_dt = date.and_time(time);
-                let datetime = naive_dt
-                    .and_local_timezone(Local)
-                    .earliest()
-                    .map(|t| t.to_utc())
-                    .unwrap_or(naive_dt.and_utc());
+                let local = date.and_time(time);
+                let datetime = match self.recurrence {
+                    Some(recurrence) => match recurrence.timezone {
+                        Some(timezone) => local
+                            .and_local_timezone(timezone)
+                            .earliest()
+                            .map(|datetime| datetime.to_utc()),
+                        None => Some(local.and_utc()),
+                    },
+                    None => local
+                        .and_local_timezone(Local)
+                        .earliest()
+                        .map(|datetime| datetime.to_utc()),
+                }
+                .ok_or("this time does not exist in the schedule timezone")?;
                 SchedulePoint::DateTime(datetime)
             }
             _ => start,
         };
-        self.build().with_start(Some(start)).with_queued(true)
+        if let Some(duration) = self.duration {
+            crate::checked_duration_end(start, duration)?;
+        }
+        Ok(self.build().with_start(Some(start)).with_queued(true))
     }
 }
 

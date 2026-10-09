@@ -6,7 +6,7 @@ use subroutine_core::{
     ResourceValue,
 };
 
-use crate::error::MutationError;
+use crate::{error::MutationError, ops::Settings, routes::validation};
 
 pub(super) fn primary_resource(request: &MutationRequest) -> Result<ResourceKey, MutationError> {
     let mutation_id = Some(request.mutation_id);
@@ -91,6 +91,22 @@ pub(super) fn primary_resource(request: &MutationRequest) -> Result<ResourceKey,
         return Err(invalid("resource identity must not be nil"));
     }
     Ok(resource)
+}
+
+pub(super) fn durations(operation: &MutationOperation, settings: Settings) -> Result<(), String> {
+    match operation {
+        MutationOperation::UpsertAction { action } => validation::action(action, settings),
+        MutationOperation::UpsertActions { actions } => validation::actions(actions, settings),
+        MutationOperation::UpsertResources { resources } => resources
+            .iter()
+            .try_for_each(|resource| validation::resource(resource, settings)),
+        MutationOperation::SetEventBusyOverride { .. }
+        | MutationOperation::DeleteResources { .. }
+        | MutationOperation::ReorderRoutines { .. }
+        | MutationOperation::CompleteAction { .. }
+        | MutationOperation::DeleteAction { .. }
+        | MutationOperation::ConvertEventToMarker { .. } => Ok(()),
+    }
 }
 
 fn primary_batch_resource(mut keys: impl Iterator<Item = ResourceKey>) -> Option<ResourceKey> {

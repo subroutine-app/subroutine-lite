@@ -80,26 +80,27 @@ impl StepDelegate {
         self.steps.clear();
     }
 
-    fn step_duration(&mut self, id: Uuid, steps: i64) {
+    fn step_duration(&mut self, id: Uuid, steps: i64) -> Result<(), &'static str> {
         let Some(entry) = self.steps.iter_mut().find(|entry| entry.id == id) else {
-            return;
+            return Ok(());
         };
-        let minutes = entry.duration.unwrap_or_else(Duration::zero).num_minutes()
-            + steps * STEP_DURATION_STEP_MINUTES;
-        entry.duration = (minutes > 0).then(|| Duration::minutes(minutes));
+        entry.duration =
+            super::draft::stepped_duration(entry.duration, steps, STEP_DURATION_STEP_MINUTES)?;
+        Ok(())
     }
 
     pub fn to_steps(&self) -> Vec<RoutineStep> {
         self.steps.iter().map(StepEntry::to_step).collect()
     }
 
-    pub fn total_duration(&self) -> Option<Duration> {
+    pub fn total_duration(&self) -> Result<Option<Duration>, &'static str> {
         let total = self
             .steps
             .iter()
             .filter_map(|entry| entry.duration)
-            .fold(Duration::zero(), |acc, duration| acc + duration);
-        (!total.is_zero()).then_some(total)
+            .try_fold(Duration::zero(), |acc, duration| acc.checked_add(&duration))
+            .ok_or("Total duration is out of range")?;
+        Ok((!total.is_zero()).then_some(total))
     }
 }
 
@@ -187,11 +188,35 @@ impl DynamicListDelegate for StepDelegate {
                         )
                         .active(entry.duration.is_some())
                         .stepper(
-                            cx.listener(move |list, _, _window, cx| {
-                                list.update_items(cx, |delegate, _| delegate.step_duration(id, -1));
+                            cx.listener(move |list, _, window, cx| {
+                                list.update_items(cx, |delegate, cx| {
+                                    if let Err(error) = delegate.step_duration(id, -1) {
+                                        gpui_kit::overlay::toast::push(
+                                            window,
+                                            cx,
+                                            crate::components::timed_toast(
+                                                "routine-step.invalid",
+                                                error,
+                                            )
+                                            .tone(gpui_kit::display::badge::Tone::Warning),
+                                        );
+                                    }
+                                });
                             }),
-                            cx.listener(move |list, _, _window, cx| {
-                                list.update_items(cx, |delegate, _| delegate.step_duration(id, 1));
+                            cx.listener(move |list, _, window, cx| {
+                                list.update_items(cx, |delegate, cx| {
+                                    if let Err(error) = delegate.step_duration(id, 1) {
+                                        gpui_kit::overlay::toast::push(
+                                            window,
+                                            cx,
+                                            crate::components::timed_toast(
+                                                "routine-step.invalid",
+                                                error,
+                                            )
+                                            .tone(gpui_kit::display::badge::Tone::Warning),
+                                        );
+                                    }
+                                });
                             }),
                         ),
                 )
@@ -241,8 +266,10 @@ pub fn steps_summary(delegate: &StepDelegate, target: Option<NaiveTime>) -> Stri
         1 => "1 step".to_string(),
         n => format!("{n} steps"),
     };
-    if let Some(total) = delegate.total_duration() {
-        summary.push_str(&format!(" · {}", format_duration(total)));
+    match delegate.total_duration() {
+        Ok(Some(total)) => summary.push_str(&format!(" · {}", format_duration(total))),
+        Ok(None) => {}
+        Err(error) => summary.push_str(&format!(" · {error}")),
     }
     if let Some(time) = target {
         summary.push_str(&format!(" · starts {}", format_time(time)));

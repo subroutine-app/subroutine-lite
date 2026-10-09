@@ -11,10 +11,12 @@ use subroutine_core::{ChangeEvent, ConvertEventToMarker, Event, EventTemplate, M
 use crate::{
     auth::Tenant,
     db,
-    error::Result,
+    error::{AppError, Result},
     ops::{self, Delete},
     state::AppState,
 };
+
+use super::validation;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -43,6 +45,7 @@ async fn create(
     Tenant(state): Tenant,
     Json(mut event): Json<Event>,
 ) -> Result<(StatusCode, Json<Event>)> {
+    validation::event(&event).map_err(AppError::bad_request)?;
     ops::Identify::ensure_id(&mut event);
     let event = state
         .apply_optional::<Event, _, _>(event.id, |previous| {
@@ -63,6 +66,7 @@ async fn update(
     Json(mut event): Json<Event>,
 ) -> Result<Json<Event>> {
     ops::validate_update("event", id, &event)?;
+    validation::event(&event).map_err(AppError::bad_request)?;
     Ok(Json(
         state
             .apply_optional::<Event, _, _>(id, |previous| {
@@ -98,7 +102,7 @@ async fn convert_to_marker(
                     &event,
                     request.date,
                     request.local_end_date,
-                ))
+                )?)
             })
             .await?,
     ))
@@ -112,6 +116,8 @@ async fn create_template(
     Tenant(state): Tenant,
     Json(mut template): Json<EventTemplate>,
 ) -> Result<(StatusCode, Json<EventTemplate>)> {
+    validation::duration(subroutine_core::SchedulePoint::now(), template.duration)
+        .map_err(AppError::bad_request)?;
     ops::Identify::ensure_id(&mut template);
     let template = state
         .apply_optional::<EventTemplate, _, _>(template.id, |previous| {
@@ -147,6 +153,8 @@ async fn update_template(
     Json(template): Json<EventTemplate>,
 ) -> Result<Json<EventTemplate>> {
     ops::validate_update("event template", id, &template)?;
+    validation::duration(subroutine_core::SchedulePoint::now(), template.duration)
+        .map_err(AppError::bad_request)?;
     let Some(db::Sequenced {
         value: template,
         seq,

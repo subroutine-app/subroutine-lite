@@ -6,7 +6,7 @@ use subroutine_core::{
 use uuid::Uuid;
 
 use super::{TenantState, operations, validation};
-use crate::{db, error::MutationError};
+use crate::{db, error::MutationError, ops::Settings};
 
 pub(super) struct MutationContext {
     pub(super) mutation_id: Uuid,
@@ -93,7 +93,9 @@ impl TenantState {
             return Ok(stored.receipt);
         }
 
-        let mutation = validate_pending_mutation(mutation, &request, &context, resource).await?;
+        let mutation =
+            validate_pending_mutation(mutation, &request, &context, resource, self.settings)
+                .await?;
         let operations::MutationOutcome {
             mut mutation,
             result,
@@ -137,8 +139,8 @@ async fn validate_pending_mutation(
     request: &MutationRequest,
     context: &MutationContext,
     resource: ResourceKey,
+    settings: Settings,
 ) -> Result<db::TenantMutation, MutationError> {
-
     if request.base_seq != context.current_seq {
         mutation
             .rollback()
@@ -164,6 +166,18 @@ async fn validate_pending_mutation(
             StatusCode::BAD_REQUEST,
             ApiErrorCode::ValidationFailed,
             "completed_at must not be more than five minutes in the future",
+            Some(resource),
+        ));
+    }
+    if let Err(error) = validation::durations(&request.operation, settings) {
+        mutation
+            .rollback()
+            .await
+            .map_err(MutationError::transient)?;
+        return Err(context.error(
+            StatusCode::BAD_REQUEST,
+            ApiErrorCode::ValidationFailed,
+            error,
             Some(resource),
         ));
     }

@@ -276,8 +276,22 @@ impl QueueView {
                     let settings = Settings::global(cx);
                     let store = AppDatabaseStore::global(cx);
                     let context = store.read(cx).pipeline(&settings);
-                    if let Some((draft, cursor)) = next_batch_draft(&event.item, &context) {
-                        view.edit_draft(draft, cursor, window, cx);
+                    match next_batch_draft(&event.item, &context) {
+                        Ok(Some((draft, cursor))) => view.edit_draft(draft, cursor, window, cx),
+                        Ok(None) => {}
+                        Err(error) => {
+                            gpui_kit::overlay::toast::push(
+                                window,
+                                cx,
+                                crate::components::timed_toast(
+                                    "item.batch-failed",
+                                    format!(
+                                        "Item saved. Couldn’t start the next batch item. {error}"
+                                    ),
+                                )
+                                .tone(gpui_kit::display::badge::Tone::Warning),
+                            );
+                        }
                     }
                 }
             },
@@ -846,9 +860,12 @@ impl QueueView {
         self.clear_drop_target(cx);
         confirm_drop(count, verb, detail, window, cx, move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
+                let mut updated = Vec::new();
+                let mut routines = Vec::new();
                 for (item, start) in items.into_iter().zip(starts) {
-                    place_dropped_item(item, start, store, cx);
+                    place_dropped_item(item, start, &mut updated, &mut routines);
                 }
+                let _ = store.update_items_with_routines(updated, routines, cx);
             });
         });
     }
@@ -1001,17 +1018,17 @@ fn place_dropped_action(action: Action, start: Option<SchedulePoint>) -> Action 
 fn place_dropped_item(
     item: AnyItem,
     start: Option<SchedulePoint>,
-    store: &mut AppDatabaseStore,
-    cx: &mut Context<AppDatabaseStore>,
+    updated: &mut Vec<AnyItem>,
+    routines: &mut Vec<(Uuid, Option<DateTime<Utc>>)>,
 ) {
     match item {
         AnyItem::Action(action) => {
-            store.upsert_action(place_dropped_action(action, start), cx);
+            updated.push(AnyItem::Action(place_dropped_action(action, start)));
         }
         AnyItem::Event(mut event) => {
             if let Some(SchedulePoint::DateTime(start)) = start {
                 event.start = start;
-                store.upsert_event(event, cx);
+                updated.push(AnyItem::Event(event));
             }
         }
         AnyItem::Routine(routine) => {
@@ -1019,17 +1036,20 @@ fn place_dropped_item(
                 SchedulePoint::DateTime(start) => start,
                 SchedulePoint::Date(date) => local_time_on(date, NaiveTime::MIN),
             });
-            store.instantiate_routine(routine.id, start, cx);
+            routines.push((routine.id, start));
         }
         AnyItem::Marker(marker) => {
             if let Some(start) = start {
-                store.upsert_marker(marker_on_date(marker, NaiveDate::from(start)), cx);
+                updated.push(AnyItem::Marker(marker_on_date(
+                    marker,
+                    NaiveDate::from(start),
+                )));
             }
         }
         AnyItem::Signal(mut signal) => {
             if let Some(SchedulePoint::DateTime(start)) = start {
                 signal.datetime = start;
-                store.upsert_signal(signal, cx);
+                updated.push(AnyItem::Signal(signal));
             }
         }
         AnyItem::ActionTemplate(_) | AnyItem::EventTemplate(_) => {}

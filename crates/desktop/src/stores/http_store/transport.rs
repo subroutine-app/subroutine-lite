@@ -5,9 +5,9 @@ use chrono::{DateTime, Utc};
 use std::thread;
 use std::time::{Duration, Instant};
 use subroutine_core::{
-    AccountInfo, Action, ActionTemplate, AllData, AnyItem, ApiErrorBody, ApiErrorCode,
-    BatchPlacement, ChangeBatch, CompleteResult, DataDelta, Event, EventTemplate, Marker,
-    MutationReceipt, MutationRequest, Routine, RoutineStep, Signal,
+    AccountInfo, Action, ActionTemplate, AllData, ApiErrorBody, ApiErrorCode, BatchPlacement,
+    ChangeBatch, CompleteResult, DataDelta, Event, EventTemplate, Marker, MutationReceipt,
+    MutationRequest, Routine, RoutineStep, Signal,
 };
 use uuid::Uuid;
 
@@ -269,30 +269,6 @@ pub(super) enum Cmd {
     BacklogAction(Uuid, Reply<Action>),
     InstantiateRoutine(Uuid, Option<DateTime<Utc>>, Reply<Vec<Action>>),
     RefreshPipeline(Reply<Vec<Action>>),
-}
-
-pub(super) fn restore_cmd(item: AnyItem, tx: Reply<()>) -> Cmd {
-    match item {
-        AnyItem::Action(action) => Cmd::UpsertAction(action, tx),
-        AnyItem::Event(event) => Cmd::UpsertEvent(event, tx),
-        AnyItem::Routine(routine) => Cmd::UpsertRoutine(routine, tx),
-        AnyItem::Marker(marker) => Cmd::UpsertMarker(marker, tx),
-        AnyItem::Signal(signal) => Cmd::UpsertSignal(signal, tx),
-        AnyItem::ActionTemplate(template) => Cmd::UpsertActionTemplate(template, tx),
-        AnyItem::EventTemplate(template) => Cmd::UpsertEventTemplate(template, tx),
-    }
-}
-
-pub(super) fn remove_cmd(item: &AnyItem, tx: Reply<()>) -> Cmd {
-    match item {
-        AnyItem::Action(action) => Cmd::DeleteAction(action.id, tx),
-        AnyItem::Event(event) => Cmd::DeleteEvent(event.id, tx),
-        AnyItem::Routine(routine) => Cmd::DeleteRoutine(routine.id, tx),
-        AnyItem::Marker(marker) => Cmd::DeleteMarker(marker.id, tx),
-        AnyItem::Signal(signal) => Cmd::DeleteSignal(signal.id, tx),
-        AnyItem::ActionTemplate(template) => Cmd::DeleteActionTemplate(template.id, tx),
-        AnyItem::EventTemplate(template) => Cmd::DeleteEventTemplate(template.id, tx),
-    }
 }
 
 async fn sse_loop(

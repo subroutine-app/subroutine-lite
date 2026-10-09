@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 uuid.workspace = true
 chrono.workspace = true
+chrono-tz = { version = "0.10", features = ["serde"] }
+iana-time-zone = "0.1"
 chronoutil.workspace = true
 serde = { workspace = true }
 tracing = { workspace = true }

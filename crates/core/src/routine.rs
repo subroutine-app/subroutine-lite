@@ -127,10 +127,13 @@ impl CoreItem for Routine {
     }
 
     fn duration(&self) -> Option<RelativeDuration> {
-        self.steps().iter().fold(None, |acc, step| {
-            acc.map(|acc| acc + step.duration().unwrap_or_else(RelativeDuration::zero))
-                .or_else(|| step.duration())
-        })
+        let mut durations = self
+            .steps()
+            .iter()
+            .filter_map(RoutineStep::duration)
+            .peekable();
+        durations.peek()?;
+        crate::checked_duration_sum(durations).ok()
     }
 
     fn recurrence(&self) -> Option<Recurrence> {

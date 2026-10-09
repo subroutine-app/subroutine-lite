@@ -6,13 +6,14 @@ use crate::{
 };
 
 use super::{
+    ParseError,
     duration::try_nl_duration,
     recurrence::{
         bounds::{
             set_recurrence_end_date, set_recurrence_remaining, try_nl_recurrence_count,
             try_nl_recurrence_end,
         },
-        has_recurrence_clause, try_nl_recurrence,
+        try_nl_recurrence,
     },
     title::is_escaped,
     when::{try_nl_time, try_nl_when},
@@ -69,9 +70,10 @@ pub(super) fn longest_match(
     now: DateTime<Local>,
     granularity: Duration,
     draft: &ParseDraft,
-) -> Option<Match> {
+    has_recurrence: bool,
+) -> Result<Option<Match>, ParseError> {
     if is_escaped(tokens, i) {
-        return None;
+        return Ok(None);
     }
 
     let mut best: Option<Match> = None;
@@ -81,15 +83,12 @@ pub(super) fn longest_match(
         }
     };
 
-    if has_recurrence_clause(tokens)
-        && let Some((date, len)) = try_nl_recurrence_end(tokens, i, now.date_naive())
-    {
+    let today = super::time::local_datetime(now.with_timezone(&Utc))?.date();
+    if has_recurrence && let Some((date, len)) = try_nl_recurrence_end(tokens, i, today)? {
         consider(len, Clause::EndDate(date));
     }
 
-    if has_recurrence_clause(tokens)
-        && let Some((remaining, len)) = try_nl_recurrence_count(tokens, i)
-    {
+    if has_recurrence && let Some((remaining, len)) = try_nl_recurrence_count(tokens, i)? {
         consider(len, Clause::Count(remaining));
     }
 
@@ -100,30 +99,29 @@ pub(super) fn longest_match(
         consider(len, Clause::Time(time));
     }
 
-    if draft.when.is_none()
-        && let Some((when, len)) = try_nl_when(
-            tokens,
-            i,
-            draft.kind.clone(),
-            now.with_timezone(&Utc),
-            now.date_naive(),
-            granularity,
-        )
+    if let Some((when, len)) = try_nl_when(
+        tokens,
+        i,
+        draft.kind.clone(),
+        now.with_timezone(&Utc),
+        today,
+        granularity,
+    )? && draft.when.is_none()
     {
         consider(len, Clause::When(when));
     }
 
-    if draft.recurrence.is_none()
-        && let Some((recurrence, len)) = try_nl_recurrence(tokens, i)
+    if let Some((recurrence, len)) = try_nl_recurrence(tokens, i)?
+        && draft.recurrence.is_none()
     {
         consider(len, Clause::Recurrence(recurrence));
     }
 
-    if draft.duration.is_none()
-        && let Some((duration, len)) = try_nl_duration(tokens, i)
+    if let Some((duration, len)) = try_nl_duration(tokens, i)?
+        && draft.duration.is_none()
     {
         consider(len, Clause::Duration(duration));
     }
 
-    best
+    Ok(best)
 }

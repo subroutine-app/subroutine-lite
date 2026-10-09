@@ -109,7 +109,10 @@ impl Marker {
         let recurrence = self.recurrence?;
         let (next_point, next_recurrence) = recurrence.advance(self.date)?;
         let next = next_point.date_naive();
-        let end = self.end_date.map(|end| next + (end - self.date));
+        let end = match self.end_date {
+            Some(end) => Some(next.checked_add_signed(end - self.date)?),
+            None => None,
+        };
         Some(Self {
             id: occurrence_id(self.lineage_id, "marker", next_point),
             lineage_id: self.lineage_id,
@@ -124,19 +127,23 @@ impl Marker {
         })
     }
 
-    pub fn occurrence_on(&self, date: NaiveDate) -> Self {
-        Self {
+    pub fn occurrence_on(&self, date: NaiveDate) -> Option<Self> {
+        let end_date = match self.end_date {
+            Some(end) => Some(date.checked_add_signed(end - self.date)?),
+            None => None,
+        };
+        Some(Self {
             id: occurrence_id(self.lineage_id, "marker", date.into()),
             lineage_id: self.lineage_id,
             template_id: self.template_id,
             title: self.title.clone(),
             content: self.content.clone(),
             date,
-            end_date: self.end_date.map(|end| date + (end - self.date)),
+            end_date,
             recurrence: self.recurrence,
             source_provider: self.source_provider.clone(),
             source_external_id: self.source_external_id.clone(),
-        }
+        })
     }
 
     pub fn projections_between(&self, start: NaiveDate, end: NaiveDate) -> Vec<Self> {
@@ -168,7 +175,9 @@ impl Marker {
             if cursor > end {
                 break;
             }
-            let mut occurrence = self.occurrence_on(cursor);
+            let Some(mut occurrence) = self.occurrence_on(cursor) else {
+                break;
+            };
             occurrence.recurrence = Some(recurrence);
             if occurrence.end_date.unwrap_or(cursor) >= start {
                 occurrences.push(occurrence);

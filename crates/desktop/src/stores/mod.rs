@@ -125,6 +125,14 @@ impl<T> UndoHistory<T> {
             .is_some_and(|entry| entry.transaction == transaction)
     }
 
+    pub(super) fn next_undo(&self) -> Option<&T> {
+        self.undo.last().map(|entry| &entry.value)
+    }
+
+    pub(super) fn next_redo(&self) -> Option<&T> {
+        self.redo.last().map(|entry| &entry.value)
+    }
+
     pub(super) fn pop_undo(&mut self) -> Option<HistoryEntry<T>> {
         self.undo.pop()
     }

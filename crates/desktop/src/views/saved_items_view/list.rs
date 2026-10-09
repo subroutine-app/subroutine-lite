@@ -50,13 +50,14 @@ fn duration_str(duration: ChronoDuration) -> Option<SharedString> {
 }
 
 fn delete_saved_items(ids: Vec<Uuid>, window: &mut Window, cx: &mut App) {
-    bulk::delete_saved(&ids, window, cx);
-    SelectionManager::clear_global(cx);
+    if bulk::delete_saved(&ids, window, cx) {
+        SelectionManager::clear_global(cx);
+    }
 }
 
 fn create_saved_items(items: Vec<AnyItem>, cx: &mut App) {
     AppDatabaseStore::global(cx).update(cx, |store, cx| {
-        store.create_items(items, cx);
+        let _ = store.create_items(items, cx);
     });
 }
 

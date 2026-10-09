@@ -2,7 +2,7 @@ use crate::AppIcon;
 use crate::components::ext::ElementExt as _;
 use crate::components::{
     Button, ButtonVariants, CloseOverlay, EmptyState, Label, elastic_overscroll::ElasticOverscroll,
-    item_icon,
+    item_icon, timed_toast,
 };
 use crate::dates::{self, ChronoDates};
 use crate::icons::Icon;
@@ -24,6 +24,7 @@ use gpui_kit::controls::editor::{Editor, EditorEvent};
 use gpui_kit::controls::input::{TextInput, TextInputEvent};
 use gpui_kit::controls::toggle::Switch;
 use gpui_kit::datetime::{DateInput, DateInputEvent, TimeInput, TimeInputEvent, TimeOfDay};
+use gpui_kit::display::badge::Tone;
 use gpui_kit::foundation::{Disableable as _, Sizable as _, StyledExt as _};
 use gpui_kit::layout::ScrollArea;
 use gpui_kit::overlay::Tooltip;
@@ -322,8 +323,9 @@ impl ItemInspector {
     }
 
     pub(crate) fn show_transient(&mut self, item: AnyItem, cx: &mut Context<Self>) {
-        self.load(Some(ItemSubject::Live(item)), cx);
-        self.transient = true;
+        if self.load(Some(ItemSubject::Live(item)), cx) {
+            self.transient = true;
+        }
     }
 
     pub(crate) fn editor_focus_handle(&self, cx: &App) -> gpui::FocusHandle {
@@ -335,21 +337,32 @@ impl ItemInspector {
         cx.notify();
     }
 
-    fn load(&mut self, item: Option<ItemSubject>, cx: &mut Context<Self>) {
+    fn load(&mut self, item: Option<ItemSubject>, cx: &mut Context<Self>) -> bool {
+        let draft = item
+            .as_ref()
+            .map(|subject| match subject {
+                ItemSubject::Live(item) => ItemDraft::from_item(item),
+                ItemSubject::Saved(item) => ItemDraft::from_saved(item),
+            })
+            .transpose();
+        let draft = match draft {
+            Ok(draft) => draft.unwrap_or_default(),
+            Err(error) => {
+                AppDatabaseStore::global(cx).update(cx, |_, cx| {
+                    cx.emit(crate::stores::SaveFailed {
+                        message: error.to_owned(),
+                    });
+                });
+                return false;
+            }
+        };
         self.workspace_generation = AppDatabaseStore::global(cx).read(cx).workspace_generation();
         self.current_item = item;
         self.baseline_item = self.current_item.clone();
         self.unavailable = false;
         self.transient = false;
         self.pending_item = None;
-        self.draft = self
-            .current_item
-            .as_ref()
-            .map(|subject| match subject {
-                ItemSubject::Live(item) => ItemDraft::from_item(item),
-                ItemSubject::Saved(item) => ItemDraft::from_saved(item),
-            })
-            .unwrap_or_default();
+        self.draft = draft;
         self.baseline = self.draft.clone();
         let title = self
             .current_item
@@ -372,6 +385,7 @@ impl ItemInspector {
         self.sync_schedule_inputs(cx);
         self.notes_editing = false;
         cx.notify();
+        true
     }
 
     fn sync_schedule_inputs(&mut self, cx: &mut Context<Self>) {
@@ -488,6 +502,9 @@ impl ItemInspector {
             return Some("Enter a valid repeat end date");
         }
         if item.is_saved() {
+            if let Err(error) = self.draft.validate_timing(item.item_type()) {
+                return Some(error);
+            }
             if self.title(cx).trim().is_empty() {
                 return Some("Name it first");
             }
@@ -524,7 +541,7 @@ impl ItemInspector {
         } else {
             original.content()
         };
-        let Some(updated) = (match original {
+        let updated = match original {
             ItemSubject::Live(item) => self
                 .draft
                 .apply_to(&self.baseline, item, &title, content.clone())
@@ -533,20 +550,20 @@ impl ItemInspector {
                 .draft
                 .apply_to_saved(&self.baseline, item, &title, content.clone())
                 .map(ItemSubject::Saved),
-        }) else {
-            return;
+        };
+        let updated = match updated {
+            Ok(updated) => updated,
+            Err(error) => {
+                AppDatabaseStore::global(cx).update(cx, |_, cx| {
+                    cx.emit(crate::stores::SaveFailed {
+                        message: error.to_owned(),
+                    });
+                });
+                return;
+            }
         };
 
-        self.current_item = Some(updated.clone());
-        self.transient = false;
-        self.baseline_item = Some(updated.clone());
-        self.baseline = self.draft.clone();
-        self.title_input
-            .update(cx, |input, cx| input.set_text_quietly(title, cx));
-        self.notes_input.update(cx, |input, cx| {
-            input.set_value(content.unwrap_or_default(), cx)
-        });
-        AppDatabaseStore::global(cx).update(cx, |store, cx| match updated {
+        let result = AppDatabaseStore::global(cx).update(cx, |store, cx| match updated.clone() {
             ItemSubject::Live(AnyItem::Action(action)) => store.upsert_action(action, cx),
             ItemSubject::Live(AnyItem::Event(event)) => store.upsert_event(event, cx),
             ItemSubject::Live(AnyItem::Routine(routine)) => store.upsert_routine(routine, cx),
@@ -564,6 +581,19 @@ impl ItemInspector {
             ItemSubject::Saved(SavedItem::Event(template)) => {
                 store.update_event_template(template, cx)
             }
+        });
+        if result.is_err() {
+            cx.notify();
+            return;
+        }
+        self.current_item = Some(updated.clone());
+        self.transient = false;
+        self.baseline_item = Some(updated);
+        self.baseline = self.draft.clone();
+        self.title_input
+            .update(cx, |input, cx| input.set_text_quietly(title, cx));
+        self.notes_input.update(cx, |input, cx| {
+            input.set_value(content.unwrap_or_default(), cx)
         });
 
         if let Some(pending) = self.pending_item.take() {
@@ -595,8 +625,9 @@ impl ItemInspector {
             self.current_item.clone()
         };
         let keeps_transient = was_transient && item.is_some();
-        self.load(item, cx);
-        self.transient = keeps_transient;
+        if self.load(item, cx) {
+            self.transient = keeps_transient;
+        }
     }
 
     fn destructive_items(&self, cx: &App) -> (Vec<AnyItem>, bool) {
@@ -613,7 +644,9 @@ impl ItemInspector {
     fn delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let used_selection = match self.current_item.as_ref() {
             Some(ItemSubject::Saved(item)) => {
-                bulk::delete_saved(&[item.id()], window, cx);
+                if !bulk::delete_saved(&[item.id()], window, cx) {
+                    return;
+                }
                 SelectionManager::global(cx)
                     .read(cx)
                     .ids()
@@ -624,7 +657,9 @@ impl ItemInspector {
                 if items.is_empty() {
                     return;
                 }
-                bulk::delete(&items, window, cx);
+                if !bulk::delete(&items, window, cx) {
+                    return;
+                }
                 used_selection
             }
             None => return,
@@ -641,7 +676,9 @@ impl ItemInspector {
         if items.is_empty() {
             return;
         }
-        bulk::complete(&items, window, cx);
+        if !bulk::complete(&items, window, cx) {
+            return;
+        }
         if used_selection {
             SelectionManager::clear_global(cx);
         }
@@ -761,7 +798,13 @@ impl ItemInspector {
                 self.draft
                     .schedule
                     .time
-                    .map(format_time)
+                    .map(
+                        |time| match self.draft.recurrence.map(|recurrence| recurrence.timezone) {
+                            Some(Some(timezone)) => format!("{} · {timezone}", format_time(time)),
+                            Some(None) => format!("{} · UTC", format_time(time)),
+                            None => format_time(time),
+                        },
+                    )
                     .unwrap_or_else(|| "Any time".into()),
             )
             .active(self.draft.schedule.time.is_some())
@@ -794,6 +837,18 @@ impl ItemInspector {
             )
     }
 
+    fn step_duration(&mut self, steps: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.draft.step_duration(steps) {
+            gpui_kit::overlay::toast::push(
+                window,
+                cx,
+                timed_toast("item-inspector.duration-invalid", error).tone(Tone::Warning),
+            );
+            return;
+        }
+        cx.notify();
+    }
+
     fn duration_chip(&self, cx: &Context<Self>) -> CreatorChip {
         CreatorChip::new("item-inspector-duration")
             .property_row()
@@ -811,15 +866,26 @@ impl ItemInspector {
                 cx.notify();
             }))
             .stepper(
-                cx.listener(|this, _, _, cx| {
-                    this.draft.step_duration(-1);
-                    cx.notify();
+                cx.listener(|this, _, window, cx| {
+                    this.step_duration(-1, window, cx);
                 }),
-                cx.listener(|this, _, _, cx| {
-                    this.draft.step_duration(1);
-                    cx.notify();
+                cx.listener(|this, _, window, cx| {
+                    this.step_duration(1, window, cx);
                 }),
             )
+    }
+
+    fn cycle_recurrence(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.draft.cycle_recurrence(forward) {
+            gpui_kit::overlay::toast::push(
+                window,
+                cx,
+                timed_toast("item-inspector.recurrence-invalid", error).tone(Tone::Warning),
+            );
+            return;
+        }
+        self.sync_after_recurrence_change(cx);
+        cx.notify();
     }
 
     fn repeat_chip(&self, cx: &Context<Self>) -> CreatorChip {
@@ -835,21 +901,15 @@ impl ItemInspector {
                     .unwrap_or_else(|| "Once".into()),
             )
             .active(self.draft.recurrence.is_some())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.draft.cycle_recurrence(true);
-                this.sync_after_recurrence_change(cx);
-                cx.notify();
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.cycle_recurrence(true, window, cx);
             }))
             .stepper(
-                cx.listener(|this, _, _, cx| {
-                    this.draft.cycle_recurrence(false);
-                    this.sync_after_recurrence_change(cx);
-                    cx.notify();
+                cx.listener(|this, _, window, cx| {
+                    this.cycle_recurrence(false, window, cx);
                 }),
-                cx.listener(|this, _, _, cx| {
-                    this.draft.cycle_recurrence(true);
-                    this.sync_after_recurrence_change(cx);
-                    cx.notify();
+                cx.listener(|this, _, window, cx| {
+                    this.cycle_recurrence(true, window, cx);
                 }),
             )
     }

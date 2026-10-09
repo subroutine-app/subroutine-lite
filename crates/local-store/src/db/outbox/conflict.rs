@@ -1,6 +1,26 @@
+use std::collections::HashSet;
+
 use subroutine_core::{DataDelta, OptimisticPatch, ResourceKey, ResourceValue};
 
 pub(super) fn first_patch_resource(patch: &OptimisticPatch) -> Option<ResourceKey> {
+    patch_resources(patch).next()
+}
+
+pub(super) fn patches_overlap(left: &OptimisticPatch, right: &OptimisticPatch) -> bool {
+    let left_keys = patch_resources(left).collect::<HashSet<_>>();
+    let left_order = left.routine_order.is_some();
+    let right_order = right.routine_order.is_some();
+    (left_order && right_order)
+        || (right_order
+            && left_keys
+                .iter()
+                .any(|key| matches!(key, ResourceKey::Routine { .. })))
+        || patch_resources(right).any(|key| {
+            left_keys.contains(&key) || (left_order && matches!(key, ResourceKey::Routine { .. }))
+        })
+}
+
+fn patch_resources(patch: &OptimisticPatch) -> impl Iterator<Item = ResourceKey> + '_ {
     patch
         .writes
         .iter()
@@ -14,7 +34,6 @@ pub(super) fn first_patch_resource(patch: &OptimisticPatch) -> Option<ResourceKe
                 .copied()
                 .map(|id| ResourceKey::Routine { id }),
         )
-        .next()
 }
 
 pub(crate) fn first_patch_delta_conflict(

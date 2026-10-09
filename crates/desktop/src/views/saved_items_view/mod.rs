@@ -283,7 +283,7 @@ impl SavedItemsView {
             window,
             cx,
             move |_, cx| {
-                store.update(cx, |store, cx| match target.kind {
+                let _ = store.update(cx, |store, cx| match target.kind {
                     SavedItemKind::Action => store.reorder_action_templates(&ordered, cx),
                     SavedItemKind::Event => store.reorder_event_templates(&ordered, cx),
                 });

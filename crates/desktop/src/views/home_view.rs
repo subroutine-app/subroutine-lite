@@ -580,7 +580,10 @@ fn event_context_label(moment: &EventMoment) -> Option<&'static str> {
 fn format_item_meta(item: &AnyItem, now: DateTime<Local>) -> String {
     if let AnyItem::Event(event) = item {
         let start = event.start.with_timezone(&Local);
-        let end = event.end_time().with_timezone(&Local);
+        let end = match event.end_time() {
+            Ok(end) => end.with_timezone(&Local),
+            Err(_) => return String::new(),
+        };
         if start <= now && now < end {
             return format!("Now · ends {}", format_clock_time(end));
         }

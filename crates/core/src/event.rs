@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Days, Duration, NaiveDate, Offset, TimeZone, Utc};
 use chronoutil::RelativeDuration;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -102,17 +102,27 @@ impl Event {
         self
     }
 
-    pub fn end_time(&self) -> DateTime<Utc> {
-        self.start + self.duration
+    pub fn end_time(&self) -> Result<DateTime<Utc>, &'static str> {
+        crate::checked_duration_end(self.start.into(), self.duration).map(DateTime::<Utc>::from)
     }
 
-    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
-        self.end_time() < now
+    pub fn is_expired(&self, now: DateTime<Utc>) -> Result<bool, &'static str> {
+        Ok(self.end_time()? < now)
+    }
+
+    fn last_occupied_instant(&self) -> Result<DateTime<Utc>, &'static str> {
+        let end = self.end_time()?;
+        if end == self.start {
+            return Ok(self.start);
+        }
+        end.checked_sub_signed(Duration::nanoseconds(1))
+            .ok_or("event end is outside the supported calendar range")
     }
 
     pub fn next_recurrence(&self) -> Option<Self> {
         let recurrence = self.recurrence?;
         let (next_time, next_recurrence) = recurrence.advance(self.start)?;
+        crate::checked_duration_end(next_time, self.duration).ok()?;
         Some(Self {
             id: occurrence_id(self.lineage_id, "event", next_time),
             lineage_id: self.lineage_id,
@@ -143,6 +153,7 @@ impl Event {
             recurrence = next_recurrence;
             let start = DateTime::<Utc>::from(next_time);
             if start > after {
+                crate::checked_duration_end(next_time, self.duration).ok()?;
                 return Some(Self {
                     id: occurrence_id(self.lineage_id, "event", next_time),
                     lineage_id: self.lineage_id,
@@ -163,19 +174,35 @@ impl Event {
         None
     }
 
-    pub fn marker_date_range_in<Tz: TimeZone>(&self, timezone: &Tz) -> (NaiveDate, NaiveDate) {
-        let date = self.start.with_timezone(timezone).date_naive();
-        let end = self.end_time();
-        let last_occupied_instant = if end > self.start {
-            end - Duration::nanoseconds(1)
-        } else {
-            self.start
+    pub fn marker_date_range_in<Tz: TimeZone>(
+        &self,
+        timezone: &Tz,
+    ) -> Result<(NaiveDate, NaiveDate), &'static str> {
+        let local_date = |instant: DateTime<Utc>| {
+            let offset = instant
+                .with_timezone(timezone)
+                .offset()
+                .fix()
+                .local_minus_utc();
+            instant
+                .naive_utc()
+                .checked_add_signed(Duration::seconds(i64::from(offset)))
+                .map(|local| local.date())
+                .ok_or("event date is outside the supported calendar range in this timezone")
         };
-        let end_date = last_occupied_instant.with_timezone(timezone).date_naive();
-        (date, end_date.max(date))
+        let date = local_date(self.start)?;
+        let end_date = local_date(self.last_occupied_instant()?)?;
+        if end_date < date {
+            return Err("marker end date cannot precede its start date");
+        }
+        Ok((date, end_date))
     }
 
-    pub fn to_marker_between(&self, date: NaiveDate, end_date: NaiveDate) -> Marker {
+    pub fn to_marker_between(
+        &self,
+        date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Result<Marker, &'static str> {
         self.to_marker_between_with_id(date, end_date, Uuid::now_v7())
     }
 
@@ -184,8 +211,12 @@ impl Event {
         date: NaiveDate,
         end_date: NaiveDate,
         marker_id: Uuid,
-    ) -> Marker {
-        Marker {
+    ) -> Result<Marker, &'static str> {
+        self.end_time()?;
+        if end_date < date {
+            return Err("marker end date cannot precede its start date");
+        }
+        Ok(Marker {
             id: marker_id,
             lineage_id: marker_id,
             template_id: None,
@@ -196,26 +227,27 @@ impl Event {
             recurrence: None,
             source_provider: None,
             source_external_id: None,
-        }
+        })
     }
 
-    pub fn to_marker_on(&self, date: NaiveDate) -> Marker {
+    pub fn to_marker_on(&self, date: NaiveDate) -> Result<Marker, &'static str> {
         self.to_marker_on_with_id(date, Uuid::now_v7())
     }
 
-    pub fn to_marker_on_with_id(&self, date: NaiveDate, marker_id: Uuid) -> Marker {
-        let elapsed = self.end_time() - self.start;
-        let span_days = if elapsed <= Duration::zero() {
-            1
-        } else {
-            let whole_days = elapsed.num_days();
-            if elapsed > Duration::days(whole_days) {
-                whole_days + 1
-            } else {
-                whole_days.max(1)
-            }
-        };
-        self.to_marker_between_with_id(date, date + Duration::days(span_days - 1), marker_id)
+    pub fn to_marker_on_with_id(
+        &self,
+        date: NaiveDate,
+        marker_id: Uuid,
+    ) -> Result<Marker, &'static str> {
+        let days = self
+            .last_occupied_instant()?
+            .signed_duration_since(self.start)
+            .num_days();
+        let days = u64::try_from(days).map_err(|_| "event duration cannot be negative")?;
+        let end_date = date
+            .checked_add_days(Days::new(days))
+            .ok_or("marker end date is outside the supported calendar range")?;
+        self.to_marker_between_with_id(date, end_date, marker_id)
     }
 
     pub fn as_template(&self) -> EventTemplate {

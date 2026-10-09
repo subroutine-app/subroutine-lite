@@ -54,13 +54,14 @@ impl ItemCreator {
         };
 
         let mut summary = match self.draft.marker_end_date() {
-            Some(end) => format!(
+            Ok(Some(end)) => format!(
                 "{} – {} ({} days)",
                 format_date(date),
                 format_date(end),
                 self.draft.span_days
             ),
-            None => format_date(date),
+            Ok(None) => format_date(date),
+            Err(error) => return error.to_owned(),
         };
         if let Some(recurrence) = self.draft.recurrence.as_ref() {
             summary.push_str(&format!(" · repeats {}", format_recurrence(recurrence)));

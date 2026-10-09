@@ -2,13 +2,14 @@ use chrono::{
     DateTime, Datelike as _, Duration, Local, Months, NaiveDate, NaiveTime, TimeZone, Timelike, Utc,
 };
 use chronoutil::RelativeDuration;
-use parser::{HighlightKind, ParseDraft, WhenSpec, recurrence_to_rule};
+use parser::{HighlightKind, ParseDraft, ParserBuildError, WhenSpec, recurrence_to_rule};
 use subroutine_core::{
     Action, AnyItem, Event, ItemType, Marker, Recurrence, RecurrenceRule, RecurrenceUnit, Routine,
     RoutineStep, SchedulePoint, Signal,
 };
 
-use crate::item_subject::SavedItem;
+use crate::item_subject::{SavedItem, validate_item_timing, validate_saved_timing};
+use uuid::Uuid;
 
 const DAY: i64 = 1;
 const STEP_MINUTES: i64 = 15;
@@ -32,14 +33,24 @@ impl Schedule {
     pub fn point(&self) -> Option<SchedulePoint> {
         let date = self.date?;
         match self.time {
-            Some(time) => Some(SchedulePoint::DateTime(to_utc(date, time))),
+            Some(time) => to_utc(date, time).map(SchedulePoint::DateTime),
             None => Some(SchedulePoint::Date(date)),
         }
     }
 
     pub fn datetime(&self) -> Option<DateTime<Utc>> {
         let date = self.date?;
-        Some(to_utc(date, self.time.unwrap_or(MIDNIGHT)))
+        to_utc(date, self.time.unwrap_or(MIDNIGHT))
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.time.is_some() && self.date.is_none() {
+            return Err("Choose a date for this time");
+        }
+        if self.has_time() && self.datetime().is_none() {
+            return Err("This time does not exist in the local timezone. Choose another time.");
+        }
+        Ok(())
     }
 
     fn set_from_when(&mut self, when: Option<&WhenSpec>) {
@@ -119,19 +130,12 @@ fn next_slot() -> NaiveTime {
     NaiveTime::from_hms_opt((next / 60) as u32, (next % 60) as u32, 0).unwrap_or(MIDNIGHT)
 }
 
-fn to_utc(date: NaiveDate, time: NaiveTime) -> DateTime<Utc> {
+fn to_utc(date: NaiveDate, time: NaiveTime) -> Option<DateTime<Utc>> {
     let naive = date.and_time(time);
     Local
         .from_local_datetime(&naive)
         .earliest()
         .map(|dt| dt.to_utc())
-        .unwrap_or_else(|| naive.and_utc())
-}
-
-pub enum ParseOutcome<'a> {
-    Empty,
-    Unreadable,
-    Read(&'a ParseDraft),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -166,11 +170,11 @@ struct Reading {
 }
 
 impl Reading {
-    fn of(draft: &ParseDraft) -> Self {
-        Self {
+    fn of(draft: &ParseDraft) -> Result<Self, ParserBuildError> {
+        Ok(Self {
             when: draft.when.clone(),
             duration: draft.duration,
-            recurrence: recurrence_to_rule(draft.recurrence.as_ref()),
+            recurrence: recurrence_to_rule(draft.recurrence.as_ref())?,
             recurrence_end_date: draft.recurrence_end_date,
             recurrence_remaining: draft.recurrence_remaining,
             when_may_be_recurrence_end: draft.highlights.iter().any(|(range, kind)| {
@@ -180,7 +184,7 @@ impl Reading {
                         .to_ascii_lowercase()
                         .ends_with("until")
             }),
-        }
+        })
     }
 }
 
@@ -216,25 +220,36 @@ impl ItemDraft {
         Self::default()
     }
 
-    pub(crate) fn from_item(item: &AnyItem) -> Self {
-        let schedule = match item.start() {
-            Some(SchedulePoint::DateTime(datetime)) => {
-                let local = datetime.with_timezone(&Local);
-                Schedule {
-                    date: Some(local.date_naive()),
-                    time: Some(local.time()),
-                }
-            }
-            Some(SchedulePoint::Date(date)) => Schedule {
-                date: Some(date),
-                time: None,
+    pub(crate) fn from_item(item: &AnyItem) -> Result<Self, &'static str> {
+        validate_item_timing(item)?;
+        let schedule = match item {
+            AnyItem::ActionTemplate(template) => Schedule {
+                date: None,
+                time: template.naive_time,
             },
-            None => Schedule::default(),
+            _ => match item.start() {
+                Some(SchedulePoint::DateTime(datetime)) => {
+                    let local = datetime.with_timezone(&Local);
+                    Schedule {
+                        date: Some(local.date_naive()),
+                        time: Some(local.time()),
+                    }
+                }
+                Some(SchedulePoint::Date(date)) => Schedule {
+                    date: Some(date),
+                    time: None,
+                },
+                None => Schedule::default(),
+            },
         };
-        let duration = item.duration().map(|duration| {
-            let from = item.start_datetime().unwrap_or_else(Local::now);
-            (from + duration) - from
-        });
+        let duration = item
+            .duration()
+            .map(|duration| {
+                let from = item.start_datetime().unwrap_or_else(Local::now).to_utc();
+                subroutine_core::checked_duration_end(SchedulePoint::DateTime(from), duration)
+                    .map(|end| DateTime::<Utc>::from(end) - from)
+            })
+            .transpose()?;
         let (queued, pinned, span_days) = match item {
             AnyItem::Action(action) => (action.queued, action.pinned, 1),
             AnyItem::Marker(marker) => (
@@ -248,7 +263,7 @@ impl ItemDraft {
             _ => (false, false, 1),
         };
 
-        Self {
+        Ok(Self {
             schedule,
             duration,
             recurrence: item.recurrence(),
@@ -257,29 +272,31 @@ impl ItemDraft {
             span_days,
             schedule_before_recurrence_bound: None,
             last_read: Reading::default(),
-        }
+        })
     }
 
-    pub(crate) fn from_saved(item: &SavedItem) -> Self {
-        let now = Local::now();
-        let (time, duration, span_days) = match item {
-            SavedItem::Action(template) => (
-                template.naive_time,
-                template.duration.map(|duration| (now + duration) - now),
-                1,
-            ),
-            SavedItem::Event(template) => (None, Some((now + template.duration) - now), 1),
+    pub(crate) fn from_saved(item: &SavedItem) -> Result<Self, &'static str> {
+        let now = Utc::now();
+        let (time, duration) = match item {
+            SavedItem::Action(template) => (template.naive_time, template.duration),
+            SavedItem::Event(template) => (None, Some(template.duration)),
         };
-        Self {
+        let duration = duration
+            .map(|duration| {
+                subroutine_core::checked_duration_end(SchedulePoint::DateTime(now), duration)
+                    .map(|end| DateTime::<Utc>::from(end) - now)
+            })
+            .transpose()?;
+        Ok(Self {
             schedule: Schedule { date: None, time },
             duration,
             recurrence: item.recurrence(),
             queued: false,
             pinned: false,
-            span_days,
+            span_days: 1,
             schedule_before_recurrence_bound: None,
             last_read: Reading::default(),
-        }
+        })
     }
 
     pub(crate) fn apply_to_saved(
@@ -288,13 +305,13 @@ impl ItemDraft {
         original: &SavedItem,
         title: &str,
         content: Option<String>,
-    ) -> Option<SavedItem> {
+    ) -> Result<SavedItem, &'static str> {
         let title = title.trim();
         if title.is_empty() {
-            return None;
+            return Err("Name it first");
         }
-
-        Some(match original {
+        self.validate_timing(original.item_type())?;
+        let updated = match original {
             SavedItem::Action(original) => {
                 let mut template = original.clone();
                 template.title = title.to_string();
@@ -315,14 +332,16 @@ impl ItemDraft {
                 template.title = title.to_string();
                 template.content = content;
                 if self.duration != baseline.duration {
-                    template.duration = self.duration?.into();
+                    template.duration = self.duration.ok_or("An event needs a duration")?.into();
                 }
                 if self.recurrence != baseline.recurrence {
                     template.recurrence = self.recurrence;
                 }
                 SavedItem::Event(template)
             }
-        })
+        };
+        validate_saved_timing(&updated)?;
+        Ok(updated)
     }
 
     pub(crate) fn apply_to(
@@ -331,13 +350,13 @@ impl ItemDraft {
         original: &AnyItem,
         title: &str,
         content: Option<String>,
-    ) -> Option<AnyItem> {
+    ) -> Result<AnyItem, &'static str> {
         let title = title.trim();
         if title.is_empty() {
-            return None;
+            return Err("Name it first");
         }
-
-        Some(match original {
+        self.validate_timing(original.item_type())?;
+        let updated = match original {
             AnyItem::Action(original) => {
                 let mut action = original.clone();
                 action.title = title.to_string();
@@ -365,10 +384,13 @@ impl ItemDraft {
                 event.title = title.to_string();
                 event.content = content;
                 if self.schedule != baseline.schedule {
-                    event.start = self.schedule.datetime()?;
+                    event.start = self
+                        .schedule
+                        .datetime()
+                        .ok_or("An event needs a valid local time")?;
                 }
                 if self.duration != baseline.duration {
-                    event.duration = self.duration?.into();
+                    event.duration = self.duration.ok_or("An event needs a duration")?.into();
                 }
                 if self.recurrence != baseline.recurrence {
                     event.recurrence = self.recurrence;
@@ -383,7 +405,7 @@ impl ItemDraft {
                 let span_changed = self.span_days != baseline.span_days;
                 if date_changed || span_changed {
                     let date = if date_changed {
-                        self.schedule.date?
+                        self.schedule.date.ok_or("A marker needs a date")?
                     } else {
                         marker.date
                     };
@@ -397,7 +419,7 @@ impl ItemDraft {
                         current_span
                     };
                     marker.date = date;
-                    marker.end_date = (span > 1).then(|| date + Duration::days(span as i64 - 1));
+                    marker.end_date = marker_end(date, span)?;
                 }
                 if self.recurrence != baseline.recurrence {
                     marker.recurrence = self.recurrence;
@@ -409,7 +431,10 @@ impl ItemDraft {
                 signal.title = title.to_string();
                 signal.content = content;
                 if self.schedule != baseline.schedule {
-                    signal.datetime = self.schedule.datetime()?;
+                    signal.datetime = self
+                        .schedule
+                        .datetime()
+                        .ok_or("A signal needs a valid local time")?;
                 }
                 if self.recurrence != baseline.recurrence {
                     signal.recurrence = self.recurrence;
@@ -448,22 +473,20 @@ impl ItemDraft {
                 template.title = title.to_string();
                 template.content = content;
                 if self.duration != baseline.duration {
-                    template.duration = self.duration?.into();
+                    template.duration = self.duration.ok_or("An event needs a duration")?.into();
                 }
                 if self.recurrence != baseline.recurrence {
                     template.recurrence = self.recurrence;
                 }
                 AnyItem::EventTemplate(template)
             }
-        })
+        };
+        validate_item_timing(&updated)?;
+        Ok(updated)
     }
 
-    pub fn sync_from_parse(&mut self, outcome: ParseOutcome<'_>) {
-        let read = match outcome {
-            ParseOutcome::Unreadable => return,
-            ParseOutcome::Empty => Reading::default(),
-            ParseOutcome::Read(draft) => Reading::of(draft),
-        };
+    pub fn sync_from_parse(&mut self, parsed: Option<&ParseDraft>) -> Result<(), ParserBuildError> {
+        let read = parsed.map(Reading::of).transpose()?.unwrap_or_default();
 
         if read.when != self.last_read.when {
             let reclassified_as_bound = self.last_read.when_may_be_recurrence_end
@@ -523,6 +546,7 @@ impl ItemDraft {
         }
 
         self.last_read = read;
+        Ok(())
     }
 
     pub fn forget_reading(&mut self) {
@@ -586,10 +610,9 @@ impl ItemDraft {
         self.schedule.toggle_time();
     }
 
-    pub fn step_duration(&mut self, steps: i64) {
-        let base = self.duration.unwrap_or_else(Duration::zero);
-        let minutes = base.num_minutes() + steps * STEP_MINUTES;
-        self.duration = (minutes > 0).then(|| Duration::minutes(minutes));
+    pub fn step_duration(&mut self, steps: i64) -> Result<(), &'static str> {
+        self.duration = stepped_duration(self.duration, steps, STEP_MINUTES)?;
+        Ok(())
     }
 
     pub fn toggle_duration(&mut self) {
@@ -612,7 +635,7 @@ impl ItemDraft {
         self.pinned = !self.pinned;
     }
 
-    pub fn cycle_recurrence(&mut self, forward: bool) {
+    pub fn cycle_recurrence(&mut self, forward: bool) -> Result<(), &'static str> {
         let presets = recurrence_presets();
         let current = self
             .recurrence
@@ -624,15 +647,18 @@ impl ItemDraft {
             .map(|recurrence| (recurrence.end_date, recurrence.remaining));
         let len = presets.len() as isize + 1;
         let next = (current + if forward { 1 } else { -1 }).rem_euclid(len);
-        self.recurrence = (next > 0).then(|| {
-            let recurrence = Recurrence::new(presets[(next - 1) as usize]);
-            match limits {
+        self.recurrence = if next > 0 {
+            let recurrence = Recurrence::in_local_timezone(presets[(next - 1) as usize])?;
+            Some(match limits {
                 Some((end_date, remaining)) => {
                     recurrence.with_end_date(end_date).with_remaining(remaining)
                 }
                 None => recurrence,
-            }
-        });
+            })
+        } else {
+            None
+        };
+        Ok(())
     }
 
     pub fn step_recurrence_end_date(&mut self, days: i64) {
@@ -695,9 +721,38 @@ impl ItemDraft {
         recurrence.end_date = None;
     }
 
-    pub fn marker_end_date(&self) -> Option<NaiveDate> {
-        let start = self.schedule.date?;
-        (self.span_days > 1).then(|| start + Duration::days(self.span_days as i64 - 1))
+    pub fn marker_end_date(&self) -> Result<Option<NaiveDate>, &'static str> {
+        self.schedule
+            .date
+            .map(|start| marker_end(start, self.span_days))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub(crate) fn validate_timing(&self, mode: ItemType) -> Result<(), &'static str> {
+        let saved = matches!(mode, ItemType::ActionTemplate | ItemType::EventTemplate);
+        if !saved {
+            self.schedule.validate()?;
+        }
+        if mode == ItemType::Marker {
+            if self
+                .duration
+                .is_some_and(|duration| duration < Duration::days(1))
+            {
+                return Err("A marker needs at least one day");
+            }
+            self.marker_end_date()?;
+        } else if let Some(duration) = self.duration {
+            subroutine_core::checked_duration_end(
+                if saved {
+                    SchedulePoint::now()
+                } else {
+                    self.schedule.point().unwrap_or_else(SchedulePoint::now)
+                },
+                duration.into(),
+            )?;
+        }
+        Ok(())
     }
 
     pub fn set_marker_range(&mut self, range: crate::dates::InclusiveDateRange) {
@@ -709,6 +764,9 @@ impl ItemDraft {
     pub fn blocker(&self, mode: ItemType, title: &str, step_count: usize) -> Option<&'static str> {
         if title.trim().is_empty() {
             return Some("Name it first");
+        }
+        if let Err(error) = self.validate_timing(mode) {
+            return Some(error);
         }
         match mode {
             ItemType::Action | ItemType::ActionTemplate => None,
@@ -729,61 +787,112 @@ impl ItemDraft {
 
     pub fn build(
         &self,
+        id: Uuid,
         mode: ItemType,
         title: &str,
         content: Option<String>,
         steps: Vec<RoutineStep>,
-    ) -> Option<AnyItem> {
+    ) -> Result<AnyItem, &'static str> {
         let title = title.trim();
-        if title.is_empty() {
-            return None;
+        if let Some(error) = self.blocker(mode, title, steps.len()) {
+            return Err(error);
         }
         let duration = self.duration.map(RelativeDuration::from);
-
-        Some(match mode {
-            ItemType::Action | ItemType::ActionTemplate => AnyItem::Action(
-                Action::new(title)
+        let item = match mode {
+            ItemType::Action | ItemType::ActionTemplate => AnyItem::Action(Action {
+                id,
+                recurrence_id: id,
+                ..Action::new(title)
                     .with_content(content)
                     .with_start(self.schedule.point())
                     .with_duration(duration)
                     .with_recurrence(self.recurrence)
                     .with_queued(self.queued)
-                    .with_pinned(self.pinned && self.schedule.has_time()),
-            ),
+                    .with_pinned(self.pinned && self.schedule.has_time())
+            }),
             ItemType::Event | ItemType::EventTemplate => {
-                let start = self.schedule.datetime()?;
-                let duration = duration?;
-                AnyItem::Event(
-                    Event::new(title, start, duration)
+                let start = self
+                    .schedule
+                    .datetime()
+                    .ok_or("An event needs a valid local time")?;
+                let duration = duration.ok_or("An event needs a duration")?;
+                AnyItem::Event(Event {
+                    id,
+                    lineage_id: id,
+                    ..Event::new(title, start, duration)
                         .with_content(content)
-                        .with_recurrence(self.recurrence),
-                )
+                        .with_recurrence(self.recurrence)
+                })
             }
             ItemType::Signal => {
-                let datetime = self.schedule.datetime()?;
+                let datetime = self
+                    .schedule
+                    .datetime()
+                    .ok_or("A signal needs a valid local time")?;
                 let mut signal = Signal::new(title, datetime).with_content(content);
                 if let Some(recurrence) = self.recurrence {
                     signal = signal.with_recurrence(recurrence);
                 }
-                AnyItem::Signal(signal)
+                AnyItem::Signal(Signal {
+                    id,
+                    lineage_id: id,
+                    ..signal
+                })
             }
             ItemType::Marker => {
-                let date = self.schedule.date?;
+                let date = self.schedule.date.ok_or("A marker needs a date")?;
                 let mut marker = Marker::new(title, date);
                 marker.content = content;
-                marker.end_date = self.marker_end_date();
+                marker.end_date = self.marker_end_date()?;
                 marker.recurrence = self.recurrence;
-                AnyItem::Marker(marker)
+                AnyItem::Marker(Marker {
+                    id,
+                    lineage_id: id,
+                    ..marker
+                })
             }
             ItemType::Routine => {
                 let mut routine = Routine::new(title).with_steps(steps);
                 routine.content = content;
                 routine.target = self.schedule.point();
                 routine.recurrence = self.recurrence;
-                AnyItem::Routine(routine)
+                AnyItem::Routine(Routine {
+                    id,
+                    recurrence_id: id,
+                    ..routine
+                })
             }
-        })
+        };
+        validate_item_timing(&item)?;
+        Ok(item)
     }
+}
+
+pub(crate) fn stepped_duration(
+    duration: Option<Duration>,
+    steps: i64,
+    step_minutes: i64,
+) -> Result<Option<Duration>, &'static str> {
+    let current = duration.unwrap_or_else(Duration::zero).num_minutes();
+    let duration = steps
+        .checked_mul(step_minutes)
+        .and_then(|delta| current.checked_add(delta))
+        .and_then(Duration::try_minutes)
+        .ok_or("Duration is out of range")?;
+    Ok((duration > Duration::zero()).then_some(duration))
+}
+
+fn marker_end(start: NaiveDate, span: u32) -> Result<Option<NaiveDate>, &'static str> {
+    let days = span
+        .checked_sub(1)
+        .ok_or("A marker needs at least one day")?;
+    if days == 0 {
+        return Ok(None);
+    }
+    start
+        .checked_add_signed(Duration::days(i64::from(days)))
+        .map(Some)
+        .ok_or("The end date is outside the supported calendar range")
 }
 
 fn recurrence_presets() -> [RecurrenceRule; 5] {

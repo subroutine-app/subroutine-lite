@@ -231,8 +231,26 @@ async fn convert_event_to_marker(
             Some(ResourceKey::Marker { id: marker_id }),
         ));
     }
-    let outcome =
-        crate::ops::convert_event_to_marker_with_id(&event, date, local_end_date, marker_id);
+    let outcome = match crate::ops::convert_event_to_marker_with_id(
+        &event,
+        date,
+        local_end_date,
+        marker_id,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            mutation
+                .rollback()
+                .await
+                .map_err(MutationError::transient)?;
+            return Err(context.error(
+                StatusCode::BAD_REQUEST,
+                ApiErrorCode::ValidationFailed,
+                error.to_string(),
+                Some(ResourceKey::Event { id: event_id }),
+            ));
+        }
+    };
     let result = MutationResult::EventConvertedToMarker {
         event_id,
         marker: Box::new(outcome.value),

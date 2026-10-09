@@ -6,7 +6,7 @@ pub(crate) use draft::{
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use chronoutil::RelativeDuration;
 use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
@@ -103,18 +103,20 @@ fn apply_action_when(action: &mut Action, when: &parser::WhenSpec) {
 pub(crate) fn next_batch_draft(
     item: &AnyItem,
     context: &PipelineContext<'_>,
-) -> Option<(AnyItem, Option<DateTime<Utc>>)> {
+) -> Result<Option<(AnyItem, Option<DateTime<Utc>>)>, &'static str> {
     let mut cursor = None;
     let start = match item.start() {
         Some(SchedulePoint::DateTime(start)) => {
             let duration = item
                 .duration()
                 .unwrap_or(context.config.default_action_duration);
-            let next = context.quantize_ceil(start + duration);
+            let end =
+                subroutine_core::checked_duration_end(SchedulePoint::DateTime(start), duration)?;
+            let next = context.quantize_ceil(DateTime::<Utc>::from(end))?;
             cursor = Some(next);
             let duration = matches!(item, AnyItem::Event(_)).then_some(RelativeDuration::hours(1));
             context
-                .place_in_batch(next, Action::new("").with_duration(duration))
+                .place_in_batch(next, Action::new("").with_duration(duration))?
                 .action
                 .start
         }
@@ -124,12 +126,12 @@ pub(crate) fn next_batch_draft(
         AnyItem::Action(_) => AnyItem::Action(Action::new("").with_queued(true).with_start(start)),
         AnyItem::Event(_) => AnyItem::Event(Event::new(
             "",
-            DateTime::<Utc>::from(start?),
+            DateTime::<Utc>::from(start.ok_or("The next batch event has no scheduled time.")?),
             chrono::Duration::hours(1),
         )),
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some((draft, cursor))
+    Ok(Some((draft, cursor)))
 }
 
 pub struct EditingItem {
@@ -137,7 +139,7 @@ pub struct EditingItem {
     alternate_draft: Option<AnyItem>,
     kind: EditKind,
     pub input: Entity<TextInput>,
-    pub parsed: Option<ParseDraft>,
+    pub parsed: Result<Option<ParseDraft>, parser::ParseError>,
     pub input_bounds: Bounds<Pixels>,
     pub draft_type_bounds: Option<Bounds<Pixels>>,
     highlight_revision: u64,
@@ -161,7 +163,7 @@ impl EditingItem {
             alternate_draft: None,
             kind,
             input,
-            parsed: None,
+            parsed: Ok(None),
             input_bounds: Bounds::default(),
             draft_type_bounds: None,
             highlight_revision: 1,
@@ -173,7 +175,10 @@ impl EditingItem {
     }
 
     pub fn parsed_spans(&self) -> Vec<std::ops::Range<usize>> {
-        self.parsed.as_ref().map(parsed_spans).unwrap_or_default()
+        match &self.parsed {
+            Ok(Some(parsed)) => parsed_spans(parsed),
+            Ok(None) | Err(_) => Vec::new(),
+        }
     }
 
     pub fn value(&self, cx: &App) -> SharedString {
@@ -192,21 +197,22 @@ impl EditingItem {
         self.original.item_type()
     }
 
-    pub fn parse(&self, text: &str) -> Option<ParseDraft> {
+    pub fn parse(&self, text: &str) -> Result<Option<ParseDraft>, parser::ParseError> {
         let text = text.trim();
         if text.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         match self.item_type() {
-            ItemType::Action => parser::parse_action(text).ok(),
-            ItemType::Event => parser::parse_event(text).ok(),
-            ItemType::Routine => parser::parse_routine_step(text).ok(),
-            ItemType::Marker => parser::parse_marker(text).ok(),
-            ItemType::Signal => parser::parse_signal(text).ok(),
-            ItemType::ActionTemplate => parser::parse_action_template(text).ok(),
-            ItemType::EventTemplate => parser::parse_event_template(text).ok(),
+            ItemType::Action => parser::parse_action(text),
+            ItemType::Event => parser::parse_event(text),
+            ItemType::Routine => parser::parse_routine_step(text),
+            ItemType::Marker => parser::parse_marker(text),
+            ItemType::Signal => parser::parse_signal(text),
+            ItemType::ActionTemplate => parser::parse_action_template(text),
+            ItemType::EventTemplate => parser::parse_event_template(text),
         }
+        .map(Some)
     }
 
     pub fn abandons(&self, value: &str) -> bool {
@@ -327,9 +333,17 @@ impl ItemManager {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.editing_item.as_ref().is_some_and(|editing| {
-            matches!(editing.kind, EditKind::ViewDraft { .. }) && editing.key() != item.key()
-        }) {
+        if let Some(editing) = &self.editing_item
+            && editing.key() == item.key()
+        {
+            cx.focus_view(&editing.input, window);
+            return;
+        }
+        if self
+            .editing_item
+            .as_ref()
+            .is_some_and(|editing| editing.key() != item.key())
+        {
             self.commit_open_edit(window, cx);
             if self.is_editing() {
                 return;
@@ -471,7 +485,30 @@ impl ItemManager {
         };
 
         let input_value = value.to_string();
-        let draft = editing.parse(&input_value);
+        let parsed = editing
+            .parse(&input_value)
+            .map_err(|error| error.to_string())
+            .and_then(|draft| {
+                let recurrence = parser::recurrence_to_rule(
+                    draft.as_ref().and_then(|draft| draft.recurrence.as_ref()),
+                )
+                .map_err(|error| error.to_string())?;
+                Ok((draft, recurrence))
+            });
+        let (draft, recurrence) = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                cx.focus_view(&editing.input, window);
+                self.editing_item = Some(editing);
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    timed_toast("item.parse-failed", error).tone(Tone::Warning),
+                );
+                cx.notify();
+                return;
+            }
+        };
 
         if editing.abandons(&input_value) {
             if editing.discards_draft(&input_value) {
@@ -504,262 +541,252 @@ impl ItemManager {
         };
         let mut submitted = None;
 
-        let committed = match &editing.original {
-            ItemSubject::Live(AnyItem::Action(original)) => {
-                let updated = match draft {
-                    Some(ref d) => {
-                        let mut a = original.clone();
-                        a.title = d.title.clone();
-                        if let Some(ref when) = d.when {
-                            apply_action_when(&mut a, when);
+        let committed = (|| -> crate::stores::SaveResult {
+            match &editing.original {
+                ItemSubject::Live(AnyItem::Action(original)) => {
+                    let updated = match draft {
+                        Some(ref d) => {
+                            let mut a = original.clone();
+                            a.title = d.title.clone();
+                            if let Some(ref when) = d.when {
+                                apply_action_when(&mut a, when);
+                            }
+                            if let Some(dur) = d.duration {
+                                a.duration = Some(dur.into());
+                            }
+                            if let Some(rule) = recurrence {
+                                a.recurrence = Some(rule);
+                            }
+                            if let Some(ref content) = d.content {
+                                a.content = Some(content.clone());
+                            }
+                            a
                         }
-                        if let Some(dur) = d.duration {
-                            a.duration = Some(dur.into());
+                        None => {
+                            let mut a = original.clone();
+                            a.title = raw.clone();
+                            a
                         }
-                        if let Some(ref rec) = d.recurrence
-                            && let Some(rule) = parser::recurrence_to_rule(Some(rec))
+                    };
+                    if draft_view.is_some() {
+                        let mut updated = updated;
+                        if draft_view == Some(DraftView::Queue) {
+                            updated.set_queued(true);
+                        }
+                        let items = if batching
+                            && let Some(SchedulePoint::DateTime(start)) = updated.start
                         {
-                            a.recurrence = Some(rule);
-                        }
-                        if let Some(ref content) = d.content {
-                            a.content = Some(content.clone());
-                        }
-                        a
-                    }
-                    None => {
-                        let mut a = original.clone();
-                        a.title = raw.clone();
-                        a
-                    }
-                };
-                if draft_view.is_some() {
-                    let mut updated = updated;
-                    if draft_view == Some(DraftView::Queue) {
-                        updated.set_queued(true);
-                    }
-                    let items =
-                        if batching && let Some(SchedulePoint::DateTime(start)) = updated.start {
                             let start = cursor.unwrap_or(start);
                             updated.set_start(Some(SchedulePoint::DateTime(start)));
                             let placement = store
                                 .read(cx)
                                 .pipeline(&settings)
-                                .place_in_batch(start, updated);
+                                .place_in_batch(start, updated)?;
                             let items = placement.moved().cloned().map(AnyItem::Action).collect();
                             updated = placement.action;
                             items
                         } else {
                             vec![AnyItem::Action(updated.clone())]
                         };
-                    submitted = Some(AnyItem::Action(updated));
-                    store.update(cx, |store, cx| store.try_create_items(items, cx))
-                } else {
-                    store.update(cx, |store, cx| store.upsert_action(updated, cx));
-                    true
-                }
-            }
-            ItemSubject::Live(AnyItem::Event(original)) => {
-                let updated = match draft {
-                    Some(ref d) => {
-                        let mut e = original.clone();
-                        e.title = d.title.clone();
-                        if let Some(parser::WhenSpec::DateTime(dt)) = d.when {
-                            e.start = dt;
-                        }
-                        if let Some(dur) = d.duration {
-                            e.duration = dur.into();
-                        }
-                        if let Some(ref rec) = d.recurrence
-                            && let Some(rule) = parser::recurrence_to_rule(Some(rec))
-                        {
-                            e.recurrence = Some(rule);
-                        }
-                        if let Some(ref content) = d.content {
-                            e.content = Some(content.clone());
-                        }
-                        e
-                    }
-                    None => {
-                        let mut e = original.clone();
-                        e.title = raw.clone();
-                        e
-                    }
-                };
-                if draft_view.is_some() {
-                    let mut updated = updated;
-                    let mut items = Vec::new();
-                    if batching {
-                        let start = cursor.unwrap_or(updated.start);
-                        let probe = Action::new("")
-                            .with_start(Some(SchedulePoint::DateTime(start)))
-                            .with_duration(Some(updated.duration));
-                        let placement = store
-                            .read(cx)
-                            .pipeline(&settings)
-                            .place_in_batch(start, probe);
-                        if let Some(SchedulePoint::DateTime(start)) = placement.action.start {
-                            updated.start = start;
-                        }
-                        items.extend(placement.displaced.into_iter().map(AnyItem::Action));
-                    }
-                    let item = AnyItem::Event(updated);
-                    submitted = Some(item.clone());
-                    items.push(item);
-                    store.update(cx, |store, cx| store.try_create_items(items, cx))
-                } else {
-                    store.update(cx, |store, cx| store.upsert_event(updated, cx));
-                    true
-                }
-            }
-            ItemSubject::Live(AnyItem::Routine(original)) => {
-                let mut routine = original.clone();
-                routine.title = match draft {
-                    Some(ref d) => d.title.clone(),
-                    None => raw.clone(),
-                };
-                if let Some(ref d) = draft {
-                    if let Some(ref rec) = d.recurrence
-                        && let Some(rule) = parser::recurrence_to_rule(Some(rec))
-                    {
-                        routine.recurrence = Some(rule);
-                    }
-                    if let Some(ref content) = d.content {
-                        routine.content = Some(content.clone());
-                    }
-                }
-                store.update(cx, |store, cx| store.upsert_routine(routine, cx));
-                true
-            }
-            ItemSubject::Live(AnyItem::Marker(original)) => {
-                let updated = match draft {
-                    Some(ref d) => {
-                        let mut marker = original.clone();
-                        marker.title = d.title.clone();
-                        if let Some(ref when) = d.when {
-                            use parser::WhenSpec;
-                            match when {
-                                WhenSpec::NaiveDate(date) => marker.set_date(*date),
-                                WhenSpec::DateTime(dt) => marker.set_date(dt.naive_local().date()),
-                            }
-                        }
-                        if let Some(duration) = d.duration {
-                            let end_date = marker.date + duration - chrono::Duration::days(1);
-                            if end_date <= marker.date {
-                                marker.set_end_date(None);
-                            } else {
-                                marker.set_end_date(Some(end_date));
-                            }
-                        }
-                        if let Some(ref rec) = d.recurrence
-                            && let Some(rule) = parser::recurrence_to_rule(Some(rec))
-                        {
-                            marker.recurrence = Some(rule);
-                        }
-                        if let Some(ref content) = d.content {
-                            marker.content = Some(content.clone());
-                        }
-                        marker
-                    }
-                    None => {
-                        let mut marker = original.clone();
-                        marker.title = raw.clone();
-                        marker
-                    }
-                };
-                store.update(cx, |store, cx| store.upsert_marker(updated, cx));
-                true
-            }
-            ItemSubject::Live(AnyItem::Signal(original)) => {
-                let updated = match draft {
-                    Some(ref d) => {
-                        let mut signal = original.clone();
-                        signal.title = d.title.clone();
-                        if let Some(parser::WhenSpec::DateTime(dt)) = d.when {
-                            signal.datetime = dt;
-                        }
-                        if let Some(ref rec) = d.recurrence
-                            && let Some(rule) = parser::recurrence_to_rule(Some(rec))
-                        {
-                            signal.recurrence = Some(rule);
-                        }
-                        if let Some(ref content) = d.content {
-                            signal.content = Some(content.clone());
-                        }
-                        signal
-                    }
-                    None => {
-                        let mut signal = original.clone();
-                        signal.title = raw.clone();
-                        signal
-                    }
-                };
-                store.update(cx, |store, cx| store.upsert_signal(updated, cx));
-                true
-            }
-            ItemSubject::Saved(SavedItem::Action(original))
-            | ItemSubject::Live(AnyItem::ActionTemplate(original)) => {
-                let mut template = original.clone();
-                template.title = draft.as_ref().map_or(raw, |draft| draft.title.clone());
-                if let Some(draft) = draft {
-                    if let Some(time) = draft.naive_time {
-                        template.naive_time = Some(time);
-                    }
-                    if let Some(duration) = draft.duration {
-                        template.duration = Some(duration.into());
-                    }
-                    if let Some(recurrence) = parser::recurrence_to_rule(draft.recurrence.as_ref())
-                    {
-                        template.recurrence = Some(
-                            recurrence
-                                .with_end_date(draft.recurrence_end_date)
-                                .with_remaining(draft.recurrence_remaining),
-                        );
-                    }
-                    if let Some(content) = draft.content {
-                        template.content = Some(content);
-                    }
-                }
-                store.update(cx, |store, cx| {
-                    if editing.is_draft() {
-                        store.try_create_items(vec![AnyItem::ActionTemplate(template)], cx)
+                        submitted = Some(AnyItem::Action(updated));
+                        store.update(cx, |store, cx| store.create_items(items, cx))
                     } else {
-                        store.update_action_template(template, cx);
-                        true
-                    }
-                })
-            }
-            ItemSubject::Saved(SavedItem::Event(original))
-            | ItemSubject::Live(AnyItem::EventTemplate(original)) => {
-                let mut template = original.clone();
-                template.title = draft.as_ref().map_or(raw, |draft| draft.title.clone());
-                if let Some(draft) = draft {
-                    if let Some(duration) = draft.duration {
-                        template.duration = duration.into();
-                    }
-                    if let Some(recurrence) = parser::recurrence_to_rule(draft.recurrence.as_ref())
-                    {
-                        template.recurrence = Some(
-                            recurrence
-                                .with_end_date(draft.recurrence_end_date)
-                                .with_remaining(draft.recurrence_remaining),
-                        );
-                    }
-                    if let Some(content) = draft.content {
-                        template.content = Some(content);
+                        store.update(cx, |store, cx| store.upsert_action(updated, cx))
                     }
                 }
-                store.update(cx, |store, cx| {
-                    if editing.is_draft() {
-                        store.try_create_items(vec![AnyItem::EventTemplate(template)], cx)
+                ItemSubject::Live(AnyItem::Event(original)) => {
+                    let updated = match draft {
+                        Some(ref d) => {
+                            let mut e = original.clone();
+                            e.title = d.title.clone();
+                            if let Some(parser::WhenSpec::DateTime(dt)) = d.when {
+                                e.start = dt;
+                            }
+                            if let Some(dur) = d.duration {
+                                e.duration = dur.into();
+                            }
+                            if let Some(rule) = recurrence {
+                                e.recurrence = Some(rule);
+                            }
+                            if let Some(ref content) = d.content {
+                                e.content = Some(content.clone());
+                            }
+                            e
+                        }
+                        None => {
+                            let mut e = original.clone();
+                            e.title = raw.clone();
+                            e
+                        }
+                    };
+                    if draft_view.is_some() {
+                        let mut updated = updated;
+                        let mut items = Vec::new();
+                        if batching {
+                            let start = cursor.unwrap_or(updated.start);
+                            let probe = Action::new("")
+                                .with_start(Some(SchedulePoint::DateTime(start)))
+                                .with_duration(Some(updated.duration));
+                            let placement = store
+                                .read(cx)
+                                .pipeline(&settings)
+                                .place_in_batch(start, probe)?;
+                            if let Some(SchedulePoint::DateTime(start)) = placement.action.start {
+                                updated.start = start;
+                            }
+                            items.extend(placement.displaced.into_iter().map(AnyItem::Action));
+                        }
+                        let item = AnyItem::Event(updated);
+                        submitted = Some(item.clone());
+                        items.push(item);
+                        store.update(cx, |store, cx| store.create_items(items, cx))
                     } else {
-                        store.update_event_template(template, cx);
-                        true
+                        store.update(cx, |store, cx| store.upsert_event(updated, cx))
                     }
-                })
+                }
+                ItemSubject::Live(AnyItem::Routine(original)) => {
+                    let mut routine = original.clone();
+                    routine.title = match draft {
+                        Some(ref d) => d.title.clone(),
+                        None => raw.clone(),
+                    };
+                    if let Some(ref d) = draft {
+                        if let Some(rule) = recurrence {
+                            routine.recurrence = Some(rule);
+                        }
+                        if let Some(ref content) = d.content {
+                            routine.content = Some(content.clone());
+                        }
+                    }
+                    store.update(cx, |store, cx| store.upsert_routine(routine, cx))
+                }
+                ItemSubject::Live(AnyItem::Marker(original)) => {
+                    let updated = match draft {
+                        Some(ref d) => {
+                            let mut marker = original.clone();
+                            marker.title = d.title.clone();
+                            if let Some(ref when) = d.when {
+                                use parser::WhenSpec;
+                                match when {
+                                    WhenSpec::NaiveDate(date) => marker.set_date(*date),
+                                    WhenSpec::DateTime(dt) => {
+                                        marker.set_date(dt.with_timezone(&Local).date_naive())
+                                    }
+                                }
+                            }
+                            if let Some(duration) = d.duration {
+                                if duration < chrono::Duration::days(1) {
+                                    return Err("A marker needs at least one day".into());
+                                }
+                                let span = duration
+                                    .checked_sub(&chrono::Duration::days(1))
+                                    .ok_or("The marker span is out of range")?;
+                                let end_date = marker.date.checked_add_signed(span).ok_or(
+                                    "The end date is outside the supported calendar range",
+                                )?;
+                                marker.set_end_date((end_date > marker.date).then_some(end_date));
+                            }
+                            if let Some(rule) = recurrence {
+                                marker.recurrence = Some(rule);
+                            }
+                            if let Some(ref content) = d.content {
+                                marker.content = Some(content.clone());
+                            }
+                            marker
+                        }
+                        None => {
+                            let mut marker = original.clone();
+                            marker.title = raw.clone();
+                            marker
+                        }
+                    };
+                    store.update(cx, |store, cx| store.upsert_marker(updated, cx))
+                }
+                ItemSubject::Live(AnyItem::Signal(original)) => {
+                    let updated = match draft {
+                        Some(ref d) => {
+                            let mut signal = original.clone();
+                            signal.title = d.title.clone();
+                            if let Some(parser::WhenSpec::DateTime(dt)) = d.when {
+                                signal.datetime = dt;
+                            }
+                            if let Some(rule) = recurrence {
+                                signal.recurrence = Some(rule);
+                            }
+                            if let Some(ref content) = d.content {
+                                signal.content = Some(content.clone());
+                            }
+                            signal
+                        }
+                        None => {
+                            let mut signal = original.clone();
+                            signal.title = raw.clone();
+                            signal
+                        }
+                    };
+                    store.update(cx, |store, cx| store.upsert_signal(updated, cx))
+                }
+                ItemSubject::Saved(SavedItem::Action(original))
+                | ItemSubject::Live(AnyItem::ActionTemplate(original)) => {
+                    let mut template = original.clone();
+                    template.title = draft.as_ref().map_or(raw, |draft| draft.title.clone());
+                    if let Some(draft) = draft {
+                        if let Some(time) = draft.naive_time {
+                            template.naive_time = Some(time);
+                        }
+                        if let Some(duration) = draft.duration {
+                            template.duration = Some(duration.into());
+                        }
+                        if let Some(recurrence) = recurrence {
+                            template.recurrence = Some(
+                                recurrence
+                                    .with_end_date(draft.recurrence_end_date)
+                                    .with_remaining(draft.recurrence_remaining),
+                            );
+                        }
+                        if let Some(content) = draft.content {
+                            template.content = Some(content);
+                        }
+                    }
+                    store.update(cx, |store, cx| {
+                        if editing.is_draft() {
+                            store.create_items(vec![AnyItem::ActionTemplate(template)], cx)
+                        } else {
+                            store.update_action_template(template, cx)
+                        }
+                    })
+                }
+                ItemSubject::Saved(SavedItem::Event(original))
+                | ItemSubject::Live(AnyItem::EventTemplate(original)) => {
+                    let mut template = original.clone();
+                    template.title = draft.as_ref().map_or(raw, |draft| draft.title.clone());
+                    if let Some(draft) = draft {
+                        if let Some(duration) = draft.duration {
+                            template.duration = duration.into();
+                        }
+                        if let Some(recurrence) = recurrence {
+                            template.recurrence = Some(
+                                recurrence
+                                    .with_end_date(draft.recurrence_end_date)
+                                    .with_remaining(draft.recurrence_remaining),
+                            );
+                        }
+                        if let Some(content) = draft.content {
+                            template.content = Some(content);
+                        }
+                    }
+                    store.update(cx, |store, cx| {
+                        if editing.is_draft() {
+                            store.create_items(vec![AnyItem::EventTemplate(template)], cx)
+                        } else {
+                            store.update_event_template(template, cx)
+                        }
+                    })
+                }
             }
-        };
+        })();
 
-        if !committed {
+        if let Err(error) = committed {
             cx.focus_view(&editing.input, window);
             self.editing_item = Some(editing);
             gpui_kit::overlay::toast::push(
@@ -767,7 +794,7 @@ impl ItemManager {
                 cx,
                 timed_toast(
                     "item.save-failed",
-                    "Couldn’t save this item. Your draft is still open.",
+                    format!("Couldn’t save this item. Your draft is still open. {error}"),
                 )
                 .tone(Tone::Warning),
             );
@@ -789,14 +816,10 @@ impl ItemManager {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(handoff) = handoff {
-            handoff.take(window, cx);
-        }
-        self.completing.insert(action.id);
         let action_id = action.id;
         let transaction = AppDatabaseStore::global(cx)
             .update(cx, |store, cx| store.complete_action(action_id, cx));
-        let Some(transaction) = transaction else {
+        let Ok(Some(transaction)) = transaction else {
             self.completing.remove(&action_id);
             gpui_kit::overlay::toast::push(
                 window,
@@ -811,6 +834,10 @@ impl ItemManager {
             return;
         };
 
+        if let Some(handoff) = handoff {
+            handoff.take(window, cx);
+        }
+        self.completing.insert(action_id);
         let title = action.title;
         let message = format!("Completed {title}");
         gpui_kit::overlay::toast::push(
@@ -821,7 +848,7 @@ impl ItemManager {
                 .action("Undo", move |window, cx| {
                     let undone = AppDatabaseStore::global(cx)
                         .update(cx, |store, cx| store.undo_transaction(transaction, cx));
-                    if !undone {
+                    if matches!(undone, Ok(false)) {
                         gpui_kit::overlay::toast::push(
                             window,
                             cx,

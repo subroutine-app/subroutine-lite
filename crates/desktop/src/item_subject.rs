@@ -1,5 +1,65 @@
-use subroutine_core::{ActionTemplate, AnyItem, EventTemplate, ItemType, Recurrence};
+use subroutine_core::{
+    ActionTemplate, AnyItem, CoreItem, EventTemplate, ItemType, Marker, Recurrence, ResourceValue,
+    Routine, SchedulePoint, checked_duration_end, checked_duration_sum,
+};
 use uuid::Uuid;
+
+pub(crate) fn validate_item_timing(item: &AnyItem) -> Result<(), &'static str> {
+    match item {
+        AnyItem::Routine(routine) => validate_routine_timing(routine),
+        AnyItem::Marker(marker) => validate_marker_timing(marker),
+        _ => validate_duration(item),
+    }
+}
+
+pub(crate) fn validate_saved_timing(item: &SavedItem) -> Result<(), &'static str> {
+    match item {
+        SavedItem::Action(template) => validate_duration(template),
+        SavedItem::Event(template) => validate_duration(template),
+    }
+}
+
+pub(crate) fn validate_resource_timing(resource: &ResourceValue) -> Result<(), &'static str> {
+    match resource {
+        ResourceValue::Action(item) => validate_duration(item),
+        ResourceValue::Event(item) => validate_duration(item),
+        ResourceValue::Routine(item) => validate_routine_timing(item),
+        ResourceValue::Marker(item) => validate_marker_timing(item),
+        ResourceValue::Signal(item) => validate_duration(item),
+        ResourceValue::ActionTemplate(item) => validate_duration(item),
+        ResourceValue::EventTemplate(item) => validate_duration(item),
+        ResourceValue::MarkerTemplate(item) => validate_duration(item),
+        ResourceValue::SignalTemplate(item) => validate_duration(item),
+    }
+}
+
+fn validate_duration(item: &impl CoreItem) -> Result<(), &'static str> {
+    if let Some(duration) = item.duration() {
+        checked_duration_end(item.start().unwrap_or_else(SchedulePoint::now), duration)?;
+    }
+    Ok(())
+}
+
+fn validate_marker_timing(marker: &Marker) -> Result<(), &'static str> {
+    if marker.end_date.is_some_and(|end| end < marker.date) {
+        return Err("The end date must not be before the start date");
+    }
+    Ok(())
+}
+
+fn validate_routine_timing(routine: &Routine) -> Result<(), &'static str> {
+    let default = subroutine_core::ops::Settings::default().default_step_duration;
+    let durations = || {
+        routine
+            .steps
+            .iter()
+            .map(|step| step.duration.unwrap_or(default))
+    };
+    let start = routine.target.unwrap_or_else(SchedulePoint::now);
+    checked_duration_end(start, checked_duration_sum(durations())?)?;
+    durations().try_fold(start, checked_duration_end)?;
+    Ok(())
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum ItemSubject {

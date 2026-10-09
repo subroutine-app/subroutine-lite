@@ -1,16 +1,16 @@
 pub(crate) mod patch;
 
-use rusqlite::Connection;
-use subroutine_core::{AllData, ApiErrorBody, MutationRequest, OptimisticPatch};
+use rusqlite::Transaction;
+use subroutine_core::{AllData, ApiErrorBody, ApiErrorCode, MutationOperation, ResourceKey};
 use uuid::Uuid;
 
 use super::{
-    outbox::{load_oldest_outbox, outbox_count},
+    outbox::{block_outbox, load_oldest_outbox, load_outbox_entries, outbox_count},
     rows::load_rows,
     sync::load_sync_state,
 };
 use crate::{LocalStoreError, OutboxStatus, Result};
-use patch::apply_remote_patch;
+use patch::{apply_remote_patch, validate_routine_order};
 
 #[derive(Debug)]
 pub struct Projection {
@@ -28,7 +28,13 @@ pub struct BlockedConflict {
     pub error: ApiErrorBody,
 }
 
-pub(super) fn load_projection(connection: &Connection) -> Result<Projection> {
+pub(super) fn commit_projection(tx: Transaction<'_>) -> Result<Projection> {
+    let projection = load_projection(&tx)?;
+    tx.commit()?;
+    Ok(projection)
+}
+
+pub(super) fn load_projection(connection: &Transaction<'_>) -> Result<Projection> {
     let state = load_sync_state(connection)?;
     let mut action_templates = load_rows(connection, "action_template")?;
     action_templates.sort_by_key(|template: &subroutine_core::ActionTemplate| template.sort_order);
@@ -48,17 +54,36 @@ pub(super) fn load_projection(connection: &Connection) -> Result<Projection> {
         signal_templates: load_rows(connection, "signal_template")?,
     };
 
-    let mut statement =
-        connection.prepare("SELECT request_json, patch_json FROM outbox ORDER BY position")?;
-    let pending = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    for (request, patch) in pending {
-        let request: MutationRequest = serde_json::from_slice(&request)?;
-        let patch: OptimisticPatch = serde_json::from_slice(&patch)?;
-        apply_remote_patch(&mut data, patch, &request.operation)?;
+    for entry in load_outbox_entries(connection)? {
+        let request = entry.mutation.request;
+        if let MutationOperation::ReorderRoutines { routine_ids } = &request.operation
+            && validate_routine_order(data.routines.iter().map(|routine| routine.id), routine_ids)
+                .is_err()
+        {
+            if entry.status == OutboxStatus::Pending && !entry.sealed {
+                let error = ApiErrorBody {
+                    error: ApiErrorCode::DomainConflict,
+                    message: "routine membership changed; review the saved order before syncing"
+                        .into(),
+                    mutation_id: Some(request.mutation_id),
+                    resource: routine_ids
+                        .first()
+                        .copied()
+                        .or_else(|| data.routines.first().map(|routine| routine.id))
+                        .map(|id| ResourceKey::Routine { id }),
+                    current_seq: Some(state.canonical_seq),
+                    current_dataset_id: state.dataset_id,
+                    retryable: false,
+                };
+                block_outbox(connection, request.mutation_id, &error)?;
+            }
+            continue;
+        }
+        apply_remote_patch(
+            &mut data,
+            entry.mutation.optimistic_patch,
+            &request.operation,
+        )?;
     }
 
     let pending_count = outbox_count(connection)?;

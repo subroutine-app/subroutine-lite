@@ -40,7 +40,7 @@ pub enum Token {
     #[regex(r"[0-9]{1,2}(:[0-9]{2})?[aApP][mM]?")]
     Time12,
 
-    #[regex(r"[0-9]{1,2}(st|nd|rd|th)")]
+    #[regex(r"[0-9]+(st|nd|rd|th)")]
     OrdinalDay,
 
     #[regex(r"[0-9]+")]

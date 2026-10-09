@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 use chrono::{DateTime, Local, Utc};
-use gpui::{App, AsyncApp, Context, FocusHandle, Pixels, Window, px};
+use gpui::{App, Context, FocusHandle, Pixels, Window, px};
 use subroutine_core::{Action, AnyItem, Event, Marker, SchedulePoint, Signal};
 use uuid::Uuid;
 
@@ -18,8 +18,8 @@ use crate::views::TOP_EDGE_INSET;
 
 use super::super::{EDGE_HORIZON, TimelineView};
 use super::{
-    COMPLETE_CHECKBOX_DURATION, ItemNavigation, Lane, NavigationHandoffs, SIGNAL_CARD_HEIGHT,
-    TimelineItem, TimelineSlot, TransitionState, item_timeline_span, visual_duration_at,
+    ItemNavigation, Lane, NavigationHandoffs, SIGNAL_CARD_HEIGHT, TimelineItem, TimelineSlot,
+    TransitionState, item_timeline_span, visual_duration_at,
 };
 
 #[derive(Clone)]
@@ -158,8 +158,21 @@ impl TimelineView {
         let settings = Settings::global(cx);
         let store = AppDatabaseStore::global(cx);
         let context = store.read(cx).pipeline(&settings);
-        let Some((draft, cursor)) = next_batch_draft(item, &context) else {
-            return;
+        let (draft, cursor) = match next_batch_draft(item, &context) {
+            Ok(Some(next)) => next,
+            Ok(None) => return,
+            Err(error) => {
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    crate::components::timed_toast(
+                        "item.batch-failed",
+                        format!("Item saved. Couldn’t start the next batch item. {error}"),
+                    )
+                    .tone(gpui_kit::display::badge::Tone::Warning),
+                );
+                return;
+            }
         };
         let Some(start) = draft
             .start_datetime()
@@ -434,21 +447,14 @@ impl TimelineView {
         else {
             return;
         };
+        let result = AppDatabaseStore::global(cx)
+            .update(cx, |store, cx| store.complete_action(action_id, cx));
+        if !matches!(result, Ok(Some(_))) {
+            return;
+        }
         item.transition_state = TransitionState::Completing;
         FocusHandoff::new(Some(SelectionScope::Timeline), action_id, next_focus).take(window, cx);
         cx.notify();
-        cx.spawn(async move |this, cx: &mut AsyncApp| {
-            cx.background_executor()
-                .timer(COMPLETE_CHECKBOX_DURATION)
-                .await;
-            let _ = this.update(cx, |_view, cx| {
-                let store = AppDatabaseStore::global(cx);
-                store.update(cx, |store, cx| {
-                    store.complete_action(action_id, cx);
-                });
-            });
-        })
-        .detach();
     }
 }
 fn draft_action(time: DateTime<Local>, duration: Option<chrono::Duration>) -> Action {

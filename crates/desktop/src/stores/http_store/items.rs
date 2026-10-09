@@ -1,5 +1,5 @@
 use super::history::StoreChange;
-use super::{AppDatabaseStore, SyncDirection, WorkspacePersistence};
+use super::{AppDatabaseStore, SaveFailed, SaveResult, SyncDirection, WorkspacePersistence};
 use crate::stores::UndoTransaction;
 use chrono::Local;
 use gpui::Context;
@@ -86,8 +86,9 @@ pub(super) fn event_conversion_intent(
     date: chrono::NaiveDate,
     local_end_date: chrono::NaiveDate,
     marker_id: Uuid,
-) -> (MutationOperation, OptimisticPatch) {
-    (
+) -> SaveResult<(MutationOperation, OptimisticPatch)> {
+    let marker = event.to_marker_between_with_id(date, local_end_date, marker_id)?;
+    Ok((
         MutationOperation::ConvertEventToMarker {
             event_id: event.id,
             marker_id,
@@ -95,15 +96,11 @@ pub(super) fn event_conversion_intent(
             local_end_date: Some(local_end_date),
         },
         OptimisticPatch {
-            writes: vec![ResourceValue::Marker(event.to_marker_between_with_id(
-                date,
-                local_end_date,
-                marker_id,
-            ))],
+            writes: vec![ResourceValue::Marker(marker)],
             deletes: vec![ResourceKey::Event { id: event.id }],
             routine_order: None,
         },
-    )
+    ))
 }
 
 impl AppDatabaseStore {
@@ -165,15 +162,38 @@ impl AppDatabaseStore {
         }))
     }
 
-    pub(super) fn persist_resource_upserts(
+    pub(super) fn save_error(&self, error: impl Into<String>, cx: &mut Context<Self>) -> String {
+        let error = error.into();
+        tracing::error!(%error, "could not save local changes");
+        cx.emit(SaveFailed {
+            message: format!("Couldn’t save this change. {error} Check local storage and permissions, then retry."),
+        });
+        error
+    }
+
+    pub(super) fn persist_mutation(
         &mut self,
-        resources: Vec<ResourceValue>,
+        operation: MutationOperation,
+        patch: OptimisticPatch,
         cx: &mut Context<Self>,
-    ) -> bool {
-        if resources.is_empty() {
-            return false;
+    ) -> SaveResult {
+        if self.history_pending() {
+            return Err(self.save_error(
+                "Retry the unfinished Undo or Redo before saving another change.",
+                cx,
+            ));
         }
-        let (operation, patch) = resource_upsert_intent(resources);
+        if !self.is_ready() {
+            return Err(self.save_error(
+                "The local workspace is not ready. Retry opening it in Settings.",
+                cx,
+            ));
+        }
+        patch
+            .writes
+            .iter()
+            .try_for_each(crate::item_subject::validate_resource_timing)
+            .map_err(|error| self.save_error(error, cx))?;
         let result = if self
             .persistence
             .as_ref()
@@ -183,99 +203,70 @@ impl AppDatabaseStore {
         } else {
             self.apply_local_patch(patch, cx)
         };
-        match result {
-            Some(Ok(())) => true,
-            Some(Err(error)) => {
-                tracing::error!(%error, "could not durably upsert resources");
-                false
-            }
-            None => {
-                tracing::error!("cannot upsert resources without a local workspace");
-                false
-            }
+        result
+            .unwrap_or_else(|| Err("No local workspace is available.".into()))
+            .map_err(|error| self.save_error(error, cx))
+    }
+
+    pub(super) fn persist_resource_upserts(
+        &mut self,
+        resources: Vec<ResourceValue>,
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
+        if resources.is_empty() {
+            return Ok(());
         }
+        let (operation, patch) = resource_upsert_intent(resources);
+        self.persist_mutation(operation, patch, cx)
     }
 
     pub(super) fn persist_resource_deletes(
         &mut self,
         resources: Vec<ResourceKey>,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> SaveResult {
         if resources.is_empty() {
-            return false;
+            return Ok(());
         }
         let (operation, patch) = resource_delete_intent(resources);
-        let result = if self
-            .persistence
-            .as_ref()
-            .is_some_and(WorkspacePersistence::is_remote)
-        {
-            self.enqueue_remote_mutation(operation, patch, cx)
-        } else {
-            self.apply_local_patch(patch, cx)
-        };
-        match result {
-            Some(Ok(())) => true,
-            Some(Err(error)) => {
-                tracing::error!(%error, "could not durably delete resources");
-                false
-            }
-            None => {
-                tracing::error!("cannot delete resources without a local workspace");
-                false
-            }
-        }
+        self.persist_mutation(operation, patch, cx)
     }
 
     pub fn delete_items(
         &mut self,
         items: Vec<AnyItem>,
         cx: &mut Context<Self>,
-    ) -> Option<(UndoTransaction, usize)> {
+    ) -> SaveResult<Option<(UndoTransaction, usize)>> {
         if items.is_empty() {
-            return None;
+            return Ok(None);
         }
-        if !self.delete_items_without_history(&items, cx) {
-            return None;
-        }
-
+        self.delete_items_without_history(&items, cx)?;
         let affected = items.len();
         let transaction = self.push_undo_transaction(StoreChange::ItemsDeleted(items));
-        Some((transaction, affected))
+        Ok(Some((transaction, affected)))
     }
 
     pub(super) fn delete_items_without_history(
         &mut self,
         items: &[AnyItem],
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> SaveResult {
         self.persist_resource_deletes(items.iter().map(item_resource_key).collect(), cx)
     }
 
-    pub(super) fn delete_item_without_history(
-        &mut self,
-        item: &AnyItem,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.delete_items_without_history(std::slice::from_ref(item), cx)
-    }
-
-    pub fn create_items(&mut self, items: Vec<AnyItem>, cx: &mut Context<Self>) {
-        self.try_create_items(items, cx);
+    pub fn create_items(&mut self, items: Vec<AnyItem>, cx: &mut Context<Self>) -> SaveResult {
+        self.upsert_items_without_history(&items, cx)
     }
 
     pub(crate) fn try_create_items(&mut self, items: Vec<AnyItem>, cx: &mut Context<Self>) -> bool {
-        if !self.is_ready() || items.is_empty() {
-            return false;
-        }
-        self.upsert_items_without_history(&items, cx)
+        !items.is_empty() && self.create_items(items, cx).is_ok()
     }
 
     pub(super) fn upsert_items_without_history(
         &mut self,
         items: &[AnyItem],
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> SaveResult {
         self.persist_resource_upserts(items.iter().map(item_resource_value).collect(), cx)
     }
 
@@ -283,7 +274,7 @@ impl AppDatabaseStore {
         &mut self,
         items: Vec<AnyItem>,
         cx: &mut Context<Self>,
-    ) -> Option<UndoTransaction> {
+    ) -> SaveResult<Option<UndoTransaction>> {
         let mut previous = Vec::with_capacity(items.len());
         let mut updated = Vec::with_capacity(items.len());
         let mut created = Vec::new();
@@ -296,7 +287,7 @@ impl AppDatabaseStore {
             }
         }
         if updated.is_empty() && created.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let resources = updated
@@ -304,21 +295,21 @@ impl AppDatabaseStore {
             .chain(&created)
             .map(item_resource_value)
             .collect();
-        if !self.persist_resource_upserts(resources, cx) {
-            return None;
-        }
-        Some(self.push_undo_transaction(StoreChange::ItemsUpdated {
-            previous,
-            updated,
-            created,
-        }))
+        self.persist_resource_upserts(resources, cx)?;
+        Ok(Some(self.push_undo_transaction(
+            StoreChange::ItemsUpdated {
+                previous,
+                updated,
+                created,
+            },
+        )))
     }
 
-    pub(super) fn upsert_item(&mut self, item: AnyItem, cx: &mut Context<Self>) {
-        self.persist_resource_upserts(vec![item_resource_value(&item)], cx);
-    }
-
-    pub fn reorder_action_templates(&mut self, ordered_ids: &[Uuid], cx: &mut Context<Self>) {
+    pub fn reorder_action_templates(
+        &mut self,
+        ordered_ids: &[Uuid],
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
         let mut templates = self.action_templates.clone();
         for (sort_order, id) in ordered_ids.iter().enumerate() {
             if let Some(template) = templates.iter_mut().find(|item| item.id == *id) {
@@ -332,11 +323,11 @@ impl AppDatabaseStore {
                 .map(ResourceValue::ActionTemplate)
                 .collect(),
             cx,
-        );
+        )
     }
 
-    pub fn upsert_event(&mut self, event: Event, cx: &mut Context<Self>) {
-        self.persist_resource_upserts(vec![ResourceValue::Event(event)], cx);
+    pub fn upsert_event(&mut self, event: Event, cx: &mut Context<Self>) -> SaveResult {
+        self.persist_resource_upserts(vec![ResourceValue::Event(event)], cx)
     }
 
     pub fn set_event_busy_override(
@@ -344,18 +335,20 @@ impl AppDatabaseStore {
         id: Uuid,
         busy_override: Option<bool>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> SaveResult {
         let Some(event) = self.events.iter().find(|event| event.id == id) else {
-            return;
+            return Err(self.save_error("This event is no longer available.", cx));
         };
         let before = event.busy_override;
-        if before != busy_override && self.apply_event_busy_override(id, busy_override, cx) {
+        if before != busy_override {
+            self.apply_event_busy_override(id, busy_override, cx)?;
             self.push_undo(StoreChange::EventBusyOverride {
                 event_id: id,
                 before,
                 after: busy_override,
             });
         }
+        Ok(())
     }
 
     pub(super) fn apply_event_busy_override(
@@ -363,16 +356,24 @@ impl AppDatabaseStore {
         id: Uuid,
         busy_override: Option<bool>,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> SaveResult {
         let Some(event) = self.events.iter().find(|event| event.id == id).cloned() else {
-            return true;
+            return Err(self.save_error("This event is no longer available.", cx));
         };
+        if self.history_pending() {
+            return Err(self.save_error(
+                "Retry the unfinished Undo or Redo before saving another change.",
+                cx,
+            ));
+        }
+        if !self.is_ready() {
+            return Err(self.save_error("The local workspace is not ready.", cx));
+        }
         if event.busy_override == busy_override {
-            return true;
+            return Ok(());
         }
         let Some(persistence) = self.persistence.clone() else {
-            tracing::error!(%id, "cannot change event availability without a local workspace");
-            return false;
+            return Err(self.save_error("No local workspace is available.", cx));
         };
         let result = if persistence.is_remote() {
             let (operation, patch) = event_busy_override_intent(event, busy_override);
@@ -385,67 +386,117 @@ impl AppDatabaseStore {
                     self.replace_projection(projection, cx);
                 })
         };
-        match result {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::error!(%error, %id, "could not persist event availability override");
-                false
-            }
-        }
+        result.map_err(|error| self.save_error(error, cx))
     }
 
-    pub fn convert_event_to_marker(&mut self, event: Event, cx: &mut Context<Self>) {
+    pub fn convert_event_to_marker(&mut self, event: Event, cx: &mut Context<Self>) -> SaveResult {
         let event_id = event.id;
-        if !self.events.iter().any(|current| current.id == event_id) {
-            tracing::warn!(%event_id, "ignoring conversion of an event outside the visible projection");
-            return;
-        }
-        let (date, local_end_date) = event.marker_date_range_in(&Local);
+        let Some(event) = self
+            .events
+            .iter()
+            .find(|current| current.id == event_id)
+            .cloned()
+        else {
+            return Err(self.save_error("This event is no longer available.", cx));
+        };
+        let (date, local_end_date) = event
+            .marker_date_range_in(&Local)
+            .map_err(|error| self.save_error(error, cx))?;
         let marker_id = Uuid::now_v7();
-        let (operation, patch) = event_conversion_intent(&event, date, local_end_date, marker_id);
-        let result = if self
+        let (operation, patch) = event_conversion_intent(&event, date, local_end_date, marker_id)
+            .map_err(|error| self.save_error(error, cx))?;
+        self.persist_mutation(operation, patch, cx)
+    }
+
+    pub fn convert_events_to_markers(
+        &mut self,
+        events: &[Event],
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
+        let events: Vec<_> = events
+            .iter()
+            .filter_map(|event| {
+                self.events
+                    .iter()
+                    .find(|current| current.id == event.id)
+                    .cloned()
+            })
+            .collect();
+        let intents = events
+            .iter()
+            .map(|event| {
+                let (date, end) = event.marker_date_range_in(&Local)?;
+                event_conversion_intent(event, date, end, Uuid::now_v7())
+            })
+            .collect::<SaveResult<Vec<_>>>()
+            .map_err(|error| self.save_error(error, cx))?;
+        if self
             .persistence
             .as_ref()
             .is_some_and(WorkspacePersistence::is_remote)
         {
-            self.enqueue_remote_mutation(operation, patch, cx)
+            for (saved, (operation, patch)) in intents.into_iter().enumerate() {
+                if let Err(error) = self.persist_mutation(operation, patch, cx) {
+                    return Err(self.save_error(format!("Converted {saved} of {} events. Retry to convert the remaining events. {error}", events.len()), cx));
+                }
+            }
+            Ok(())
         } else {
+            if intents.is_empty() {
+                return Ok(());
+            }
+            if !self.is_ready() || self.history_pending() {
+                return Err(self.save_error(
+                    "The local workspace is not ready or has unfinished Undo or Redo changes.",
+                    cx,
+                ));
+            }
+            let mut patch = OptimisticPatch::default();
+            for (_, conversion) in intents {
+                patch.writes.extend(conversion.writes);
+                patch.deletes.extend(conversion.deletes);
+            }
             self.apply_local_patch(patch, cx)
-        };
-        match result {
-            Some(Ok(())) => {}
-            Some(Err(error)) => {
-                tracing::error!(%error, %event_id, %marker_id, "could not persist event conversion");
-            }
-            None => {
-                tracing::error!(%event_id, "cannot convert an event without a local workspace");
-            }
+                .unwrap_or_else(|| Err("No local workspace is available.".into()))
+                .map_err(|error| self.save_error(error, cx))
         }
     }
 
-    pub fn update_action_template(&mut self, template: ActionTemplate, cx: &mut Context<Self>) {
+    pub fn update_action_template(
+        &mut self,
+        template: ActionTemplate,
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
         if !self
             .action_templates
             .iter()
             .any(|current| current.id == template.id)
         {
-            return;
+            return Err(self.save_error("This saved action is no longer available.", cx));
         }
-        self.persist_resource_upserts(vec![ResourceValue::ActionTemplate(template)], cx);
+        self.persist_resource_upserts(vec![ResourceValue::ActionTemplate(template)], cx)
     }
 
-    pub fn update_event_template(&mut self, template: EventTemplate, cx: &mut Context<Self>) {
+    pub fn update_event_template(
+        &mut self,
+        template: EventTemplate,
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
         if !self
             .event_templates
             .iter()
             .any(|current| current.id == template.id)
         {
-            return;
+            return Err(self.save_error("This saved event is no longer available.", cx));
         }
-        self.persist_resource_upserts(vec![ResourceValue::EventTemplate(template)], cx);
+        self.persist_resource_upserts(vec![ResourceValue::EventTemplate(template)], cx)
     }
 
-    pub fn reorder_event_templates(&mut self, ordered_ids: &[Uuid], cx: &mut Context<Self>) {
+    pub fn reorder_event_templates(
+        &mut self,
+        ordered_ids: &[Uuid],
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
         let mut templates = self.event_templates.clone();
         for (sort_order, id) in ordered_ids.iter().enumerate() {
             if let Some(template) = templates.iter_mut().find(|item| item.id == *id) {
@@ -459,15 +510,15 @@ impl AppDatabaseStore {
                 .map(ResourceValue::EventTemplate)
                 .collect(),
             cx,
-        );
+        )
     }
 
-    pub fn upsert_marker(&mut self, marker: Marker, cx: &mut Context<Self>) {
-        self.persist_resource_upserts(vec![ResourceValue::Marker(marker)], cx);
+    pub fn upsert_marker(&mut self, marker: Marker, cx: &mut Context<Self>) -> SaveResult {
+        self.persist_resource_upserts(vec![ResourceValue::Marker(marker)], cx)
     }
 
-    pub fn upsert_signal(&mut self, signal: Signal, cx: &mut Context<Self>) {
-        self.persist_resource_upserts(vec![ResourceValue::Signal(signal)], cx);
+    pub fn upsert_signal(&mut self, signal: Signal, cx: &mut Context<Self>) -> SaveResult {
+        self.persist_resource_upserts(vec![ResourceValue::Signal(signal)], cx)
     }
 
     pub(super) fn delete_saved_items_without_history(
@@ -475,7 +526,7 @@ impl AppDatabaseStore {
         action_ids: &[Uuid],
         event_ids: &[Uuid],
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> SaveResult {
         let resources = action_ids
             .iter()
             .map(|id| ResourceKey::ActionTemplate { id: *id })
@@ -488,25 +539,11 @@ impl AppDatabaseStore {
         self.persist_resource_deletes(resources, cx)
     }
 
-    pub(super) fn restore_saved_items_without_history(
-        &mut self,
-        actions: Vec<ActionTemplate>,
-        events: Vec<EventTemplate>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let resources = actions
-            .into_iter()
-            .map(ResourceValue::ActionTemplate)
-            .chain(events.into_iter().map(ResourceValue::EventTemplate))
-            .collect();
-        self.persist_resource_upserts(resources, cx)
-    }
-
     pub fn delete_saved_items(
         &mut self,
         ids: &[Uuid],
         cx: &mut Context<Self>,
-    ) -> Option<(UndoTransaction, usize)> {
+    ) -> SaveResult<Option<(UndoTransaction, usize)>> {
         let actions: Vec<_> = self
             .action_templates
             .iter()
@@ -521,21 +558,19 @@ impl AppDatabaseStore {
             .collect();
         let affected = actions.len() + events.len();
         if affected == 0 {
-            return None;
+            return Ok(None);
         }
 
         let action_ids: Vec<_> = actions.iter().map(|item| item.id).collect();
         let event_ids: Vec<_> = events.iter().map(|item| item.id).collect();
-        if !self.delete_saved_items_without_history(&action_ids, &event_ids, cx) {
-            return None;
-        }
+        self.delete_saved_items_without_history(&action_ids, &event_ids, cx)?;
         let transaction =
             self.push_undo_transaction(StoreChange::SavedItemsDeleted { actions, events });
-        Some((transaction, affected))
+        Ok(Some((transaction, affected)))
     }
 
-    pub fn upsert_routine(&mut self, routine: Routine, cx: &mut Context<Self>) {
-        self.persist_resource_upserts(vec![ResourceValue::Routine(routine)], cx);
+    pub fn upsert_routine(&mut self, routine: Routine, cx: &mut Context<Self>) -> SaveResult {
+        self.persist_resource_upserts(vec![ResourceValue::Routine(routine)], cx)
     }
 
     pub fn replace_routine_steps(
@@ -543,26 +578,26 @@ impl AppDatabaseStore {
         id: Uuid,
         steps: Vec<RoutineStep>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> SaveResult {
         let Some(mut routine) = self
             .routines
             .iter()
             .find(|routine| routine.id == id)
             .cloned()
         else {
-            return;
+            return Err(self.save_error("This routine is no longer available.", cx));
         };
         routine.steps = steps;
-        self.persist_resource_upserts(vec![ResourceValue::Routine(routine)], cx);
+        self.persist_resource_upserts(vec![ResourceValue::Routine(routine)], cx)
     }
 
-    pub fn reorder_routines(&mut self, ids: Vec<Uuid>, cx: &mut Context<Self>) {
+    pub fn reorder_routines(&mut self, ids: Vec<Uuid>, cx: &mut Context<Self>) -> SaveResult {
         let current: std::collections::HashSet<_> =
             self.routines.iter().map(|routine| routine.id).collect();
         let requested: std::collections::HashSet<_> = ids.iter().copied().collect();
         if ids.len() != self.routines.len() || requested.len() != ids.len() || requested != current
         {
-            return;
+            return Err(self.save_error("The routine list changed. Retry the reorder.", cx));
         }
 
         let patch = OptimisticPatch {
@@ -570,23 +605,10 @@ impl AppDatabaseStore {
             deletes: vec![],
             routine_order: Some(ids.clone()),
         };
-        let result = if self
-            .persistence
-            .as_ref()
-            .is_some_and(WorkspacePersistence::is_remote)
-        {
-            self.enqueue_remote_mutation(
-                MutationOperation::ReorderRoutines { routine_ids: ids },
-                patch,
-                cx,
-            )
-        } else {
-            self.apply_local_patch(patch, cx)
-        };
-        match result {
-            Some(Ok(())) => {}
-            Some(Err(error)) => tracing::error!(%error, "could not persist routine order"),
-            None => tracing::error!("cannot reorder routines without a local workspace"),
-        }
+        self.persist_mutation(
+            MutationOperation::ReorderRoutines { routine_ids: ids },
+            patch,
+            cx,
+        )
     }
 }

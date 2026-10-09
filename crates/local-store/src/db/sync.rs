@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 use super::{
     Database, non_nil_uuid,
-    outbox::{confirmed_fifo_head_seq, outbox_count, rebase_fifo_head, retire_confirmed},
+    outbox::{outbox_count, retire_confirmed},
     parse_uuid,
+    projection::commit_projection,
     rows::{apply_delta_rows, insert_snapshot_rows},
 };
 use crate::{LocalStoreError, Projection, Result, WorkspaceIdentity};
@@ -70,17 +71,8 @@ impl Database {
         if current.dataset_id != incoming_dataset {
             tx.execute("DELETE FROM integration_entries", [])?;
         }
-        let confirmed_head_seq = (incoming_dataset.is_some()
-            && incoming_dataset == current.dataset_id)
-            .then(|| confirmed_fifo_head_seq(&tx, incoming_dataset, data.seq))
-            .transpose()?
-            .flatten();
         retire_confirmed(&tx, incoming_dataset, data.seq)?;
-        if let Some(commit_seq) = confirmed_head_seq {
-            rebase_fifo_head(&tx, commit_seq)?;
-        }
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 
     pub(crate) fn apply_delta(&mut self, delta: DataDelta) -> Result<Projection> {
@@ -112,18 +104,13 @@ impl Database {
             });
         }
 
-        let confirmed_head_seq = confirmed_fifo_head_seq(&tx, Some(incoming_dataset), delta.seq)?;
         apply_delta_rows(&tx, &delta)?;
         tx.execute(
             "UPDATE sync_state SET canonical_seq = ?1 WHERE singleton = 1",
             [delta.seq],
         )?;
         retire_confirmed(&tx, Some(incoming_dataset), delta.seq)?;
-        if let Some(commit_seq) = confirmed_head_seq {
-            rebase_fifo_head(&tx, commit_seq)?;
-        }
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 }
 

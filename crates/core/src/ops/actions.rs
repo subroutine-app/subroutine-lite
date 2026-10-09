@@ -39,14 +39,20 @@ pub fn queue(snapshot: &Snapshot, id: Uuid) -> OpResult<Outcome<Vec<Action>>> {
     let mut queued = action.clone();
     queued.set_queued(true);
     queued.set_start(Some(SchedulePoint::DateTime(
-        snapshot.context().next_slot_for(action),
+        snapshot
+            .context()
+            .next_slot_for(action)
+            .map_err(OpError::rejected)?,
     )));
 
     let mut actions = snapshot.actions.clone();
     if let Some(slot) = actions.iter_mut().find(|a| a.id == id) {
         *slot = queued.clone();
     }
-    let settled = snapshot.context_with(&actions).requeue_actions();
+    let settled = snapshot
+        .context_with(&actions)
+        .requeue_actions()
+        .map_err(OpError::rejected)?;
 
     let queued = settled
         .iter()
@@ -65,16 +71,21 @@ pub fn batch(
     snapshot: &Snapshot,
     mut action: Action,
     cursor: Option<DateTime<Utc>>,
-) -> Outcome<BatchPlacement> {
+) -> OpResult<Outcome<BatchPlacement>> {
     action.ensure_id();
 
     let context = snapshot.context();
-    let cursor = cursor.unwrap_or_else(|| context.batch_start());
-    let placement = context.place_in_batch(cursor, action);
+    let cursor = match cursor {
+        Some(cursor) => cursor,
+        None => context.batch_start().map_err(OpError::rejected)?,
+    };
+    let placement = context
+        .place_in_batch(cursor, action)
+        .map_err(OpError::rejected)?;
 
     let mut changes = Changes::default();
     changes.put_all(placement.moved().cloned());
-    Outcome::new(placement, changes.rescheduled())
+    Ok(Outcome::new(placement, changes.rescheduled()))
 }
 
 pub fn backlog(mut action: Action) -> Outcome<Action> {

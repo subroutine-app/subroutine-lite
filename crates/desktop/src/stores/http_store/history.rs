@@ -1,9 +1,10 @@
-use super::transport::{Cmd, remove_cmd, restore_cmd};
-use super::{ActionDataChanged, AppDatabaseStore, DataChanged, EventDataChanged};
+use super::items::{item_resource_key, item_resource_value};
+use super::{AppDatabaseStore, SaveResult, WorkspacePersistence};
 use crate::stores::UndoTransaction;
-use crate::utils::LogErr;
 use gpui::Context;
-use subroutine_core::{Action, ActionTemplate, AnyItem, EventTemplate};
+use subroutine_core::{
+    Action, ActionTemplate, AnyItem, EventTemplate, OptimisticPatch, ResourceKey, ResourceValue,
+};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -22,19 +23,6 @@ pub(super) enum StoreChange {
         after: Option<bool>,
     },
     ActionsCompleted(Vec<ActionCompletionChange>),
-    ActionQueued(Vec<Uuid>),
-    ActionDurationCleared {
-        previous: Action,
-        cleared: Action,
-    },
-    ActionBacklogged(Uuid),
-    RoutineInstantiated {
-        created: Vec<Action>,
-    },
-    PipelineRefreshed {
-        previous_states: Vec<Action>,
-        refreshed_states: Vec<Action>,
-    },
     ItemsDeleted(Vec<AnyItem>),
     ItemsUpdated {
         previous: Vec<AnyItem>,
@@ -45,6 +33,86 @@ pub(super) enum StoreChange {
         actions: Vec<ActionTemplate>,
         events: Vec<EventTemplate>,
     },
+    Pending {
+        original: Box<StoreChange>,
+        remaining: OptimisticPatch,
+    },
+}
+
+impl StoreChange {
+    fn patch(&self, undo: bool) -> OptimisticPatch {
+        let mut patch = OptimisticPatch::default();
+        match self {
+            Self::EventBusyOverride { .. } => unreachable!(),
+            Self::ActionsCompleted(changes) => {
+                for change in changes {
+                    if undo {
+                        patch
+                            .writes
+                            .push(ResourceValue::Action(change.previous.clone()));
+                        patch.deletes.extend(
+                            change
+                                .next
+                                .as_ref()
+                                .map(|next| ResourceKey::Action { id: next.id }),
+                        );
+                    } else {
+                        patch
+                            .writes
+                            .push(ResourceValue::Action(change.completed.clone()));
+                        patch
+                            .writes
+                            .extend(change.next.clone().map(ResourceValue::Action));
+                    }
+                }
+            }
+            Self::ItemsDeleted(items) => {
+                if undo {
+                    patch.writes = items.iter().map(item_resource_value).collect();
+                } else {
+                    patch.deletes = items.iter().map(item_resource_key).collect();
+                }
+            }
+            Self::ItemsUpdated {
+                previous,
+                updated,
+                created,
+            } => {
+                if undo {
+                    patch.writes = previous.iter().map(item_resource_value).collect();
+                    patch.deletes = created.iter().map(item_resource_key).collect();
+                } else {
+                    patch.writes = updated
+                        .iter()
+                        .chain(created)
+                        .map(item_resource_value)
+                        .collect();
+                }
+            }
+            Self::SavedItemsDeleted { actions, events } => {
+                if undo {
+                    patch.writes = actions
+                        .iter()
+                        .cloned()
+                        .map(ResourceValue::ActionTemplate)
+                        .chain(events.iter().cloned().map(ResourceValue::EventTemplate))
+                        .collect();
+                } else {
+                    patch.deletes = actions
+                        .iter()
+                        .map(|item| ResourceKey::ActionTemplate { id: item.id })
+                        .chain(
+                            events
+                                .iter()
+                                .map(|item| ResourceKey::EventTemplate { id: item.id }),
+                        )
+                        .collect();
+                }
+            }
+            Self::Pending { remaining, .. } => return remaining.clone(),
+        }
+        patch
+    }
 }
 
 impl AppDatabaseStore {
@@ -56,519 +124,120 @@ impl AppDatabaseStore {
         self.history.record(change)
     }
 
+    pub(super) fn history_pending(&self) -> bool {
+        matches!(self.history.next_undo(), Some(StoreChange::Pending { .. }))
+            || matches!(self.history.next_redo(), Some(StoreChange::Pending { .. }))
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
+            && !matches!(self.history.next_redo(), Some(StoreChange::Pending { .. }))
     }
 
     pub fn can_redo(&self) -> bool {
         self.history.can_redo()
+            && !matches!(self.history.next_undo(), Some(StoreChange::Pending { .. }))
     }
 
     pub fn undo_transaction(
         &mut self,
         transaction: UndoTransaction,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> SaveResult<bool> {
         if !self.history.next_undo_is(transaction) {
-            return false;
+            return Ok(false);
         }
-        self.undo(cx);
-        true
+        self.undo(cx)
     }
 
-    pub fn undo(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.history.pop_undo() else {
-            return;
+    pub fn undo(&mut self, cx: &mut Context<Self>) -> SaveResult<bool> {
+        if !self.can_undo() {
+            return Ok(false);
+        }
+        let Some(mut entry) = self.history.pop_undo() else {
+            return Ok(false);
         };
-
-        if let StoreChange::EventBusyOverride {
-            event_id, before, ..
-        } = &entry.value
-        {
-            if self.apply_event_busy_override(*event_id, *before, cx) {
-                self.history.push_redo(entry);
-            } else {
-                self.history.push_undo(entry);
-            }
-            cx.notify();
-            return;
-        }
-        let change = entry.value.clone();
-        self.history.push_redo(entry);
-        cx.notify();
-        if self.persistence.is_some() {
-            self.undo_persisted(change, cx);
+        let result = self.apply_history(&mut entry.value, true, cx);
+        if result.is_ok() {
+            self.history.push_redo(entry);
         } else {
-            self.undo_without_persistence(change, cx);
+            self.history.push_undo(entry);
         }
+        cx.notify();
+        result.map(|_| true)
     }
 
-    fn undo_persisted(&mut self, change: StoreChange, cx: &mut Context<Self>) {
-        match change {
-            StoreChange::EventBusyOverride { .. } => {
-                unreachable!("field-only history handled above")
-            }
-            StoreChange::ActionsCompleted(changes) => {
-                for change in changes.into_iter().rev() {
-                    self.upsert_action(change.previous, cx);
-                    if let Some(next) = change.next {
-                        self.delete_action_without_history(next.id, cx);
-                    }
-                }
-            }
-            StoreChange::ActionQueued(ids) => {
-                for id in ids {
-                    self.backlog_action_without_history(id, cx);
-                }
-            }
-            StoreChange::ActionDurationCleared { previous, .. } => {
-                self.upsert_action(previous, cx);
-            }
-            StoreChange::ActionBacklogged(id) => self.queue_action_without_history(id, cx),
-            StoreChange::RoutineInstantiated { created } => {
-                for action in created {
-                    self.delete_action_without_history(action.id, cx);
-                }
-            }
-            StoreChange::PipelineRefreshed {
-                previous_states, ..
-            } => {
-                for action in previous_states {
-                    self.upsert_action(action, cx);
-                }
-                cx.emit(EventDataChanged);
-            }
-            StoreChange::ItemsDeleted(items) => self.create_items(items, cx),
-            StoreChange::ItemsUpdated {
-                previous, created, ..
-            } => {
-                self.upsert_items_without_history(&previous, cx);
-                self.delete_items_without_history(&created, cx);
-            }
-            StoreChange::SavedItemsDeleted { actions, events } => {
-                self.restore_saved_items_without_history(actions, events, cx);
-            }
+    pub fn redo(&mut self, cx: &mut Context<Self>) -> SaveResult<bool> {
+        if !self.can_redo() {
+            return Ok(false);
         }
-    }
-
-    fn undo_without_persistence(&mut self, change: StoreChange, cx: &mut Context<Self>) {
-        let cmd_tx = self.cmd_tx.clone();
-
-        match change {
-            StoreChange::EventBusyOverride { .. } => {
-                unreachable!("field-only history handled above")
-            }
-            StoreChange::ActionsCompleted(changes) => {
-                cx.spawn(async move |this, cx| {
-                    for change in changes.into_iter().rev() {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::UpsertAction(change.previous.clone(), tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_action_local(change.previous);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-
-                        if let Some(next_action) = change.next {
-                            let (tx, rx) = flume::bounded(1);
-                            let _ = cmd_tx.send(Cmd::DeleteAction(next_action.id, tx));
-                            if let Ok(Ok(())) = rx.recv_async().await {
-                                this.update(cx, |store, cx| {
-                                    store.actions.retain(|a| a.id != next_action.id);
-                                    cx.emit(ActionDataChanged);
-                                    cx.emit(DataChanged);
-                                    cx.notify();
-                                })
-                                .log_err();
-                            }
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::ActionQueued(ids) => {
-                cx.spawn(async move |this, cx| {
-                    for id in ids {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::BacklogAction(id, tx));
-                        if let Ok(Ok(action)) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_action_local(action);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::ActionDurationCleared { previous, .. } => {
-                cx.spawn(async move |this, cx| {
-                    let (tx, rx) = flume::bounded(1);
-                    let _ = cmd_tx.send(Cmd::UpsertAction(previous.clone(), tx));
-                    if let Ok(Ok(())) = rx.recv_async().await {
-                        this.update(cx, |store, cx| {
-                            store.upsert_action_local(previous);
-                            cx.emit(ActionDataChanged);
-                            cx.emit(DataChanged);
-                            cx.notify();
-                        })
-                        .log_err();
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::ActionBacklogged(id) => {
-                cx.spawn(async move |this, cx| {
-                    let (tx, rx) = flume::bounded(1);
-                    let _ = cmd_tx.send(Cmd::QueueAction(id, tx));
-                    if let Ok(Ok(changed)) = rx.recv_async().await {
-                        this.update(cx, |store, cx| {
-                            for action in changed {
-                                store.upsert_action_local(action);
-                            }
-                            cx.emit(ActionDataChanged);
-                            cx.emit(DataChanged);
-                            cx.notify();
-                        })
-                        .log_err();
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::RoutineInstantiated { created } => {
-                cx.spawn(async move |this, cx| {
-                    for action in created {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::DeleteAction(action.id, tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.actions.retain(|a| a.id != action.id);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::PipelineRefreshed {
-                previous_states, ..
-            } => {
-                cx.spawn(async move |this, cx| {
-                    for previous in previous_states {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::UpsertAction(previous.clone(), tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_action_local(previous);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-                    }
-                    this.update(cx, |_, cx| {
-                        cx.emit(EventDataChanged);
-                    })
-                    .log_err();
-                })
-                .detach();
-            }
-
-            StoreChange::ItemsDeleted(items) => {
-                cx.spawn(async move |this, cx| {
-                    for item in items {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(restore_cmd(item.clone(), tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_item_local(item);
-                                Self::emit_all_changed(cx);
-                            })
-                            .log_err();
-                        }
-                    }
-                })
-                .detach();
-            }
-            StoreChange::ItemsUpdated {
-                previous, created, ..
-            } => {
-                for item in previous {
-                    self.upsert_item(item, cx);
-                }
-                for item in created {
-                    self.delete_item_without_history(&item, cx);
-                }
-                Self::emit_all_changed(cx);
-            }
-            StoreChange::SavedItemsDeleted { actions, events } => {
-                self.restore_saved_items_without_history(actions, events, cx);
-            }
-        }
-    }
-
-    pub fn redo(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.history.pop_redo() else {
-            return;
+        let Some(mut entry) = self.history.pop_redo() else {
+            return Ok(false);
         };
-
-        if let StoreChange::EventBusyOverride {
-            event_id, after, ..
-        } = &entry.value
-        {
-            if self.apply_event_busy_override(*event_id, *after, cx) {
-                self.history.push_undo(entry);
-            } else {
-                self.history.push_redo(entry);
-            }
-            cx.notify();
-            return;
-        }
-        let change = entry.value.clone();
-        self.history.push_undo(entry);
-        cx.notify();
-        if self.persistence.is_some() {
-            self.redo_persisted(change, cx);
+        let result = self.apply_history(&mut entry.value, false, cx);
+        if result.is_ok() {
+            self.history.push_undo(entry);
         } else {
-            self.redo_without_persistence(change, cx);
+            self.history.push_redo(entry);
         }
+        cx.notify();
+        result.map(|_| true)
     }
 
-    fn redo_persisted(&mut self, change: StoreChange, cx: &mut Context<Self>) {
-        match change {
-            StoreChange::EventBusyOverride { .. } => {
-                unreachable!("field-only history handled above")
-            }
-            StoreChange::ActionsCompleted(changes) => {
-                for change in changes {
-                    self.upsert_action(change.completed, cx);
-                    if let Some(next) = change.next {
-                        self.upsert_action(next, cx);
-                    }
-                }
-            }
-            StoreChange::ActionQueued(ids) => {
-                for id in ids {
-                    self.queue_action_without_history(id, cx);
-                }
-            }
-            StoreChange::ActionDurationCleared { cleared, .. } => {
-                self.upsert_action(cleared, cx);
-            }
-            StoreChange::ActionBacklogged(id) => self.backlog_action_without_history(id, cx),
-            StoreChange::RoutineInstantiated { created } => {
-                for action in created {
-                    self.upsert_action(action, cx);
-                }
-            }
-            StoreChange::PipelineRefreshed {
-                refreshed_states, ..
-            } => {
-                for action in refreshed_states {
-                    self.upsert_action(action, cx);
-                }
-                cx.emit(EventDataChanged);
-            }
-            StoreChange::ItemsDeleted(items) => {
-                self.delete_items_without_history(&items, cx);
-            }
-            StoreChange::ItemsUpdated {
-                updated, created, ..
-            } => {
-                let items = updated.into_iter().chain(created).collect::<Vec<_>>();
-                self.upsert_items_without_history(&items, cx);
-            }
-            StoreChange::SavedItemsDeleted { actions, events } => {
-                let action_ids: Vec<_> = actions.iter().map(|item| item.id).collect();
-                let event_ids: Vec<_> = events.iter().map(|item| item.id).collect();
-                self.delete_saved_items_without_history(&action_ids, &event_ids, cx);
-            }
+    fn apply_history(
+        &mut self,
+        change: &mut StoreChange,
+        undo: bool,
+        cx: &mut Context<Self>,
+    ) -> SaveResult {
+        if let StoreChange::EventBusyOverride {
+            event_id,
+            before,
+            after,
+        } = change
+        {
+            return self.apply_event_busy_override(
+                *event_id,
+                if undo { *before } else { *after },
+                cx,
+            );
         }
-    }
-
-    fn redo_without_persistence(&mut self, change: StoreChange, cx: &mut Context<Self>) {
-        let cmd_tx = self.cmd_tx.clone();
-
-        match change {
-            StoreChange::EventBusyOverride { .. } => {
-                unreachable!("field-only history handled above")
-            }
-            StoreChange::ActionsCompleted(changes) => {
-                cx.spawn(async move |this, cx| {
-                    for change in changes {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::UpsertAction(change.completed.clone(), tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_action_local(change.completed);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-
-                        if let Some(next_action) = change.next {
-                            let (tx, rx) = flume::bounded(1);
-                            let _ = cmd_tx.send(Cmd::UpsertAction(next_action.clone(), tx));
-                            if let Ok(Ok(())) = rx.recv_async().await {
-                                this.update(cx, |store, cx| {
-                                    store.upsert_action_local(next_action);
-                                    cx.emit(ActionDataChanged);
-                                    cx.emit(DataChanged);
-                                    cx.notify();
-                                })
-                                .log_err();
-                            }
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::ActionQueued(ids) => {
-                cx.spawn(async move |this, cx| {
-                    for id in ids {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::QueueAction(id, tx));
-                        if let Ok(Ok(changed)) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                for action in changed {
-                                    store.upsert_action_local(action);
-                                }
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::ActionDurationCleared { cleared, .. } => {
-                cx.spawn(async move |this, cx| {
-                    let (tx, rx) = flume::bounded(1);
-                    let _ = cmd_tx.send(Cmd::UpsertAction(cleared.clone(), tx));
-                    if let Ok(Ok(())) = rx.recv_async().await {
-                        this.update(cx, |store, cx| {
-                            store.upsert_action_local(cleared);
-                            cx.emit(ActionDataChanged);
-                            cx.emit(DataChanged);
-                            cx.notify();
-                        })
-                        .log_err();
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::ActionBacklogged(id) => {
-                cx.spawn(async move |this, cx| {
-                    let (tx, rx) = flume::bounded(1);
-                    let _ = cmd_tx.send(Cmd::BacklogAction(id, tx));
-                    if let Ok(Ok(action)) = rx.recv_async().await {
-                        this.update(cx, |store, cx| {
-                            store.upsert_action_local(action);
-                            cx.emit(ActionDataChanged);
-                            cx.emit(DataChanged);
-                            cx.notify();
-                        })
-                        .log_err();
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::RoutineInstantiated { created } => {
-                cx.spawn(async move |this, cx| {
-                    for action in created {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::UpsertAction(action.clone(), tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_action_local(action);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-                    }
-                })
-                .detach();
-            }
-
-            StoreChange::PipelineRefreshed {
-                refreshed_states, ..
-            } => {
-                cx.spawn(async move |this, cx| {
-                    for refreshed in refreshed_states {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(Cmd::UpsertAction(refreshed.clone(), tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.upsert_action_local(refreshed);
-                                cx.emit(ActionDataChanged);
-                                cx.emit(DataChanged);
-                                cx.notify();
-                            })
-                            .log_err();
-                        }
-                    }
-                    this.update(cx, |_, cx| {
-                        cx.emit(EventDataChanged);
-                    })
-                    .log_err();
-                })
-                .detach();
-            }
-
-            StoreChange::ItemsDeleted(items) => {
-                cx.spawn(async move |this, cx| {
-                    for item in items {
-                        let (tx, rx) = flume::bounded(1);
-                        let _ = cmd_tx.send(remove_cmd(&item, tx));
-                        if let Ok(Ok(())) = rx.recv_async().await {
-                            this.update(cx, |store, cx| {
-                                store.remove_item_local(&item);
-                                Self::emit_all_changed(cx);
-                            })
-                            .log_err();
-                        }
-                    }
-                })
-                .detach();
-            }
-            StoreChange::ItemsUpdated {
-                updated, created, ..
-            } => {
-                for item in updated.into_iter().chain(created) {
-                    self.upsert_item(item, cx);
+        let mut patch = change.patch(undo);
+        if self
+            .persistence
+            .as_ref()
+            .is_some_and(WorkspacePersistence::is_remote)
+        {
+            let partial =
+                !patch.writes.is_empty() || matches!(&*change, StoreChange::Pending { .. });
+            self.persist_resource_upserts(patch.writes.clone(), cx)?;
+            patch.writes.clear();
+            if let Err(error) = self.persist_resource_deletes(patch.deletes.clone(), cx) {
+                if !partial {
+                    return Err(error);
                 }
+                let original = match &*change {
+                    StoreChange::Pending { original, .. } => original.clone(),
+                    original => Box::new(original.clone()),
+                };
+                *change = StoreChange::Pending {
+                    original,
+                    remaining: patch,
+                };
+                let command = if undo { "Undo" } else { "Redo" };
+                return Err(self.save_error(format!("{command} is unfinished; any accepted changes remain saved. Retry {command} to finish the remaining changes. {error}"), cx));
             }
-            StoreChange::SavedItemsDeleted { actions, events } => {
-                let action_ids: Vec<_> = actions.iter().map(|item| item.id).collect();
-                let event_ids: Vec<_> = events.iter().map(|item| item.id).collect();
-                self.delete_saved_items_without_history(&action_ids, &event_ids, cx);
+        } else {
+            if !self.is_ready() {
+                return Err(self.save_error("The local workspace is not ready.", cx));
             }
+            self.apply_local_patch(patch, cx)
+                .unwrap_or_else(|| Err("No local workspace is available.".into()))
+                .map_err(|error| self.save_error(error, cx))?;
         }
+        if let StoreChange::Pending { original, .. } = change {
+            *change = *original.clone();
+        }
+        Ok(())
     }
 }

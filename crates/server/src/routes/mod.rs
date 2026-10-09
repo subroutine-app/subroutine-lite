@@ -12,6 +12,7 @@ mod pipeline;
 mod routines;
 mod signals;
 mod sse;
+pub(crate) mod validation;
 
 pub fn router() -> Router<AppState> {
     Router::new()

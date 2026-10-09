@@ -1,4 +1,6 @@
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+
+use super::ParseError;
 
 use crate::lexer::{SpannedToken, Token};
 
@@ -100,11 +102,51 @@ pub(super) fn default_time() -> NaiveTime {
     NaiveTime::from_hms_opt(9, 0, 0).unwrap()
 }
 
-pub(super) fn date_at(date: NaiveDate, time: NaiveTime) -> DateTime<Utc> {
+pub(super) fn date_at(date: NaiveDate, time: NaiveTime) -> Result<DateTime<Utc>, ParseError> {
     let ndt = NaiveDateTime::new(date, time);
     match Local.from_local_datetime(&ndt) {
-        chrono::LocalResult::Single(dt) => dt.with_timezone(&Utc),
-        chrono::LocalResult::Ambiguous(earliest, _latest) => earliest.with_timezone(&Utc),
-        chrono::LocalResult::None => Utc.from_utc_datetime(&ndt),
+        chrono::LocalResult::Single(dt) => Ok(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(earliest, _latest) => Ok(earliest.with_timezone(&Utc)),
+        chrono::LocalResult::None => Err(ParseError::date(
+            ndt.to_string(),
+            "local time does not exist or is out of range",
+        )),
     }
+}
+
+pub(super) fn local_datetime(datetime: DateTime<Utc>) -> Result<NaiveDateTime, ParseError> {
+    let local = datetime.with_timezone(&Local);
+    local
+        .naive_utc()
+        .checked_add_offset(*local.offset())
+        .ok_or_else(|| {
+            ParseError::date(datetime.to_string(), "local date and time is out of range")
+        })
+}
+
+pub(super) fn quantize_ceil(
+    datetime: DateTime<Utc>,
+    granularity: Duration,
+) -> Result<DateTime<Utc>, ParseError> {
+    let seconds = granularity.num_seconds();
+    if seconds <= 0 || Duration::try_seconds(seconds) != Some(granularity) {
+        return Err(ParseError::date(
+            datetime.to_string(),
+            "granularity must be a positive whole number of seconds",
+        ));
+    }
+    let timestamp = datetime.timestamp();
+    let remainder = timestamp.rem_euclid(seconds);
+    if remainder == 0 && datetime.timestamp_subsec_nanos() == 0 {
+        return Ok(datetime);
+    }
+    timestamp
+        .checked_add(seconds - remainder)
+        .and_then(|target| DateTime::from_timestamp(target, 0))
+        .ok_or_else(|| {
+            ParseError::date(
+                datetime.to_string(),
+                "rounded date and time is out of range",
+            )
+        })
 }

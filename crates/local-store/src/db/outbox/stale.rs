@@ -1,10 +1,11 @@
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use subroutine_core::{AllData, ApiErrorBody, ApiErrorCode, DataDelta, ResourceKey};
 use uuid::Uuid;
 
 use super::{
     super::{
         Database, non_nil_uuid,
+        projection::{commit_projection, load_projection},
         rows::{apply_delta_rows, insert_snapshot_rows},
         sync::load_sync_state,
     },
@@ -12,7 +13,7 @@ use super::{
     blocked::block_outbox,
     conflict::first_patch_delta_conflict,
     receipts::retire_confirmed,
-    rows::{load_oldest_outbox, require_outbox_change},
+    rows::{load_oldest_outbox, load_outbox_entries, require_outbox_change},
 };
 use crate::{LocalStoreError, Projection, Result, SyncState};
 
@@ -81,6 +82,7 @@ impl Database {
         }
 
         let conflict = first_patch_delta_conflict(&entry.mutation.optimistic_patch, &delta);
+        reconcile_queued_delta(&tx, entry.position, since, &delta)?;
         apply_delta_rows(&tx, &delta)?;
         tx.execute(
             "UPDATE sync_state SET canonical_seq = ?1 WHERE singleton = 1",
@@ -125,11 +127,15 @@ impl Database {
                 base_seq: delta.seq,
             }
         };
+        let projection = load_projection(&tx)?;
+        let kind = projection
+            .blocked_conflict
+            .as_ref()
+            .map_or(kind, |conflict| StaleResolutionKind::Blocked {
+                conflicting_resource: conflict.error.resource,
+            });
         tx.commit()?;
-        Ok(StaleResolution {
-            projection: self.projection()?,
-            kind,
-        })
+        Ok(StaleResolution { projection, kind })
     }
 
     pub(crate) fn resolve_stale_snapshot(
@@ -183,14 +189,59 @@ impl Database {
             retryable: false,
         };
         block_outbox(&tx, mutation_id, &error)?;
-        tx.commit()?;
+        let projection = commit_projection(tx)?;
         Ok(StaleResolution {
-            projection: self.projection()?,
+            projection,
             kind: StaleResolutionKind::Blocked {
                 conflicting_resource: None,
             },
         })
     }
+}
+
+fn reconcile_queued_delta(
+    tx: &Transaction<'_>,
+    head_position: i64,
+    since: i64,
+    delta: &DataDelta,
+) -> Result<()> {
+    for mut entry in load_outbox_entries(tx)? {
+        let request = &mut entry.mutation.request;
+        if entry.position <= head_position
+            || entry.status != OutboxStatus::Pending
+            || entry.sealed
+            || request.dataset_id != delta.dataset_id
+            || request.base_seq < since
+            || request.base_seq >= delta.seq
+        {
+            continue;
+        }
+        if let Some(resource) = first_patch_delta_conflict(&entry.mutation.optimistic_patch, delta)
+        {
+            let error = ApiErrorBody {
+                error: ApiErrorCode::DomainConflict,
+                message: "this item changed on the server; review your local change before syncing"
+                    .into(),
+                mutation_id: Some(request.mutation_id),
+                resource: Some(resource),
+                current_seq: Some(delta.seq),
+                current_dataset_id: Some(delta.dataset_id),
+                retryable: false,
+            };
+            block_outbox(tx, request.mutation_id, &error)?;
+        } else {
+            request.base_seq = delta.seq;
+            tx.execute(
+                "UPDATE outbox SET request_json = ?1
+                 WHERE mutation_id = ?2 AND state = 'pending' AND sealed = 0",
+                params![
+                    serde_json::to_vec(request)?,
+                    request.mutation_id.to_string()
+                ],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn require_stale_fifo_head(connection: &Connection, mutation_id: Uuid) -> Result<OutboxEntry> {

@@ -341,9 +341,9 @@ fn live_kind_label(item: &AnyItem) -> &'static str {
 
 fn occurs_today_or_later(entry: &SourceEntry, today: NaiveDate) -> bool {
     match entry {
-        SourceEntry::Live(AnyItem::Event(event)) => {
-            event.end_time().with_timezone(&Local).date_naive() >= today
-        }
+        SourceEntry::Live(AnyItem::Event(event)) => event
+            .end_time()
+            .is_ok_and(|end| end.with_timezone(&Local).date_naive() >= today),
         SourceEntry::Live(AnyItem::Marker(marker)) => {
             marker.end_date.unwrap_or(marker.date) >= today
         }
@@ -826,7 +826,7 @@ impl DynamicListDelegate for SearchDelegate {
                                 "enter" => {
                                     cx.stop_propagation();
                                     AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                                        store.create_items(keyboard_items.clone(), cx);
+                                        let _ = store.create_items(keyboard_items.clone(), cx);
                                     });
                                 }
                                 _ => {}

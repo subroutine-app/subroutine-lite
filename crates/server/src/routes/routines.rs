@@ -13,10 +13,12 @@ use subroutine_core::{Action, ChangeEvent, Routine, RoutineStep};
 use crate::{
     auth::Tenant,
     db,
-    error::Result,
+    error::{AppError, Result},
     ops::{self, Delete},
     state::{AppState, TenantState},
 };
+
+use super::validation;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -35,6 +37,7 @@ async fn create(
     Tenant(state): Tenant,
     Json(routine): Json<Routine>,
 ) -> Result<(StatusCode, Json<Routine>)> {
+    validation::routine(&routine, state.settings).map_err(AppError::bad_request)?;
     let routine = state.apply(ops::routines::create(routine)).await?;
     Ok((StatusCode::CREATED, Json(routine)))
 }
@@ -54,12 +57,19 @@ async fn replace_steps(
     Path(id): Path<Uuid>,
     Json(steps): Json<Vec<RoutineStep>>,
 ) -> Result<StatusCode> {
-    let Some(seq) = db::routines::replace_steps(state.scope(), id, &steps).await? else {
-        return Err(crate::error::AppError::not_found(format!(
-            "routine {id} not found"
-        )));
-    };
-    state.announce(seq, ChangeEvent::RoutinesChanged);
+    state
+        .apply_from_snapshot(|snapshot| {
+            let mut routine = snapshot
+                .routines
+                .iter()
+                .find(|routine| routine.id == id)
+                .cloned()
+                .ok_or_else(|| AppError::not_found(format!("routine {id} not found")))?;
+            routine.steps = steps;
+            validation::routine(&routine, snapshot.settings).map_err(AppError::bad_request)?;
+            Ok(ops::put(routine))
+        })
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -73,6 +83,7 @@ async fn update(
     Json(routine): Json<Routine>,
 ) -> Result<Json<Routine>> {
     ops::validate_update("routine", id, &routine)?;
+    validation::routine(&routine, state.settings).map_err(AppError::bad_request)?;
     Ok(Json(state.apply(ops::put(routine)).await?))
 }
 
@@ -102,11 +113,32 @@ async fn instantiate(
                     .ok_or_else(|| {
                         crate::error::AppError::not_found(format!("routine {id} not found"))
                     })?;
-                Ok(ops::routines::instantiate(
-                    snapshot,
-                    routine,
-                    body.start_time,
-                ))
+                validation::routine(routine, snapshot.settings).map_err(AppError::bad_request)?;
+                let context = snapshot.context();
+                let start = match body.start_time {
+                    Some(start) => context.quantize_ceil(start),
+                    None => context.next_slot(
+                        routine
+                            .steps
+                            .first()
+                            .map(|step| {
+                                step.duration
+                                    .unwrap_or(snapshot.settings.default_step_duration)
+                            })
+                            .unwrap_or_else(chronoutil::RelativeDuration::zero),
+                    ),
+                }
+                .map_err(ops::OpError::rejected)?;
+                validation::steps(
+                    &routine.steps,
+                    start.into(),
+                    snapshot.settings.default_step_duration,
+                )
+                .map_err(AppError::bad_request)?;
+                let outcome = ops::routines::instantiate(snapshot, routine, body.start_time)?;
+                validation::actions(&outcome.value, snapshot.settings)
+                    .map_err(AppError::bad_request)?;
+                Ok(outcome)
             })
             .await?,
     ))

@@ -22,15 +22,16 @@ pub(crate) fn apply_remote_patch(
         }
         return Ok(());
     }
+    if let MutationOperation::ReorderRoutines { routine_ids } = operation {
+        return reorder_routines(&mut data.routines, routine_ids);
+    }
     patch
         .writes
         .retain(|value| operation_projects_write(operation, value.key()));
     patch
         .deletes
         .retain(|key| operation_projects_delete(operation, *key));
-    if !matches!(operation, MutationOperation::ReorderRoutines { .. }) {
-        patch.routine_order = None;
-    }
+    patch.routine_order = None;
     if matches!(operation, MutationOperation::UpsertResources { .. }) {
         preserve_missing_availability(&mut patch, &data.events, &data.event_templates);
     }

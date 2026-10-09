@@ -1,10 +1,9 @@
 use chrono::NaiveDate;
 
-use super::super::{date::try_date_anchor, title::is_escaped};
-use crate::{
-    ast::ParseDraft,
-    lexer::{SpannedToken, Token},
+use super::super::{
+    ParseError, date::try_date_anchor, duration::join_adjacent, numeric_end, title::is_escaped,
 };
+use crate::{ast::ParseDraft, lexer::SpannedToken};
 
 pub(in crate::parse) const RECURRENCE_BOUND_CONFLICT_WARNING: &str =
     "multiple recurrence bounds supplied; using the last one";
@@ -13,32 +12,50 @@ pub(in crate::parse) fn try_nl_recurrence_end(
     tokens: &[SpannedToken],
     i: usize,
     today: NaiveDate,
-) -> Option<(NaiveDate, usize)> {
-    if !tokens.get(i)?.text.eq_ignore_ascii_case("until") || is_escaped(tokens, i + 1) {
-        return None;
+) -> Result<Option<(NaiveDate, usize)>, ParseError> {
+    if !tokens
+        .get(i)
+        .is_some_and(|token| token.text.eq_ignore_ascii_case("until"))
+        || is_escaped(tokens, i + 1)
+    {
+        return Ok(None);
     }
 
-    let (date, date_len) = try_date_anchor(tokens, i + 1, today)?;
-    Some((date, 1 + date_len))
+    Ok(try_date_anchor(tokens, i + 1, today)?.map(|(date, len)| (date, 1 + len)))
 }
 
 pub(in crate::parse) fn try_nl_recurrence_count(
     tokens: &[SpannedToken],
     i: usize,
-) -> Option<(u32, usize)> {
-    if !tokens.get(i)?.text.eq_ignore_ascii_case("for")
-        || !matches!(tokens.get(i + 1)?.token, Token::Number)
-        || is_escaped(tokens, i + 2)
+) -> Result<Option<(u32, usize)>, ParseError> {
+    if !tokens
+        .get(i)
+        .is_some_and(|token| token.text.eq_ignore_ascii_case("for"))
     {
-        return None;
+        return Ok(None);
     }
-
-    let unit = tokens.get(i + 2)?.text.to_ascii_lowercase();
-    if !matches!(unit.as_str(), "occurrence" | "occurrences" | "times") {
-        return None;
+    let end = numeric_end(tokens, i + 1);
+    let Some(unit) = tokens.get(end) else {
+        return Ok(None);
+    };
+    if end == i + 1
+        || is_escaped(tokens, end)
+        || !matches!(
+            unit.text.to_ascii_lowercase().as_str(),
+            "occurrence" | "occurrences" | "times"
+        )
+    {
+        return Ok(None);
     }
-
-    Some((tokens[i + 1].text.parse().ok()?, 3))
+    let text = join_adjacent(tokens, i + 1, end - i - 1);
+    let remaining = text
+        .parse::<u32>()
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            ParseError::recurrence(text, "occurrence count must be between 1 and 4294967295")
+        })?;
+    Ok(Some((remaining, end - i + 1)))
 }
 
 pub(in crate::parse) fn set_recurrence_end_date(draft: &mut ParseDraft, date: NaiveDate) {

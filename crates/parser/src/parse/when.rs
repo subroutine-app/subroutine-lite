@@ -1,7 +1,6 @@
 use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 
-use super::date::*;
-use super::time::*;
+use super::{ParseError, date::*, time::*};
 use crate::ast::{EntityKind, WhenSpec};
 use crate::lexer::{SpannedToken, Token};
 
@@ -23,208 +22,122 @@ pub(super) fn try_nl_when(
     i: usize,
     kind: EntityKind,
     now: DateTime<Utc>,
-    today: chrono::NaiveDate,
+    today: NaiveDate,
     granularity: Duration,
-) -> Option<(WhenSpec, usize)> {
-    let date_spec: fn(NaiveDate) -> WhenSpec = match kind {
-        EntityKind::Action | EntityKind::RoutineStep | EntityKind::Marker => WhenSpec::NaiveDate,
-        EntityKind::Event | EntityKind::Signal => {
-            |date| WhenSpec::DateTime(date_at(date, default_time()))
-        }
-        EntityKind::ActionTemplate | EntityKind::EventTemplate => return None,
+) -> Result<Option<(WhenSpec, usize)>, ParseError> {
+    if kind.is_template() {
+        return Ok(None);
+    }
+    let Some(token) = tokens.get(i) else {
+        return Ok(None);
     };
+    let lower = token.text.to_ascii_lowercase();
 
-    let n = tokens.len();
-    if i >= n {
-        return None;
-    }
-
-    let lower = tokens[i].text.to_ascii_lowercase();
-
-    if matches!(tokens[i].token, Token::Time12 | Token::Time24)
-        && let Some((time, _time_len)) = try_time_token(tokens, i)
-        && let Some(date) = try_date_anchor(tokens, i + 1, today)
+    if matches!(token.token, Token::Time12 | Token::Time24)
+        && let Some((time, time_len)) = try_time_token(tokens, i)
+        && let Some((date, date_len)) = try_date_anchor(tokens, i + time_len, today)?
     {
-        return Some((WhenSpec::DateTime(date_at(date.0, time)), 1 + date.1));
+        return Ok(Some((
+            WhenSpec::DateTime(date_at(date, time)?),
+            time_len + date_len,
+        )));
     }
 
-    if lower == "in" && i + 2 < n && matches!(tokens[i + 1].token, Token::Number) {
-        let unit = tokens[i + 2].text.to_ascii_lowercase();
-        let amount: i64 = tokens[i + 1].text.parse().ok()?;
+    if let Some((amount, unit, len)) = try_relative_amount(tokens, i)? {
         let spec = match unit.as_str() {
-            "hour" | "hours" | "hr" | "hrs" => {
-                Some(WhenSpec::DateTime(now + Duration::hours(amount)))
+            "hour" | "hours" | "hr" | "hrs" | "minute" | "minutes" | "min" | "mins" => {
+                let amount = i64::try_from(amount).map_err(|_| {
+                    ParseError::date(&token.text, "relative offset is out of range")
+                })?;
+                let duration = if matches!(unit.as_str(), "hour" | "hours" | "hr" | "hrs") {
+                    Duration::try_hours(amount)
+                } else {
+                    Duration::try_minutes(amount)
+                };
+                let datetime = duration
+                    .and_then(|duration| now.checked_add_signed(duration))
+                    .ok_or_else(|| {
+                        ParseError::date(&token.text, "resulting date and time is out of range")
+                    })?;
+                WhenSpec::DateTime(datetime)
             }
-            "minute" | "minutes" | "min" | "mins" => {
-                Some(WhenSpec::DateTime(now + Duration::minutes(amount)))
+            _ => {
+                let days = if matches!(unit.as_str(), "week" | "weeks") {
+                    amount.checked_mul(7).ok_or_else(|| {
+                        ParseError::date(&token.text, "week offset is out of range")
+                    })?
+                } else {
+                    amount
+                };
+                date_spec(&kind, add_days(today, days)?)?
             }
-            "day" | "days" => {
-                let date = today + chrono::Days::new(amount as u64);
-                Some(date_spec(date))
-            }
-            "week" | "weeks" => {
-                let date = today + chrono::Days::new(amount as u64 * 7);
-                Some(date_spec(date))
-            }
-            _ => None,
         };
-        if let Some(spec) = spec {
-            return Some((spec, 3));
-        }
+        return Ok(Some((spec, len)));
     }
 
-    if lower == "this" && i + 1 < n {
-        let next = tokens[i + 1].text.to_ascii_lowercase();
-        let time_opt = match next.as_str() {
-            "morning" => Some(NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
-            "afternoon" => Some(NaiveTime::from_hms_opt(14, 0, 0).unwrap()),
-            "evening" => Some(NaiveTime::from_hms_opt(20, 0, 0).unwrap()),
-            "night" => Some(NaiveTime::from_hms_opt(21, 0, 0).unwrap()),
-            _ => None,
-        };
-        if let Some(t) = time_opt {
-            return Some((WhenSpec::DateTime(date_at(today, t)), 2));
-        }
-        if let Some(day) = parse_weekday_name(&next) {
-            let date = this_or_next_weekday(today, day, false);
-            return Some((date_spec(date), 2));
-        }
-        if next == "week" {
-            let date = today + chrono::Days::new(7);
-            return Some((date_spec(date), 2));
-        }
-    }
-
-    if lower == "next" && i + 1 < n {
-        let next = tokens[i + 1].text.to_ascii_lowercase();
-        if let Some(day) = parse_weekday_name(&next) {
-            let date = next_weekday_strict(today, day);
-            if let Some((time, extra)) = try_time_suffix(tokens, i + 2) {
-                return Some((WhenSpec::DateTime(date_at(date, time)), 2 + extra));
-            }
-            return Some((date_spec(date), 2));
-        }
-        if next == "week" {
-            let date = today + chrono::Days::new(7);
-            return Some((date_spec(date), 2));
-        }
-    }
-
-    if let Some(day) = parse_weekday_name(&lower) {
-        let date = next_weekday_strict(today, day);
-        if let Some((time, extra)) = try_time_suffix(tokens, i + 1) {
-            return Some((WhenSpec::DateTime(date_at(date, time)), 1 + extra));
-        }
-        return Some((date_spec(date), 1));
+    if lower == "this"
+        && let Some(next) = tokens.get(i + 1)
+        && matches!(
+            next.text.to_ascii_lowercase().as_str(),
+            "morning" | "afternoon" | "evening" | "night"
+        )
+        && let Some(time) = parse_named_time(&next.text.to_ascii_lowercase())
+    {
+        return Ok(Some((WhenSpec::DateTime(date_at(today, time)?), 2)));
     }
 
     if lower == "now" {
-        return Some((
-            WhenSpec::DateTime(subroutine_core::quantize_ceil(now, granularity)),
+        return Ok(Some((
+            WhenSpec::DateTime(quantize_ceil(now, granularity)?),
             1,
-        ));
+        )));
     }
 
-    if lower == "tonight" {
-        let t = NaiveTime::from_hms_opt(20, 0, 0).unwrap();
-        return Some((WhenSpec::DateTime(date_at(today, t)), 1));
-    }
-
-    if lower == "later" {
-        let t = NaiveTime::from_hms_opt(14, 0, 0).unwrap();
-        return Some((WhenSpec::DateTime(date_at(today, t)), 1));
-    }
-    if lower == "soon" {
-        let t = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
-        let date = today + chrono::Days::new(1);
-        return Some((WhenSpec::DateTime(date_at(date, t)), 1));
-    }
-
-    if lower == "today" {
-        if let Some((time, extra)) = try_time_suffix(tokens, i + 1) {
-            return Some((WhenSpec::DateTime(date_at(today, time)), 1 + extra));
-        }
-        return Some((date_spec(today), 1));
-    }
-
-    if lower == "tomorrow" || lower == "tom" {
-        let date = today + chrono::Days::new(1);
-        if let Some((time, extra)) = try_time_suffix(tokens, i + 1) {
-            return Some((WhenSpec::DateTime(date_at(date, time)), 1 + extra));
-        }
-        return Some((date_spec(date), 1));
+    let named = match lower.as_str() {
+        "tonight" => Some((today, NaiveTime::from_hms_opt(20, 0, 0).unwrap())),
+        "later" => Some((today, NaiveTime::from_hms_opt(14, 0, 0).unwrap())),
+        "soon" => Some((add_days(today, 1)?, default_time())),
+        _ => None,
+    };
+    if let Some((date, time)) = named {
+        return Ok(Some((WhenSpec::DateTime(date_at(date, time)?), 1)));
     }
 
     if let Some((time, len)) = try_nl_time(tokens, i) {
-        return Some((WhenSpec::DateTime(date_at(today, time)), len));
+        return Ok(Some((WhenSpec::DateTime(date_at(today, time)?), len)));
     }
 
-    if lower == "on" && i + 1 < n {
-        let next = tokens[i + 1].text.to_ascii_lowercase();
-        if let Some(day) = parse_weekday_name(&next) {
-            let date = next_weekday_strict(today, day);
-            if let Some((time, extra)) = try_time_suffix(tokens, i + 2) {
-                return Some((WhenSpec::DateTime(date_at(date, time)), 2 + extra));
-            }
-            return Some((date_spec(date), 2));
+    if token.token == Token::Rfc3339 {
+        let datetime = DateTime::parse_from_rfc3339(&token.text)
+            .map_err(|_| ParseError::date(&token.text, "invalid RFC 3339 date and time"))?;
+        return Ok(Some((WhenSpec::DateTime(datetime.with_timezone(&Utc)), 1)));
+    }
+
+    let intro = usize::from(
+        lower == "on"
+            && tokens
+                .get(i + 1)
+                .is_some_and(|token| parse_weekday_name(&token.text).is_some()),
+    );
+    if let Some((date, len)) = try_date_anchor(tokens, i + intro, today)? {
+        let len = len + intro;
+        if let Some((time, extra)) = try_time_suffix(tokens, i + len) {
+            return Ok(Some((
+                WhenSpec::DateTime(date_at(date, time)?),
+                len + extra,
+            )));
         }
+        return Ok(Some((date_spec(&kind, date)?, len)));
     }
 
-    if let Some(month) = parse_month_name(&lower)
-        && i + 1 < n
-    {
-        let next_lower = tokens[i + 1].text.to_ascii_lowercase();
-        let day_opt = if matches!(tokens[i + 1].token, Token::OrdinalDay) {
-            parse_ordinal_number(&tokens[i + 1].text)
-        } else if matches!(tokens[i + 1].token, Token::Number) {
-            tokens[i + 1].text.parse::<u32>().ok()
-        } else if matches!(tokens[i + 1].token, Token::Word) {
-            parse_ordinal_number(&next_lower).or_else(|| next_lower.parse::<u32>().ok())
-        } else {
-            None
-        };
-        if let Some(day) = day_opt {
-            let year = next_month_day_year(today, month, day);
-            if let Some(date) = NaiveDate::from_ymd_opt(year, month, day) {
-                if let Some((time, extra)) = try_time_suffix(tokens, i + 2) {
-                    return Some((WhenSpec::DateTime(date_at(date, time)), 2 + extra));
-                }
-                return Some((date_spec(date), 2));
-            }
+    Ok(None)
+}
+
+fn date_spec(kind: &EntityKind, date: NaiveDate) -> Result<WhenSpec, ParseError> {
+    match kind {
+        EntityKind::Event | EntityKind::Signal => {
+            Ok(WhenSpec::DateTime(date_at(date, default_time())?))
         }
+        _ => Ok(WhenSpec::NaiveDate(date)),
     }
-
-    if lower == "the" && i + 1 < n {
-        let next = &tokens[i + 1];
-        let day_opt = if matches!(next.token, Token::OrdinalDay) {
-            parse_ordinal_number(&next.text)
-        } else {
-            None
-        };
-        if let Some(day) = day_opt
-            && let Some(date) = next_month_with_day(today, day)
-        {
-            if let Some((time, extra)) = try_time_suffix(tokens, i + 2) {
-                return Some((WhenSpec::DateTime(date_at(date, time)), 2 + extra));
-            }
-            return Some((date_spec(date), 2));
-        }
-    }
-
-    if matches!(tokens[i].token, Token::Rfc3339)
-        && let Ok(dt) = DateTime::parse_from_rfc3339(&tokens[i].text)
-    {
-        return Some((WhenSpec::DateTime(dt.with_timezone(&Utc)), 1));
-    }
-
-    if matches!(tokens[i].token, Token::IsoDate)
-        && let Ok(date) = NaiveDate::parse_from_str(&tokens[i].text, "%Y-%m-%d")
-    {
-        if let Some((time, extra)) = try_time_token(tokens, i + 1) {
-            return Some((WhenSpec::DateTime(date_at(date, time)), 1 + extra));
-        }
-        return Some((date_spec(date), 1));
-    }
-
-    None
 }

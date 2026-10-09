@@ -32,6 +32,7 @@ use gpui_kit_theme::{Surface, Theme};
 
 use parser::ParseDraft;
 use subroutine_core::{Action, AnyItem, ItemType, SchedulePoint};
+use uuid::Uuid;
 
 mod action_creator;
 mod chip;
@@ -43,8 +44,10 @@ mod signal_creator;
 
 pub(crate) use chip::CreatorChip;
 use chip::{CHIP_HEIGHT, stagger};
-use draft::{Clause, ParseOutcome};
-pub(crate) use draft::{ItemDraft, format_date, format_duration, format_recurrence, format_time};
+use draft::Clause;
+pub(crate) use draft::{
+    ItemDraft, format_date, format_duration, format_recurrence, format_time, stepped_duration,
+};
 use routine_creator::{STEP_GAP, STEP_LIST_PADDING, StepDelegate, StepEntry, steps_area_height};
 
 use crate::{
@@ -221,7 +224,9 @@ pub struct ItemCreator {
 
     title: String,
     parsed: Option<ParseDraft>,
+    parse_error: Option<String>,
     draft: ItemDraft,
+    item_id: Uuid,
 
     batch: Option<BatchRun>,
     input_bounds: Bounds<Pixels>,
@@ -322,7 +327,9 @@ impl ItemCreator {
             step_list,
             title: String::new(),
             parsed: None,
+            parse_error: None,
             draft,
+            item_id: Uuid::now_v7(),
             batch: None,
             input_bounds: Bounds::default(),
             step_input_bounds: Bounds::default(),
@@ -402,26 +409,33 @@ impl ItemCreator {
 
     fn reparse(&mut self, _cx: &mut Context<Self>) {
         let text = self.title.as_str();
-        self.parsed = if text.is_empty() {
-            None
+        self.parse_error = None;
+        let parsed = if text.is_empty() {
+            Ok(None)
         } else {
             match self.mode {
-                ItemType::Action => parser::parse_action(text).ok(),
-                ItemType::Event => parser::parse_event(text).ok(),
-                ItemType::Routine => parser::parse_action(text).ok(),
-                ItemType::Marker => parser::parse_marker(text).ok(),
-                ItemType::Signal => parser::parse_signal(text).ok(),
-                ItemType::ActionTemplate => parser::parse_action(text).ok(),
-                ItemType::EventTemplate => parser::parse_event(text).ok(),
+                ItemType::Action => parser::parse_action(text),
+                ItemType::Event => parser::parse_event(text),
+                ItemType::Routine => parser::parse_action(text),
+                ItemType::Marker => parser::parse_marker(text),
+                ItemType::Signal => parser::parse_signal(text),
+                ItemType::ActionTemplate => parser::parse_action(text),
+                ItemType::EventTemplate => parser::parse_event(text),
+            }
+            .map(Some)
+        };
+        self.parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.parsed = None;
+                self.parse_error = Some(error.to_string());
+                return;
             }
         };
-
-        let outcome = match (&self.parsed, text.is_empty()) {
-            (Some(parsed), _) => ParseOutcome::Read(parsed),
-            (None, true) => ParseOutcome::Empty,
-            (None, false) => ParseOutcome::Unreadable,
-        };
-        self.draft.sync_from_parse(outcome);
+        if let Err(error) = self.draft.sync_from_parse(self.parsed.as_ref()) {
+            self.parse_error = Some(error.to_string());
+            return;
+        }
         self.draft.apply_mode_defaults(self.mode);
         if self.queue_required && self.mode == ItemType::Action {
             self.draft.queued = true;
@@ -534,7 +548,7 @@ impl ItemCreator {
         self.set_mode(MODES[next], window, cx);
     }
 
-    fn submit_step(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn submit_step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.step_input.read(cx).value().to_string();
         let raw = raw.trim();
         if raw.is_empty() {
@@ -546,7 +560,14 @@ impl ItemCreator {
                 (parsed.title.trim().to_string(), parsed.duration)
             }
             Ok(parsed) => (raw.to_string(), parsed.duration),
-            Err(_) => (raw.to_string(), None),
+            Err(error) => {
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    timed_toast("item-creator.step-invalid", error.to_string()).tone(Tone::Warning),
+                );
+                return;
+            }
         };
 
         self.step_list.update(cx, |list, cx| {
@@ -576,10 +597,16 @@ impl ItemCreator {
         cx.notify();
     }
 
-    fn batch_slot(&self, cx: &App) -> Option<(DateTime<Local>, DateTime<Local>)> {
-        let run = self.batch.as_ref()?;
+    fn batch_slot(
+        &self,
+        cx: &App,
+    ) -> Result<Option<(DateTime<Local>, DateTime<Local>)>, &'static str> {
+        let Some(run) = self.batch.as_ref() else {
+            return Ok(None);
+        };
         let settings = Settings::global(cx);
         let context = self.db_store.read(cx).pipeline(&settings);
+        self.draft.schedule.validate()?;
 
         let named = self
             .draft
@@ -591,17 +618,31 @@ impl ItemCreator {
         let probe = Action::new("")
             .with_duration(self.draft.duration.map(Into::into))
             .with_start(named.map(SchedulePoint::DateTime));
-        let cursor = run.cursor.unwrap_or_else(|| context.batch_start());
-        let placement = context.place_in_batch(cursor, probe);
-
-        let start = DateTime::<Utc>::from(placement.action.start?);
-        let end = start + context.effective_duration(&placement.action);
-        Some((start.with_timezone(&Local), end.with_timezone(&Local)))
+        let cursor = match run.cursor {
+            Some(cursor) => cursor,
+            None => context.batch_start()?,
+        };
+        let placement = context.place_in_batch(cursor, probe)?;
+        let start = placement
+            .action
+            .start
+            .ok_or("Batched action has no scheduled time.")?;
+        let end = DateTime::<Utc>::from(subroutine_core::checked_duration_end(
+            start,
+            context.effective_duration(&placement.action),
+        )?);
+        Ok(Some((
+            DateTime::<Utc>::from(start).with_timezone(&Local),
+            end.with_timezone(&Local),
+        )))
     }
 
     fn batch_summary(&self, cx: &App) -> Option<String> {
         let run = self.batch.as_ref()?;
-        let (start, end) = self.batch_slot(cx)?;
+        let (start, end) = match self.batch_slot(cx) {
+            Ok(slot) => slot?,
+            Err(error) => return Some(error.to_owned()),
+        };
         Some(format!(
             "#{} in batch · {} – {}",
             run.placed + 1,
@@ -610,18 +651,30 @@ impl ItemCreator {
         ))
     }
 
-    fn blocker(&self, cx: &App) -> Option<&'static str> {
+    fn blocker(&self, cx: &App) -> Option<&str> {
         let store = self.db_store.read(cx);
         if store.workspace_generation() != self.workspace_generation || !store.is_ready() {
             return Some(
                 "The account workspace changed or is loading. Reopen the creator in the intended workspace.",
             );
         }
-        self.draft
-            .blocker(self.mode, &self.title, self.step_count(cx))
+        self.parse_error
+            .as_deref()
+            .or_else(|| {
+                self.draft
+                    .blocker(self.mode, &self.title, self.step_count(cx))
+            })
+            .or_else(|| {
+                if self.is_batching() {
+                    self.batch_slot(cx).err()
+                } else {
+                    None
+                }
+            })
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reparse(cx);
         if self.queue_required && self.mode == ItemType::Action {
             self.draft.queued = true;
         }
@@ -629,7 +682,7 @@ impl ItemCreator {
             gpui_kit::overlay::toast::push(
                 window,
                 cx,
-                timed_toast("item-creator.blocked", reason).tone(Tone::Warning),
+                timed_toast("item-creator.blocked", reason.to_owned()).tone(Tone::Warning),
             );
             return;
         }
@@ -643,11 +696,22 @@ impl ItemCreator {
         } else {
             Some(typed_notes)
         };
-        let Some(item) = self
-            .draft
-            .build(self.mode, self.resolved_title(), content, steps)
-        else {
-            return;
+        let item = match self.draft.build(
+            self.item_id,
+            self.mode,
+            self.resolved_title(),
+            content,
+            steps,
+        ) {
+            Ok(item) => item,
+            Err(error) => {
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    timed_toast("item-creator.blocked", error).tone(Tone::Warning),
+                );
+                return;
+            }
         };
 
         for warning in self
@@ -665,23 +729,16 @@ impl ItemCreator {
 
         let batch = self.is_batching().then(|| self.batch.unwrap_or_default());
         let settings = Settings::global(cx);
-        let mut advanced = None;
-
-        self.db_store.update(cx, |store, cx| match item {
-            AnyItem::Action(action) => match batch {
-                Some(run) => {
-                    advanced = Some(store.batch_action(action, run.cursor, &settings, cx));
-                }
-                None => store.upsert_action(action, cx),
-            },
-            AnyItem::Event(event) => store.upsert_event(event, cx),
-            AnyItem::Routine(routine) => store.upsert_routine(routine, cx),
-            AnyItem::Marker(marker) => store.upsert_marker(marker, cx),
-            AnyItem::Signal(signal) => store.upsert_signal(signal, cx),
-            item @ (AnyItem::ActionTemplate(_) | AnyItem::EventTemplate(_)) => {
-                store.create_items(vec![item], cx)
-            }
+        let result = self.db_store.update(cx, |store, cx| match (item, batch) {
+            (AnyItem::Action(action), Some(run)) => store
+                .batch_action(action, run.cursor, &settings, cx)
+                .map(Some),
+            (item, _) => store.create_items(vec![item], cx).map(|_| None),
         });
+        let Ok(advanced) = result else {
+            cx.notify();
+            return;
+        };
 
         match (batch, advanced) {
             (Some(run), Some(cursor)) => {
@@ -698,7 +755,9 @@ impl ItemCreator {
     fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.title.clear();
         self.parsed = None;
+        self.parse_error = None;
         self.draft = ItemDraft::new();
+        self.item_id = Uuid::now_v7();
         self.draft.apply_mode_defaults(self.mode);
         if self.queue_required && self.mode == ItemType::Action {
             self.draft.queued = true;
@@ -781,6 +840,19 @@ impl ItemCreator {
             )
     }
 
+    fn step_duration(&mut self, steps: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.draft.step_duration(steps) {
+            gpui_kit::overlay::toast::push(
+                window,
+                cx,
+                timed_toast("item-creator.duration-invalid", error).tone(Tone::Warning),
+            );
+            return;
+        }
+        self.claim(Clause::Duration, window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn duration_chip(
         &self,
         ui: OptionsUi,
@@ -805,16 +877,25 @@ impl ItemCreator {
             }))
             .stepper(
                 cx.listener(|this, _, window, cx| {
-                    this.draft.step_duration(-1);
-                    this.claim(Clause::Duration, window, cx);
-                    cx.notify();
+                    this.step_duration(-1, window, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
-                    this.draft.step_duration(1);
-                    this.claim(Clause::Duration, window, cx);
-                    cx.notify();
+                    this.step_duration(1, window, cx);
                 }),
             )
+    }
+
+    fn cycle_recurrence(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.draft.cycle_recurrence(forward) {
+            gpui_kit::overlay::toast::push(
+                window,
+                cx,
+                timed_toast("item-creator.recurrence-invalid", error).tone(Tone::Warning),
+            );
+            return;
+        }
+        self.claim_recurrence(window, cx);
+        cx.notify();
     }
 
     pub(crate) fn repeat_chip(&self, ui: OptionsUi, ix: usize, cx: &Context<Self>) -> CreatorChip {
@@ -831,20 +912,14 @@ impl ItemCreator {
             .reveal(ui.at(ix))
             .flash(ui.flash(Clause::Recurrence))
             .on_click(cx.listener(|this, _, window, cx| {
-                this.draft.cycle_recurrence(true);
-                this.claim_recurrence(window, cx);
-                cx.notify();
+                this.cycle_recurrence(true, window, cx);
             }))
             .stepper(
                 cx.listener(|this, _, window, cx| {
-                    this.draft.cycle_recurrence(false);
-                    this.claim_recurrence(window, cx);
-                    cx.notify();
+                    this.cycle_recurrence(false, window, cx);
                 }),
                 cx.listener(|this, _, window, cx| {
-                    this.draft.cycle_recurrence(true);
-                    this.claim_recurrence(window, cx);
-                    cx.notify();
+                    this.cycle_recurrence(true, window, cx);
                 }),
             )
     }
@@ -1186,7 +1261,7 @@ impl ItemCreator {
     }
 
     fn render_footer(&self, divider: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let blocker = self.blocker(cx);
+        let blocker = self.blocker(cx).map(str::to_owned);
         let can_submit = blocker.is_none();
         let submit_label = if self.is_batching() {
             "Add to batch"
@@ -1254,7 +1329,7 @@ impl ItemCreator {
                     .items_center()
                     .justify_center()
                     .gap_1()
-                    .when_some(blocker, |this, reason| {
+                    .when_some(blocker.clone(), |this, reason| {
                         this.child(Icon::new(AppIcon::Info).size_3().text_color(warning))
                             .child(
                                 Label::new(reason)
@@ -1285,7 +1360,7 @@ impl ItemCreator {
                             .primary()
                             .label(submit_label)
                             .disabled(!can_submit)
-                            .tooltip(blocker.unwrap_or(submit_label))
+                            .tooltip(blocker.as_deref().unwrap_or(submit_label).to_owned())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.submit(window, cx);
                             })),

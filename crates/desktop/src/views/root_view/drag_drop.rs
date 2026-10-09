@@ -224,7 +224,7 @@ impl RootView {
             move |window, cx| {
                 let committed = AppDatabaseStore::global(cx)
                     .update(cx, |store, cx| store.update_items(plan.items, cx))
-                    .is_some();
+                    .is_ok_and(|transaction| transaction.is_some());
                 if committed {
                     SelectionManager::clear_global(cx);
                     if let Some(message) = partial_result {

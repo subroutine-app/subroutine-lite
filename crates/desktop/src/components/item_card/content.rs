@@ -80,10 +80,12 @@ impl ItemCard {
                 .on_click(move |checked, window, cx| {
                     cx.stop_propagation();
                     if !*checked {
-                        handoff.take(window, cx);
-                        AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                            store.uncomplete_action(action_id, cx);
+                        let saved = AppDatabaseStore::global(cx).update(cx, |store, cx| {
+                            store.uncomplete_action(action_id, cx).is_ok()
                         });
+                        if saved {
+                            handoff.take(window, cx);
+                        }
                         return;
                     }
                     ItemManager::global(cx).update(cx, |handler, cx| {
@@ -302,10 +304,13 @@ impl ItemCard {
                                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, window, cx| {
                                     cx.stop_propagation();
-                                    handoff.take(window, cx);
-                                    AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                                        store.uncomplete_action(action_id, cx);
-                                    });
+                                    let saved = AppDatabaseStore::global(cx)
+                                        .update(cx, |store, cx| {
+                                            store.uncomplete_action(action_id, cx).is_ok()
+                                        });
+                                    if saved {
+                                        handoff.take(window, cx);
+                                    }
                                 })
                                 .into_any_element(),
                         )
@@ -327,7 +332,7 @@ impl ItemCard {
                                 .on_click(move |_, _window, cx| {
                                     cx.stop_propagation();
                                     AppDatabaseStore::global(cx).update(cx, |store, cx| {
-                                        store.auto_queue_action(action_id, cx);
+                                        let _ = store.auto_queue_action(action_id, cx);
                                     });
                                 })
                                 .into_any_element(),

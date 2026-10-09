@@ -106,31 +106,31 @@ fn place_dropped_action(action: Action, target: DateTime<chrono::Utc>) -> Action
 fn place_dropped_item(
     item: AnyItem,
     target: DateTime<Local>,
-    store: &mut AppDatabaseStore,
-    cx: &mut Context<AppDatabaseStore>,
+    updated: &mut Vec<AnyItem>,
+    routines: &mut Vec<(Uuid, Option<DateTime<chrono::Utc>>)>,
 ) {
     let target_utc = target.with_timezone(&chrono::Utc);
     match item {
         AnyItem::Action(action) => {
-            store.upsert_action(place_dropped_action(action, target_utc), cx);
+            updated.push(AnyItem::Action(place_dropped_action(action, target_utc)));
         }
         AnyItem::Event(mut event) => {
             event.start = target_utc;
-            store.upsert_event(event, cx);
+            updated.push(AnyItem::Event(event));
         }
         AnyItem::Routine(routine) => {
-            store.instantiate_routine(routine.id, Some(target_utc), cx);
+            routines.push((routine.id, Some(target_utc)));
         }
         AnyItem::Marker(mut marker) => {
             let date = target.date_naive();
             let end_date = marker.end_date.map(|end| date + (end - marker.date));
             marker.set_date(date);
             marker.set_end_date(end_date);
-            store.upsert_marker(marker, cx);
+            updated.push(AnyItem::Marker(marker));
         }
         AnyItem::Signal(mut signal) => {
             signal.datetime = target_utc;
-            store.upsert_signal(signal, cx);
+            updated.push(AnyItem::Signal(signal));
         }
         AnyItem::ActionTemplate(_) | AnyItem::EventTemplate(_) => {}
     }
@@ -389,9 +389,12 @@ impl TimelineView {
 
         confirm_drop(count, "Schedule", detail, window, cx, move |_, cx| {
             AppDatabaseStore::global(cx).update(cx, |store, cx| {
+                let mut updated = Vec::new();
+                let mut routines = Vec::new();
                 for (item, target) in placements {
-                    place_dropped_item(item, target, store, cx);
+                    place_dropped_item(item, target, &mut updated, &mut routines);
                 }
+                let _ = store.update_items_with_routines(updated, routines, cx);
             });
         });
     }

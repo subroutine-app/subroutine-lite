@@ -13,10 +13,12 @@ use subroutine_core::{Action, ActionTemplate, BatchPlacement, ChangeEvent, Compl
 use crate::{
     auth::Tenant,
     db,
-    error::Result,
+    error::{AppError, Result},
     ops::{self, Delete},
     state::AppState,
 };
+
+use super::validation;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -50,6 +52,7 @@ async fn create(
     Tenant(state): Tenant,
     Json(action): Json<Action>,
 ) -> Result<(StatusCode, Json<Action>)> {
+    validation::action(&action, state.settings).map_err(AppError::bad_request)?;
     let action = state.apply(ops::actions::create(action)).await?;
     Ok((StatusCode::CREATED, Json(action)))
 }
@@ -64,6 +67,7 @@ async fn update(
     Json(action): Json<Action>,
 ) -> Result<Json<Action>> {
     ops::validate_update("action", id, &action)?;
+    validation::action(&action, state.settings).map_err(AppError::bad_request)?;
     Ok(Json(
         state
             .apply_optional::<Action, _, _>(id, |previous| {
@@ -81,7 +85,12 @@ async fn trash(Tenant(state): Tenant, Path(id): Path<Uuid>) -> Result<StatusCode
 async fn queue(Tenant(state): Tenant, Path(id): Path<Uuid>) -> Result<Json<Vec<Action>>> {
     Ok(Json(
         state
-            .apply_from_snapshot(|snapshot| Ok(ops::actions::queue(snapshot, id)?))
+            .apply_from_snapshot(|snapshot| {
+                let outcome = ops::actions::queue(snapshot, id)?;
+                validation::actions(&outcome.value, snapshot.settings)
+                    .map_err(AppError::bad_request)?;
+                Ok(outcome)
+            })
             .await?,
     ))
 }
@@ -100,7 +109,24 @@ async fn batch(
     Ok(Json(
         state
             .apply_from_snapshot(|snapshot| {
-                Ok(ops::actions::batch(snapshot, body.action, body.cursor))
+                validation::action(&body.action, snapshot.settings)
+                    .map_err(AppError::bad_request)?;
+                let cursor = match body.cursor {
+                    Some(cursor) => cursor,
+                    None => snapshot
+                        .context()
+                        .batch_start()
+                        .map_err(ops::OpError::rejected)?,
+                };
+                validation::duration(
+                    cursor.into(),
+                    snapshot.context().effective_duration(&body.action),
+                )
+                .map_err(AppError::bad_request)?;
+                let outcome = ops::actions::batch(snapshot, body.action, Some(cursor))?;
+                validation::actions(outcome.value.moved(), snapshot.settings)
+                    .map_err(AppError::bad_request)?;
+                Ok(outcome)
             })
             .await?,
     ))
@@ -110,7 +136,10 @@ async fn backlog(Tenant(state): Tenant, Path(id): Path<Uuid>) -> Result<Json<Act
     Ok(Json(
         state
             .apply_required::<Action, _, _>("action", id, |action| {
-                Ok(ops::actions::backlog(action))
+                let outcome = ops::actions::backlog(action);
+                validation::action(&outcome.value, state.settings)
+                    .map_err(AppError::bad_request)?;
+                Ok(outcome)
             })
             .await?,
     ))
@@ -160,7 +189,10 @@ async fn clear_duration(Tenant(state): Tenant, Path(id): Path<Uuid>) -> Result<J
     Ok(Json(
         state
             .apply_required::<Action, _, _>("action", id, |action| {
-                Ok(ops::actions::clear_duration(action))
+                let outcome = ops::actions::clear_duration(action);
+                validation::action(&outcome.value, state.settings)
+                    .map_err(AppError::bad_request)?;
+                Ok(outcome)
             })
             .await?,
     ))
@@ -174,6 +206,10 @@ async fn create_template(
     Tenant(state): Tenant,
     Json(template): Json<ActionTemplate>,
 ) -> Result<(StatusCode, Json<ActionTemplate>)> {
+    if let Some(duration) = template.duration {
+        validation::duration(subroutine_core::SchedulePoint::now(), duration)
+            .map_err(AppError::bad_request)?;
+    }
     let template = state.apply(ops::create(template)).await?;
     Ok((StatusCode::CREATED, Json(template)))
 }
@@ -205,6 +241,10 @@ async fn update_template(
     Json(template): Json<ActionTemplate>,
 ) -> Result<Json<ActionTemplate>> {
     ops::validate_update("action template", id, &template)?;
+    if let Some(duration) = template.duration {
+        validation::duration(subroutine_core::SchedulePoint::now(), duration)
+            .map_err(AppError::bad_request)?;
+    }
     let Some(db::Sequenced {
         value: template,
         seq,

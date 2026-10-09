@@ -52,7 +52,6 @@ impl RootView {
     }
 
     pub(super) fn bind_actions(&self, root: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
-
         if matches!(self.current_overlay, Some((CurrentOverlay::BulkDrop(_), _))) {
             return root;
         }
@@ -224,13 +223,13 @@ impl RootView {
         root.on_action(cx.listener(|_view, _: &Undo, _window, cx| {
             let store = AppDatabaseStore::global(cx);
             store.update(cx, |store, cx| {
-                store.undo(cx);
+                let _ = store.undo(cx);
             });
         }))
         .on_action(cx.listener(|_view, _: &Redo, _window, cx| {
             let store = AppDatabaseStore::global(cx);
             store.update(cx, |store, cx| {
-                store.redo(cx);
+                let _ = store.redo(cx);
             });
         }))
         .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))

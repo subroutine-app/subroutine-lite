@@ -120,7 +120,16 @@ impl FocusView {
                         .filter(|id| !this.items.iter().any(|item| item.id() == *id))
                         .collect();
                     let store = AppDatabaseStore::global(cx);
-                    let updated = store.read(cx).plan_queue_actions(&ids, cx);
+                    let updated = match store.read(cx).plan_queue_actions(&ids, cx) {
+                        Ok(updated) => updated,
+                        Err(error) => {
+                            gpui_kit::overlay::toast::push(window, cx,
+                                crate::components::timed_toast("item.save-failed", error)
+                                    .tone(gpui_kit::display::badge::Tone::Warning));
+                            this.clear_drop_target(cx);
+                            return;
+                        }
+                    };
                     this.clear_drop_target(cx);
                     confirm_drop(
                         updated.len(),
@@ -130,7 +139,7 @@ impl FocusView {
                         cx,
                         move |_, cx| {
                             store.update(cx, |store, cx| {
-                                store.update_items(updated.into_iter().map(subroutine_core::AnyItem::Action).collect(), cx);
+                                let _ = store.queue_actions(&ids, cx);
                             });
                         },
                     );

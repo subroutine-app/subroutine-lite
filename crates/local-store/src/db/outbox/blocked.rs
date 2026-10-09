@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
-use subroutine_core::{ApiErrorBody, ApiErrorCode};
+use subroutine_core::{ApiErrorBody, ApiErrorCode, MutationOperation, Routine};
 use uuid::Uuid;
 
 use super::{
-    super::{Database, sync::load_sync_state},
+    super::{Database, projection::commit_projection, rows::load_rows, sync::load_sync_state},
     OutboxEntry, OutboxStatus,
     conflict::first_patch_resource,
     rows::{load_oldest_outbox, load_outbox, require_outbox_change},
@@ -24,8 +26,7 @@ impl Database {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         block_outbox(&tx, mutation_id, &error)?;
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 
     pub(crate) fn retry_blocked(
@@ -55,23 +56,44 @@ impl Database {
         }
 
         let mut request = entry.mutation.request;
+        let mut patch = entry.mutation.optimistic_patch;
+        if let MutationOperation::ReorderRoutines { routine_ids } = &mut request.operation {
+            let routines: Vec<Routine> = load_rows(&tx, "routine")?;
+            if routines.is_empty() {
+                return Err(LocalStoreError::InvalidMutation(
+                    "no routines remain to reorder; discard this blocked order".into(),
+                ));
+            }
+            let mut remaining = routines
+                .iter()
+                .map(|routine| routine.id)
+                .collect::<HashSet<_>>();
+            routine_ids.retain(|id| remaining.remove(id));
+            routine_ids.extend(
+                routines
+                    .iter()
+                    .map(|routine| routine.id)
+                    .filter(|id| remaining.contains(id)),
+            );
+            patch.routine_order = Some(routine_ids.clone());
+        }
         request.mutation_id = replacement_mutation_id;
         request.base_seq = state.canonical_seq;
         let changed = tx.execute(
             "UPDATE outbox
-             SET mutation_id = ?1, request_json = ?2, state = 'pending', sealed = 0,
+             SET mutation_id = ?1, request_json = ?2, patch_json = ?3, state = 'pending', sealed = 0,
                  attempt_count = 0, next_attempt_at_ms = NULL, last_error = NULL,
                  receipt_json = NULL, receipt_commit_seq = NULL, blocked_error_json = NULL
-             WHERE mutation_id = ?3 AND state = 'blocked'",
+             WHERE mutation_id = ?4 AND state = 'blocked'",
             params![
                 replacement_mutation_id.to_string(),
                 serde_json::to_vec(&request)?,
+                serde_json::to_vec(&patch)?,
                 mutation_id.to_string()
             ],
         )?;
         require_outbox_change(changed, mutation_id)?;
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 
     pub(crate) fn retry_compatibility_rejection(
@@ -105,8 +127,7 @@ impl Database {
             params![diagnostic, mutation_id.to_string()],
         )?;
         require_outbox_change(changed, mutation_id)?;
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 
     pub(crate) fn discard_blocked(&mut self, mutation_id: Uuid) -> Result<Projection> {
@@ -135,8 +156,7 @@ impl Database {
             };
             block_outbox(&tx, next_id, &error)?;
         }
-        tx.commit()?;
-        self.projection()
+        commit_projection(tx)
     }
 }
 
@@ -157,7 +177,7 @@ fn require_blocked_fifo_head(connection: &Connection, mutation_id: Uuid) -> Resu
     Ok(entry)
 }
 
-pub(super) fn block_outbox(
+pub(in crate::db) fn block_outbox(
     tx: &Transaction<'_>,
     mutation_id: Uuid,
     error: &ApiErrorBody,

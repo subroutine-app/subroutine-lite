@@ -304,10 +304,10 @@ fn handle_response(response: SystemNotificationResponse, cx: &mut App) {
         let current = store.actions().iter().find(|action| action.id == action_id);
         match operation {
             COMPLETE_ACTION if current.is_some_and(|action| !action.is_completed()) => {
-                store.complete_action(action_id, cx);
+                let _ = store.complete_action(action_id, cx);
             }
             UNQUEUE_ACTION if current.is_some_and(|action| action.queued) => {
-                store.backlog_action(action_id, cx);
+                let _ = store.backlog_action(action_id, cx);
             }
             COMPLETE_ACTION | UNQUEUE_ACTION => {}
             unknown => tracing::warn!(

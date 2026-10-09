@@ -44,18 +44,20 @@ fn convert_draft(
     item: &AnyItem,
     target: DraftType,
     fallback_start: DateTime<Utc>,
-) -> Option<AnyItem> {
-    match (item, target) {
+) -> Result<Option<AnyItem>, &'static str> {
+    let item = match (item, target) {
         (AnyItem::Action(action), DraftType::Event) => {
             let start = match action.start {
                 Some(SchedulePoint::DateTime(start)) => start,
                 Some(SchedulePoint::Date(date)) => {
-                    let morning = date.and_hms_opt(9, 0, 0)?;
+                    let morning = date.and_hms_opt(9, 0, 0).ok_or("Invalid local time")?;
                     Local
                         .from_local_datetime(&morning)
                         .earliest()
                         .map(|time| time.with_timezone(&Utc))
-                        .unwrap_or_else(|| morning.and_utc())
+                        .ok_or(
+                            "This time does not exist in the local timezone. Choose another time.",
+                        )?
                 }
                 None => fallback_start,
             };
@@ -82,7 +84,11 @@ fn convert_draft(
             Some(AnyItem::Action(action))
         }
         _ => None,
+    };
+    if let Some(item) = &item {
+        crate::item_subject::validate_item_timing(item)?;
     }
+    Ok(item)
 }
 
 impl ItemManager {
@@ -116,17 +122,48 @@ impl ItemManager {
         };
         let editing = self.editing_item.as_mut().expect("draft is being edited");
         if current != target {
-            let replacement = editing.alternate_draft.take().or_else(|| {
-                let ItemSubject::Live(item) = &editing.original else {
-                    return None;
-                };
-                let start = item.start().map(DateTime::<Utc>::from).unwrap_or_else(|| {
-                    let settings = Settings::global(cx);
-                    let store = AppDatabaseStore::global(cx);
-                    store.read(cx).pipeline(&settings).quantize_ceil(Utc::now())
-                });
-                convert_draft(item, target, start)
-            });
+            let replacement = match editing.alternate_draft.take() {
+                Some(item) => Some(item),
+                None => {
+                    let ItemSubject::Live(item) = &editing.original else {
+                        return;
+                    };
+                    let start = match item.start() {
+                        Some(start) => DateTime::<Utc>::from(start),
+                        None => {
+                            let settings = Settings::global(cx);
+                            let store = AppDatabaseStore::global(cx);
+                            match store.read(cx).pipeline(&settings).quantize_ceil(Utc::now()) {
+                                Ok(start) => start,
+                                Err(error) => {
+                                    gpui_kit::overlay::toast::push(
+                                        window,
+                                        cx,
+                                        crate::components::timed_toast(
+                                            "item.schedule-failed",
+                                            error,
+                                        )
+                                        .tone(gpui_kit::display::badge::Tone::Warning),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    };
+                    match convert_draft(item, target, start) {
+                        Ok(item) => item,
+                        Err(error) => {
+                            gpui_kit::overlay::toast::push(
+                                window,
+                                cx,
+                                crate::components::timed_toast("item.schedule-failed", error)
+                                    .tone(gpui_kit::display::badge::Tone::Warning),
+                            );
+                            return;
+                        }
+                    }
+                }
+            };
             let Some(replacement) = replacement else {
                 return;
             };

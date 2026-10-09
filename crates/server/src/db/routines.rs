@@ -1,4 +1,3 @@
-
 use anyhow::Context as _;
 use sqlx::{PgConnection, PgExecutor, Row, postgres::PgRow};
 use uuid::Uuid;
@@ -89,8 +88,7 @@ const DELETE_STEPS_SQL: &str = "DELETE FROM routine_steps WHERE user_id = $1 AND
 const INSERT_STEP_SQL: &str =
     "INSERT INTO routine_steps (id, user_id, routine_id, title, duration, position)
      VALUES ($1, $2, $3, $4, $5, $6)";
-const LOCK_ROUTINE_SQL: &str =
-    "SELECT id FROM routines WHERE user_id = $1 AND id = $2 AND deleted = FALSE FOR UPDATE";
+
 const LOCK_ACTIVE_ROUTINES_SQL: &str =
     "SELECT id FROM routines WHERE user_id = $1 AND deleted = FALSE ORDER BY id FOR UPDATE";
 const BUMP_ROUTINE_SQL: &str = "UPDATE routines SET change_seq = $1, updated_at = NOW() \
@@ -190,30 +188,6 @@ pub(crate) async fn upsert_in(
 ) -> anyhow::Result<()> {
     record::upsert(&mut *conn, user_id, change_seq, &RoutineRow::of(routine)).await?;
     replace_steps_in(conn, user_id, change_seq, routine.id, &routine.steps).await
-}
-
-pub(crate) async fn replace_steps(
-    scope: &TenantScope,
-    routine_id: Uuid,
-    steps: &[RoutineStep],
-) -> anyhow::Result<Option<i64>> {
-    let mut mutation = scope.begin_mutation().await?;
-    let user_id = mutation.user_id();
-    let exists: Option<Uuid> = sqlx::query_scalar(LOCK_ROUTINE_SQL)
-        .bind(user_id)
-        .bind(routine_id)
-        .fetch_optional(mutation.connection())
-        .await
-        .context("lock routine for step update")?;
-    if exists.is_none() {
-        mutation.rollback().await?;
-        return Ok(None);
-    }
-
-    let seq = mutation.next_change_seq().await?;
-    replace_steps_in(mutation.connection(), user_id, seq, routine_id, steps).await?;
-    mutation.commit().await?;
-    Ok(Some(seq))
 }
 
 pub(crate) async fn fetch_all_in(

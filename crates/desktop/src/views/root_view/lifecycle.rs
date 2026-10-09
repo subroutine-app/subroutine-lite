@@ -3,7 +3,6 @@ use super::{
     navigation::WorkspaceRoute,
     panels::{NAVIGATION_SIDEBAR_MAX_WIDTH, NAVIGATION_SIDEBAR_MIN_WIDTH},
     sources::{SourceFilterPicker, SourceSortPicker},
-
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::views::SelectedMainView;
@@ -149,6 +148,19 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        cx.subscribe_in(
+            store,
+            window,
+            |_, _, error: &crate::stores::SaveFailed, window, cx| {
+                gpui_kit::overlay::toast::push(
+                    window,
+                    cx,
+                    crate::components::timed_toast("item.save-failed", error.message.clone())
+                        .tone(gpui_kit::display::badge::Tone::Warning),
+                );
+            },
+        )
+        .detach();
         cx.observe_in(store, window, |view, _, window, cx| {
             crate::app::update_app_menu(cx);
             view.update_sync_feedback(window, cx);

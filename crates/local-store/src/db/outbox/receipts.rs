@@ -1,11 +1,11 @@
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Transaction, params};
 use subroutine_core::{MutationEffect, MutationReceipt};
 use uuid::Uuid;
 
 use super::{
     super::Database,
     OutboxStatus,
-    rows::{load_oldest_outbox, load_outbox, require_outbox_change},
+    rows::{load_outbox, load_outbox_entries, require_outbox_change},
 };
 use crate::{LocalStoreError, Result};
 
@@ -54,41 +54,29 @@ impl Database {
     }
 }
 
-pub(in crate::db) fn confirmed_fifo_head_seq(
-    connection: &Connection,
-    dataset_id: Option<Uuid>,
-    canonical_seq: i64,
-) -> Result<Option<i64>> {
-    let Some(entry) = load_oldest_outbox(connection)? else {
-        return Ok(None);
-    };
-    let Some(receipt) = entry.receipt else {
-        return Ok(None);
-    };
-    Ok((entry.status == OutboxStatus::AwaitingCanonical
-        && Some(receipt.dataset_id) == dataset_id
-        && receipt.commit_seq <= canonical_seq)
-        .then_some(receipt.commit_seq))
-}
-
-pub(in crate::db) fn rebase_fifo_head(tx: &Transaction<'_>, new_base_seq: i64) -> Result<()> {
-    let Some(mut entry) = load_oldest_outbox(tx)? else {
-        return Ok(());
-    };
-    if entry.status != OutboxStatus::Pending
-        || entry.sealed
-        || entry.mutation.request.base_seq == new_base_seq
-    {
+fn advance_pending(tx: &Transaction<'_>, receipt: &MutationReceipt) -> Result<()> {
+    if receipt.base_seq == receipt.commit_seq {
         return Ok(());
     }
-    entry.mutation.request.base_seq = new_base_seq;
-    tx.execute(
-        "UPDATE outbox SET request_json = ?1 WHERE mutation_id = ?2",
-        params![
-            serde_json::to_vec(&entry.mutation.request)?,
-            entry.mutation.request.mutation_id.to_string()
-        ],
-    )?;
+    for mut entry in load_outbox_entries(tx)? {
+        let request = &mut entry.mutation.request;
+        if entry.status != OutboxStatus::Pending
+            || entry.sealed
+            || request.dataset_id != receipt.dataset_id
+            || request.base_seq != receipt.base_seq
+        {
+            continue;
+        }
+        request.base_seq = receipt.commit_seq;
+        tx.execute(
+            "UPDATE outbox SET request_json = ?1
+             WHERE mutation_id = ?2 AND state = 'pending' AND sealed = 0",
+            params![
+                serde_json::to_vec(request)?,
+                request.mutation_id.to_string()
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -102,7 +90,8 @@ pub(in crate::db) fn retire_confirmed(
     };
     let mut statement = tx.prepare(
         "SELECT mutation_id, receipt_json FROM outbox
-         WHERE state = 'awaiting_canonical' AND receipt_commit_seq <= ?1",
+         WHERE state = 'awaiting_canonical' AND receipt_commit_seq <= ?1
+         ORDER BY position",
     )?;
     let receipts = statement
         .query_map([canonical_seq], |row| {
@@ -113,6 +102,7 @@ pub(in crate::db) fn retire_confirmed(
     for (mutation_id, receipt_json) in receipts {
         let receipt: MutationReceipt = serde_json::from_slice(&receipt_json)?;
         if receipt.dataset_id == dataset_id {
+            advance_pending(tx, &receipt)?;
             tx.execute("DELETE FROM outbox WHERE mutation_id = ?1", [mutation_id])?;
         }
     }

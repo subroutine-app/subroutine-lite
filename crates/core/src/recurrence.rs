@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 
-use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
+use chrono::{Datelike, Days, Duration, Months, NaiveDate, Offset, Weekday};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
 use crate::SchedulePoint;
@@ -10,6 +11,8 @@ pub struct Recurrence {
     pub rule: RecurrenceRule,
     pub end_date: Option<NaiveDate>,
     pub remaining: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<Tz>,
 }
 
 impl Recurrence {
@@ -18,7 +21,19 @@ impl Recurrence {
             rule,
             end_date: None,
             remaining: None,
+            timezone: None,
         }
+    }
+
+    pub fn in_local_timezone(rule: RecurrenceRule) -> Result<Self, &'static str> {
+        let timezone = iana_time_zone::get_timezone()
+            .ok()
+            .and_then(|name| name.parse().ok())
+            .ok_or("could not determine the local timezone")?;
+        Ok(Self {
+            timezone: Some(timezone),
+            ..Self::new(rule)
+        })
     }
 
     pub fn with_end_date(mut self, end_date: Option<NaiveDate>) -> Self {
@@ -63,17 +78,25 @@ impl Recurrence {
         after: impl Into<SchedulePoint>,
         target: NaiveDate,
     ) -> (SchedulePoint, Self) {
-        let after = after.into();
+        let original = after.into();
+        let Some(after) = self.calendar_point(original) else {
+            return (original, *self);
+        };
+        let target = if matches!(original, SchedulePoint::DateTime(_)) {
+            target.checked_sub_days(Days::new(2)).unwrap_or(target)
+        } else {
+            target
+        };
         if let RecurrenceRule::WeeklyDays(days) = self.rule {
             let Some(candidate) = (1..=7)
-                .map(|offset| target - Days::new(offset))
+                .filter_map(|offset| target.checked_sub_days(Days::new(offset)))
                 .find(|date| days.contains(date.weekday()))
             else {
-                return (after, *self);
+                return (original, *self);
             };
             let distance = (candidate - after.date_naive()).num_days();
             if distance <= 0 {
-                return (after, *self);
+                return (original, *self);
             }
             let full_weeks = distance as u64 / 7;
             let remainder = distance as u64 % 7;
@@ -82,11 +105,24 @@ impl Recurrence {
             let full_week_days = full_weeks * 7;
             skipped += (1..=remainder)
                 .filter(|offset| {
-                    days.contains((after + Days::new(full_week_days + *offset)).weekday())
+                    after
+                        .checked_add_days(Days::new(full_week_days + *offset))
+                        .is_some_and(|point| days.contains(point.weekday()))
                 })
                 .count() as u64;
+            let mut point = after.with_date(candidate);
+            while skipped > 0 && self.resolve_point(point).is_none() {
+                let Some(previous) = (1..=7)
+                    .filter_map(|days| point.date_naive().checked_sub_days(Days::new(days)))
+                    .find(|date| days.contains(date.weekday()))
+                else {
+                    return (original, *self);
+                };
+                point = after.with_date(previous);
+                skipped -= 1;
+            }
             if skipped == 0 {
-                return (after, *self);
+                return (original, *self);
             }
             if self
                 .remaining
@@ -94,57 +130,111 @@ impl Recurrence {
             {
                 let mut exhausted = *self;
                 exhausted.remaining = Some(0);
-                return (after, exhausted);
+                return (original, exhausted);
             }
             let mut recurrence = *self;
             recurrence.remaining = recurrence
                 .remaining
                 .map(|remaining| remaining - skipped as u32);
-            return (after.with_date(candidate), recurrence);
+            return self
+                .resolve_point(point)
+                .map(|point| (point, recurrence))
+                .unwrap_or((original, *self));
         }
 
         let interval_days = match self.rule {
             RecurrenceRule::Relative { unit, interval } => match unit {
                 RecurrenceUnit::Days => u64::from(interval.get()),
                 RecurrenceUnit::Weeks => u64::from(interval.get()) * 7,
-                RecurrenceUnit::Months | RecurrenceUnit::Years => return (after, *self),
+                RecurrenceUnit::Months | RecurrenceUnit::Years => return (original, *self),
             },
-            _ => return (after, *self),
+            _ => return (original, *self),
         };
         let distance = (target - after.date_naive()).num_days();
         if distance <= 1 {
-            return (after, *self);
+            return (original, *self);
         }
         let skipped = (distance as u64 - 1) / interval_days;
-        let skipped = self
+        let mut skipped = self
             .remaining
             .map_or(skipped, |remaining| skipped.min(u64::from(remaining)));
+        let point = loop {
+            if skipped == 0 {
+                return (original, *self);
+            }
+            if let Some(point) = skipped
+                .checked_mul(interval_days)
+                .and_then(|days| after.checked_add_days(Days::new(days)))
+                .and_then(|point| self.resolve_point(point))
+            {
+                break point;
+            }
+            skipped -= 1;
+        };
         let mut recurrence = *self;
         recurrence.remaining = recurrence
             .remaining
             .map(|remaining| remaining - skipped as u32);
-        (
-            after + Days::new(skipped.saturating_mul(interval_days)),
-            recurrence,
-        )
+        (point, recurrence)
     }
 
     pub fn next(&self, after: impl Into<SchedulePoint>) -> Option<SchedulePoint> {
-        if self.remaining == Some(0) {
-            return None;
+        self.next_counted(after.into()).map(|(point, _)| point)
+    }
+
+    fn next_counted(&self, after: SchedulePoint) -> Option<(SchedulePoint, u32)> {
+        let mut cursor = self.calendar_point(after)?;
+        let mut consumed = 0u32;
+        loop {
+            if self
+                .remaining
+                .is_some_and(|remaining| consumed >= remaining)
+            {
+                return None;
+            }
+            let next = self.rule.next(cursor)?;
+            if next <= cursor || self.end_date.is_some_and(|end| next.date_naive() > end) {
+                return None;
+            }
+            consumed = consumed.checked_add(1)?;
+            if let Some(point) = self.resolve_point(next).filter(|point| *point > after) {
+                return Some((point, consumed));
+            }
+            cursor = next;
         }
-        let next = self.rule.next(after);
-        if let Some(end) = self.end_date {
-            next.filter(|point| point.date_naive() <= end)
-        } else {
-            next
+    }
+
+    fn calendar_point(&self, point: SchedulePoint) -> Option<SchedulePoint> {
+        match (point, self.timezone) {
+            (SchedulePoint::DateTime(datetime), Some(timezone)) => {
+                let offset = datetime
+                    .with_timezone(&timezone)
+                    .offset()
+                    .fix()
+                    .local_minus_utc();
+                datetime
+                    .checked_add_signed(Duration::seconds(i64::from(offset)))
+                    .map(SchedulePoint::DateTime)
+            }
+            _ => Some(point),
+        }
+    }
+
+    fn resolve_point(&self, point: SchedulePoint) -> Option<SchedulePoint> {
+        match (point, self.timezone) {
+            (SchedulePoint::DateTime(datetime), Some(timezone)) => datetime
+                .naive_utc()
+                .and_local_timezone(timezone)
+                .earliest()
+                .map(|datetime| SchedulePoint::DateTime(datetime.to_utc())),
+            _ => Some(point),
         }
     }
 
     pub fn advance(&self, after: impl Into<SchedulePoint>) -> Option<(SchedulePoint, Self)> {
-        let next = self.next(after)?;
+        let (next, consumed) = self.next_counted(after.into())?;
         let mut advanced = *self;
-        advanced.remaining = advanced.remaining.map(|remaining| remaining - 1);
+        advanced.remaining = advanced.remaining.map(|remaining| remaining - consumed);
         Some((next, advanced))
     }
 
@@ -177,7 +267,7 @@ pub enum RecurrenceRule {
     #[serde(rename = "year")]
     Anniversary(NaiveDate),
     #[serde(rename = "day")]
-    MonthlyDay(u32),
+    MonthlyDay(#[serde(deserialize_with = "deserialize_month_day")] u32),
     #[serde(rename = "weekday")]
     MonthlyWeekday {
         #[serde(with = "weekday_serde")]
@@ -226,9 +316,9 @@ impl RecurrenceRule {
                 date.month() == start_date.month() && date.day() == start_date.day()
             }
             RecurrenceRule::MonthlyDay(day) => date.day() == *day,
-            RecurrenceRule::MonthlyWeekday { weekday, ordinal } => ordinal
-                .nth_weekday_of_month(date.year(), date.month(), *weekday)
-                .is_some(),
+            RecurrenceRule::MonthlyWeekday { weekday, ordinal } => {
+                ordinal.nth_weekday_of_month(date.year(), date.month(), *weekday) == Some(date)
+            }
             RecurrenceRule::WeeklyDays(weekday_set) => weekday_set.contains(date.weekday()),
             RecurrenceRule::Relative { .. } => false,
         }
@@ -267,15 +357,19 @@ impl RecurrenceRule {
                     offset_from_today(first)
                 };
 
-                Some(after + Days::new(offset))
+                after.checked_add_days(Days::new(offset))
             }
             RecurrenceRule::Relative { unit, interval } => {
                 let interval = interval.get();
                 match unit {
-                    RecurrenceUnit::Days => Some(after + Days::new(u64::from(interval))),
-                    RecurrenceUnit::Weeks => Some(after + Days::new(u64::from(interval) * 7)),
-                    RecurrenceUnit::Months => Some(after + Months::new(interval)),
-                    RecurrenceUnit::Years => Some(after + Months::new(interval.saturating_mul(12))),
+                    RecurrenceUnit::Days => after.checked_add_days(Days::new(u64::from(interval))),
+                    RecurrenceUnit::Weeks => {
+                        after.checked_add_days(Days::new(u64::from(interval) * 7))
+                    }
+                    RecurrenceUnit::Months => after.checked_add_months(Months::new(interval)),
+                    RecurrenceUnit::Years => {
+                        after.checked_add_months(Months::new(interval.checked_mul(12)?))
+                    }
                 }
             }
         }
@@ -473,7 +567,23 @@ where
             .ok_or_else(|| Error::custom(format!("invalid day of week: {name}")))?;
         days.insert(weekday);
     }
+    if days.is_empty() {
+        return Err(Error::custom("select at least one weekday"));
+    }
     Ok(days)
+}
+
+fn deserialize_month_day<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let day = u32::deserialize(deserializer)?;
+    if !(1..=31).contains(&day) {
+        return Err(serde::de::Error::custom(
+            "month day must be between 1 and 31",
+        ));
+    }
+    Ok(day)
 }
 
 fn weekday_name(weekday: Weekday) -> &'static str {
