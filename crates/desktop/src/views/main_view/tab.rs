@@ -22,18 +22,26 @@ pub enum SelectedMainView {
     #[default]
     Timeline,
     Calendar,
+    Upcoming,
     Queue,
     Focus,
 }
 
 impl SelectedMainView {
-    pub const ALL: [Self; 4] = [Self::Queue, Self::Timeline, Self::Calendar, Self::Focus];
+    pub const ALL: [Self; 5] = [
+        Self::Upcoming,
+        Self::Queue,
+        Self::Timeline,
+        Self::Calendar,
+        Self::Focus,
+    ];
 
     pub const fn id(self) -> &'static str {
         match self {
             Self::Timeline => "timeline",
             Self::Calendar => "calendar",
-            Self::Queue => "queue",
+            Self::Upcoming => "queue",
+            Self::Queue => "execution-queue",
             Self::Focus => "focus",
         }
     }
@@ -46,6 +54,7 @@ impl SelectedMainView {
         match self {
             Self::Timeline => "Timeline",
             Self::Calendar => "Calendar",
+            Self::Upcoming => "Upcoming",
             Self::Queue => "Queue",
             Self::Focus => "Focus",
         }
@@ -55,6 +64,7 @@ impl SelectedMainView {
         match self {
             Self::Timeline => "TimelineView",
             Self::Calendar => "CalendarView",
+            Self::Upcoming => "UpcomingView",
             Self::Queue => "QueueView",
             Self::Focus => "FocusView",
         }

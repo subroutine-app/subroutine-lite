@@ -4,10 +4,10 @@ use gpui::{Pixels, point, px};
 
 use crate::components::virtual_list::VirtualListScrollHandle;
 
-use super::agenda::{Agenda, AgendaLayout, QueueRowKey};
+use super::agenda::{Agenda, AgendaLayout, UpcomingRowKey};
 
 pub(super) struct RowAnchor {
-    key: QueueRowKey,
+    key: UpcomingRowKey,
     offset: Pixels,
 }
 

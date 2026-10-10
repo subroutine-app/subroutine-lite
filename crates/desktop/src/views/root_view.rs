@@ -10,7 +10,6 @@ mod sidebar;
 mod sources;
 mod status;
 
-
 use super::{command_palette::AppCommandPalette, drag_navigation::DragNavigation};
 use crate::{
     components::{DragData, DraggedItems, menu::ContextMenuHost, panel_group::PanelGroupState},
@@ -39,7 +38,6 @@ use gpui_kit_theme::ActiveTheme;
 use navigation::WorkspaceRoute;
 use sources::{SourceFilterPicker, SourceSortPicker};
 use subroutine_core::SchedulePoint;
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NavigationDestination {
@@ -98,6 +96,7 @@ actions!(
         GoToHome,
         GoToTimeline,
         GoToCalendar,
+        GoToUpcoming,
         GoToQueue,
         GoToFocus,
         GoToUnqueued,
@@ -190,7 +189,6 @@ impl Focusable for RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-
         if let Some(status) = self.render_status(cx) {
             let root = div()
                 .absolute()

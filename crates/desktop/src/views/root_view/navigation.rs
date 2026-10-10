@@ -15,8 +15,9 @@ pub(super) enum ViewDirection {
 }
 
 impl NavigationDestination {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Home,
+        Self::Main(SelectedMainView::Upcoming),
         Self::Main(SelectedMainView::Queue),
         Self::Main(SelectedMainView::Timeline),
         Self::Main(SelectedMainView::Calendar),

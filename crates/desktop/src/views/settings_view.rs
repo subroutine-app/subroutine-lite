@@ -728,7 +728,7 @@ impl SettingsView {
         let queue_creation_select = cx.new(|cx| {
             Select::new("settings.queue.creation", window, cx)
                 .large()
-                .name("Queue plus creates")
+                .name("Upcoming plus creates")
                 .options(timeline_creation_options())
                 .selected(settings.queue_creation.id())
         });
@@ -1272,17 +1272,17 @@ impl Render for SettingsView {
                     .select(self.focus_orientation_select.clone()),
             )
             .row(
-                SettingsRow::new("settings.advanced.queue-creation", "Queue + button creates")
-                    .search_terms(["queue plus"])
+                SettingsRow::new("settings.advanced.queue-creation", "Upcoming + button creates")
+                    .search_terms(["upcoming plus"])
                     .select(self.queue_creation_select.clone()),
             )
             .row(
-                SettingsRow::new("settings.advanced.queue-batch-mode", "Queue batch mode")
-                    .description("Submitting a queue draft opens the next draft.")
-                    .search_terms(["queue", "batch", "draft", "submit"])
+                SettingsRow::new("settings.advanced.queue-batch-mode", "Upcoming batch mode")
+                    .description("Submitting an Upcoming draft opens the next draft.")
+                    .search_terms(["upcoming", "batch", "draft", "submit"])
                     .switch(
                         Switch::new("settings-queue-batch-mode")
-                            .named("Queue batch mode")
+                            .named("Upcoming batch mode")
                             .on(settings.queue_batch_mode)
                             .large()
                             .on_change(move |enabled, _window, cx| {

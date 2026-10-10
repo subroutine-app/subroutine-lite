@@ -72,6 +72,7 @@ impl FocusView {
         let Some(active_index) = self
             .carousel_active_id()
             .and_then(|active| ids.iter().position(|id| *id == active))
+            .or_else(|| (action_mode && !ids.is_empty()).then_some(0))
         else {
             return self.render_empty(cx);
         };
@@ -330,7 +331,7 @@ impl FocusView {
                 card.actionable(is_active)
                     .draggable(is_active, Some(card_size))
             } else if completing {
-                card.draggable(false, None)
+                card.actionable(false).draggable(false, None)
             } else if is_active {
                 card.selectable(order.clone())
                     .draggable(!editing, Some(card_size))
@@ -504,24 +505,29 @@ impl FocusView {
         let (id, icon, title, caption) = if !self.loaded {
             ("focus-loading", AppIcon::Clock, "Loading…", None)
         } else {
-            let settings = Settings::global(cx);
-            let horizon = temporal::format_horizon(match self.mode {
-                FocusMode::Action => settings.focus_action_horizon_hours(),
-                FocusMode::Event => settings.focus_horizon_hours(),
-            });
             match self.mode {
+                FocusMode::Action if self.queue_blocker.is_some() => (
+                    "focus-action-blocked",
+                    AppIcon::CalendarClock,
+                    "Queue paused for an event",
+                    Some("Actions will return when the event no longer blocks the queue.".into()),
+                ),
                 FocusMode::Action => (
                     "focus-action-empty",
                     AppIcon::Check,
-                    "No upcoming actions",
-                    Some(format!("Nothing due in the next {horizon}.")),
+                    "No actions ready",
+                    Some("No queued actions are due now.".into()),
                 ),
-                FocusMode::Event => (
-                    "focus-event-empty",
-                    AppIcon::CalendarClock,
-                    "No upcoming events",
-                    Some(format!("No events in the next {horizon}.")),
-                ),
+                FocusMode::Event => {
+                    let horizon =
+                        temporal::format_horizon(Settings::global(cx).focus_horizon_hours());
+                    (
+                        "focus-event-empty",
+                        AppIcon::CalendarClock,
+                        "No upcoming events",
+                        Some(format!("No events in the next {horizon}.")),
+                    )
+                }
             }
         };
         let status = caption.unwrap_or_else(|| title.to_owned());

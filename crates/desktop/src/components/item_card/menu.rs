@@ -184,10 +184,10 @@ fn scheduled_navigation_menu(menu: MenuBuilder, item: &AnyItem) -> MenuBuilder {
                 cx,
             );
         })
-        .item("View in queue", move |window, cx| {
+        .item("View in Upcoming", move |window, cx| {
             window.dispatch_action(
                 Box::new(ViewScheduledItem(
-                    ScheduledItemDestination::Queue,
+                    ScheduledItemDestination::Upcoming,
                     item_id,
                     start,
                 )),

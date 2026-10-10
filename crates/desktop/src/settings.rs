@@ -141,10 +141,6 @@ impl Settings {
         ));
     }
 
-    pub fn focus_action_horizon(&self) -> Duration {
-        self.focus_action_horizon
-    }
-
     pub fn focus_action_horizon_hours(&self) -> u16 {
         self.focus_action_horizon.num_hours() as u16
     }

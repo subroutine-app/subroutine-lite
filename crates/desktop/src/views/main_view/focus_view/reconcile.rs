@@ -1,5 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 
+use chrono::Utc;
 use gpui::{AsyncApp, Context, Window};
 use subroutine_core::AnyItem;
 use uuid::Uuid;
@@ -10,6 +11,7 @@ use crate::{
     settings::Settings,
 };
 
+use super::super::queue_system::QueueSnapshot;
 use super::{
     FocusMode, FocusView,
     temporal::{self, EventMoment},
@@ -19,25 +21,41 @@ const ENTRANCE_STATE_DURATION: Duration = Duration::from_millis(260);
 
 impl FocusView {
     pub(super) fn reconcile_items(&mut self, cx: &mut Context<Self>) {
-        let horizon = Settings::global(cx).focus_action_horizon();
-        let mut queue =
-            super::super::ordered_focus_actions(&self.source_actions, self.now, horizon);
+        self.now = Utc::now();
+        let snapshot = QueueSnapshot::new(
+            &self.source_actions,
+            &self.events,
+            self.now,
+            Settings::global(cx).schedule.granularity,
+        );
+        self.queue_blocker = snapshot.blocker;
+        let mut queue = if self.queue_blocker.is_some() {
+            Vec::new()
+        } else {
+            snapshot.candidates
+        };
         let previous_active = self.active_id;
         let previous_index = previous_active
             .and_then(|active| self.items.iter().position(|item| item.id() == active));
         let was_loaded = self.loaded;
 
         let source_ids: HashSet<Uuid> = queue.iter().map(AnyItem::id).collect();
-        let departing = {
+        let completing: HashSet<_> = {
             let manager = ItemManager::global(cx);
             let manager = manager.read(cx);
             self.items
                 .iter()
-                .filter(|item| !source_ids.contains(&item.id()) && manager.is_completing(item.id()))
-                .cloned()
-                .collect::<Vec<_>>()
+                .chain(queue.iter())
+                .filter(|item| manager.is_completing(item.id()))
+                .map(AnyItem::id)
+                .collect()
         };
-        queue.extend(departing);
+        queue.extend(
+            self.items
+                .iter()
+                .filter(|item| !source_ids.contains(&item.id()) && completing.contains(&item.id()))
+                .cloned(),
+        );
         let entering: HashSet<Uuid> = source_ids.difference(&self.source_ids).copied().collect();
         self.entering_ids.retain(|id| source_ids.contains(id));
         self.entering_ids.extend(entering.iter().copied());
@@ -65,11 +83,9 @@ impl FocusView {
                 .or_insert_with(|| cx.focus_handle());
         }
 
-        if self.active_id.is_none_or(|id| !live_ids.contains(&id)) {
-            self.active_id = replacement_index(previous_index, self.items.len())
-                .and_then(|index| self.items.get(index))
-                .map(AnyItem::id);
-        }
+        let navigable_ids: HashSet<_> = live_ids.difference(&completing).copied().collect();
+        self.active_id =
+            retained_action_id(previous_active, previous_index, &self.items, &completing);
 
         if was_loaded
             && previous_active != self.active_id
@@ -89,7 +105,7 @@ impl FocusView {
                     .ids()
                     .last()
                     .copied()
-                    .filter(|id| live_ids.contains(id))
+                    .filter(|id| navigable_ids.contains(id))
                 {
                     self.active_id = Some(selected);
                 }
@@ -105,7 +121,7 @@ impl FocusView {
                     .ids()
                     .iter()
                     .copied()
-                    .filter(|id| !live_ids.contains(id))
+                    .filter(|id| !navigable_ids.contains(id))
                     .collect::<Vec<_>>()
             } else {
                 Vec::new()
@@ -189,6 +205,58 @@ fn retained_event_id(active: Option<Uuid>, previous: &[Uuid], current: &[Uuid]) 
     current.first().copied()
 }
 
-pub(super) fn replacement_index(previous_index: Option<usize>, new_len: usize) -> Option<usize> {
-    (new_len > 0).then(|| previous_index.unwrap_or_default().min(new_len - 1))
+fn retained_action_id(
+    active: Option<Uuid>,
+    previous_index: Option<usize>,
+    items: &[AnyItem],
+    completing: &HashSet<Uuid>,
+) -> Option<Uuid> {
+    if let Some(active) =
+        active.filter(|id| !completing.contains(id) && items.iter().any(|item| item.id() == *id))
+    {
+        return Some(active);
+    }
+    let index = previous_index.unwrap_or_default().min(items.len());
+    (index..items.len())
+        .chain((0..index).rev())
+        .map(|index| items[index].id())
+        .find(|id| !completing.contains(id))
+}
+
+#[cfg(test)]
+mod tests {
+    use subroutine_core::Action;
+
+    use super::*;
+
+    #[test]
+    fn completing_cards_are_retained_only_for_display_not_selection() {
+        let items = ["First", "Second", "Third"].map(|title| AnyItem::Action(Action::new(title)));
+        let [first, second, third] = items.each_ref().map(AnyItem::id);
+        let completing = HashSet::from([first, second]);
+        assert_eq!(
+            retained_action_id(None, None, &items, &completing),
+            Some(third)
+        );
+        assert_eq!(
+            retained_action_id(Some(first), Some(0), &items, &completing),
+            Some(third)
+        );
+        assert_eq!(
+            retained_action_id(Some(second), Some(1), &items[..2], &completing),
+            None
+        );
+        assert_eq!(
+            retained_action_id(Some(third), Some(2), &items[..2], &HashSet::from([second])),
+            Some(first)
+        );
+        assert_eq!(
+            retained_action_id(None, None, &items, &HashSet::new()),
+            Some(first)
+        );
+        assert_eq!(
+            retained_action_id(Some(third), Some(2), &items, &HashSet::new()),
+            Some(third)
+        );
+    }
 }

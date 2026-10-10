@@ -103,7 +103,8 @@ fn main_navigation_icon(view: SelectedMainView) -> AppIcon {
     match view {
         SelectedMainView::Timeline => AppIcon::Timeline,
         SelectedMainView::Calendar => AppIcon::Calendar,
-        SelectedMainView::Queue => AppIcon::ListChecks,
+        SelectedMainView::Upcoming => AppIcon::ListChecks,
+        SelectedMainView::Queue => AppIcon::ListOrdered,
         SelectedMainView::Focus => AppIcon::ScanEye,
     }
 }

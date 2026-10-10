@@ -20,11 +20,11 @@ use crate::{
 };
 
 use super::{
-    QueueDropTarget, QueueSection, QueueView,
-    agenda::{AgendaMarker, ITEM_ROW_PADDING, MARKER_ROW_HEIGHT, QueueRow},
+    UpcomingDropTarget, UpcomingSection, UpcomingView,
+    agenda::{AgendaMarker, ITEM_ROW_PADDING, MARKER_ROW_HEIGHT, UpcomingRow},
 };
 
-impl QueueView {
+impl UpcomingView {
     pub(super) fn render_row(
         &mut self,
         ix: usize,
@@ -42,17 +42,17 @@ impl QueueView {
         };
         let interactive = self.row_interactive(ix);
         match row {
-            QueueRow::Missed => self.render_missed(cx),
-            QueueRow::Day {
+            UpcomingRow::Missed => self.render_missed(cx),
+            UpcomingRow::Day {
                 date,
                 markers,
                 relative,
             } => self.render_day(date, &markers, relative, cx),
-            QueueRow::Item {
+            UpcomingRow::Item {
                 item, projected, ..
             } => self.render_item(item, projected, interactive, window, cx),
-            QueueRow::Create { date } => self.render_create(date, interactive, cx),
-            QueueRow::AnyTime => self.render_any_time(cx),
+            UpcomingRow::Create { date } => self.render_create(date, interactive, cx),
+            UpcomingRow::AnyTime => self.render_any_time(cx),
         }
     }
 
@@ -68,11 +68,11 @@ impl QueueView {
         let card_height = self.card_height(&item);
         let meta = super::super::format_item_meta(&item);
         let meta = match (
-            QueueSection::for_item(&item, self.today),
+            UpcomingSection::for_item(&item, self.today),
             item.start_date(),
             meta,
         ) {
-            (QueueSection::Missed, Some(date), Some(meta)) => {
+            (UpcomingSection::Missed, Some(date), Some(meta)) => {
                 Some(format!("{} · {meta}", date.format("%b %-d, %Y")).into())
             }
             (_, _, meta) => meta,
@@ -99,20 +99,20 @@ impl QueueView {
         });
         let before_active = matches!(
             self.drop_target,
-            Some(QueueDropTarget::Before { item, .. }) if item == id
+            Some(UpcomingDropTarget::Before { item, .. }) if item == id
         );
         let after_active = matches!(
             self.drop_target,
-            Some(QueueDropTarget::After { item, .. }) if item == id
+            Some(UpcomingDropTarget::After { item, .. }) if item == id
         );
         let day_item_active = matches!(
             self.drop_target,
-            Some(QueueDropTarget::OnDayItem { item, .. }) if item == id
+            Some(UpcomingDropTarget::OnDayItem { item, .. }) if item == id
         );
         let focus = cx.theme().colors.focus;
 
         div()
-            .id(("queue-item-drop", id.as_u64_pair().1))
+            .id(("upcoming-item-drop", id.as_u64_pair().1))
             .relative()
             .w_full()
             .h(card_height + ITEM_ROW_PADDING * 2.)
@@ -132,27 +132,27 @@ impl QueueView {
                             || dragged.items.iter().any(|item| {
                                 matches!(item, AnyItem::Marker(_) | AnyItem::Routine(_))
                             }) {
-                            QueueDropTarget::OnDayItem { date, item: id }
+                            UpcomingDropTarget::OnDayItem { date, item: id }
                         } else {
                             match anchor {
                                 Some(anchor) => {
                                     let before = event.event.position.y
                                         < event.bounds.origin.y + event.bounds.size.height / 2.;
                                     if before {
-                                        QueueDropTarget::Before {
+                                        UpcomingDropTarget::Before {
                                             date,
                                             item: id,
                                             anchor: Some(anchor),
                                         }
                                     } else {
-                                        QueueDropTarget::After {
+                                        UpcomingDropTarget::After {
                                             date,
                                             item: id,
                                             anchor: after_anchor,
                                         }
                                     }
                                 }
-                                None => QueueDropTarget::OnDayItem { date, item: id },
+                                None => UpcomingDropTarget::OnDayItem { date, item: id },
                             }
                         };
                         view.set_drop_target(target, cx);
@@ -167,14 +167,14 @@ impl QueueView {
                             return;
                         }
                         let target = match view.drop_target {
-                            Some(target @ QueueDropTarget::Before { item, .. })
-                            | Some(target @ QueueDropTarget::After { item, .. })
-                            | Some(target @ QueueDropTarget::OnDayItem { item, .. })
+                            Some(target @ UpcomingDropTarget::Before { item, .. })
+                            | Some(target @ UpcomingDropTarget::After { item, .. })
+                            | Some(target @ UpcomingDropTarget::OnDayItem { item, .. })
                                 if item == id =>
                             {
                                 target
                             }
-                            _ => QueueDropTarget::Day(date),
+                            _ => UpcomingDropTarget::Day(date),
                         };
                         view.commit_drop(&data.data, target, window, cx);
                         cx.stop_propagation();
@@ -265,14 +265,14 @@ impl QueueView {
     }
 }
 
-impl QueueView {
-    fn section_toggle(&self, section: QueueSection, label: String, cx: &Context<Self>) -> Button {
+impl UpcomingView {
+    fn section_toggle(&self, section: UpcomingSection, label: String, cx: &Context<Self>) -> Button {
         let expanded = self.sections.is_expanded(section);
         let id = match section {
-            QueueSection::Missed => ElementId::from("queue-toggle-missed"),
-            QueueSection::Unscheduled => ElementId::from("queue-toggle-unscheduled"),
-            QueueSection::Day(date) => {
-                ElementId::from(("queue-toggle-day", date.num_days_from_ce() as u64))
+            UpcomingSection::Missed => ElementId::from("upcoming-toggle-missed"),
+            UpcomingSection::Unscheduled => ElementId::from("upcoming-toggle-unscheduled"),
+            UpcomingSection::Day(date) => {
+                ElementId::from(("upcoming-toggle-day", date.num_days_from_ce() as u64))
             }
         };
         Button::new(id)
@@ -313,7 +313,7 @@ impl QueueView {
 
     fn section_controls(&self, cx: &Context<Self>) -> impl IntoElement {
         div()
-            .id("queue-section-controls")
+            .id("upcoming-section-controls")
             .on_click(|_, _, cx| cx.stop_propagation())
             .row()
             .items_center()
@@ -321,13 +321,13 @@ impl QueueView {
             .children([true, false].into_iter().map(|expanded| {
                 let (id, icon, tooltip) = if expanded {
                     (
-                        "queue-expand-all",
+                        "upcoming-expand-all",
                         AppIcon::ListChevronsUpDown,
                         "Expand all lists",
                     )
                 } else {
                     (
-                        "queue-collapse-all",
+                        "upcoming-collapse-all",
                         AppIcon::ListChevronsDownUp,
                         "Collapse all lists",
                     )
@@ -378,11 +378,11 @@ impl QueueView {
             .collect();
         let hidden_markers = markers.len().saturating_sub(VISIBLE_MARKERS);
         let has_markers = !marker_chips.is_empty();
-        let active = self.drop_target == Some(QueueDropTarget::Day(date));
+        let active = self.drop_target == Some(UpcomingDropTarget::Day(date));
         let active_bg = theme.colors.selected;
 
         div()
-            .id(("queue-day", date.num_days_from_ce() as u64))
+            .id(("upcoming-day", date.num_days_from_ce() as u64))
             .column()
             .size_full()
             .px_4()
@@ -394,13 +394,13 @@ impl QueueView {
                     if event.bounds.contains(&event.event.position)
                         && !event.drag(cx).data.items.is_empty()
                     {
-                        view.set_drop_target(QueueDropTarget::Day(date), cx);
+                        view.set_drop_target(UpcomingDropTarget::Day(date), cx);
                     }
                 },
             ))
             .on_drop::<DragData<DraggedItems>>(cx.listener(
                 move |view, data: &DragData<DraggedItems>, window, cx| {
-                    view.commit_drop(&data.data, QueueDropTarget::Day(date), window, cx);
+                    view.commit_drop(&data.data, UpcomingDropTarget::Day(date), window, cx);
                     cx.stop_propagation();
                 },
             ))
@@ -421,7 +421,7 @@ impl QueueView {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .child(self.section_toggle(QueueSection::Day(date), calendar_date, cx))
+                    .child(self.section_toggle(UpcomingSection::Day(date), calendar_date, cx))
                     .child(
                         Label::new(weekday)
                             .h_auto()
@@ -434,7 +434,7 @@ impl QueueView {
                 this.child(
                     div()
                         .row()
-                        .id(("queue-day-markers", date.num_days_from_ce() as u64))
+                        .id(("upcoming-day-markers", date.num_days_from_ce() as u64))
                         .w_full()
                         .h(MARKER_ROW_HEIGHT)
                         .min_w_0()
@@ -496,7 +496,7 @@ fn marker_chip(entry: &AgendaMarker, cx: &App) -> AnyElement {
         cx,
     );
     let menu_item = item.clone();
-    Draggable::new(("queue-marker-draggable", item.id_u64()), drag_data)
+    Draggable::new(("upcoming-marker-draggable", item.id_u64()), drag_data)
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             SelectionManager::claim_press(cx)
         })
@@ -516,25 +516,25 @@ fn marker_chip(entry: &AgendaMarker, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-impl QueueView {
+impl UpcomingView {
     fn render_create(
         &mut self,
         date: Option<NaiveDate>,
         interactive: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let target = date.map_or(QueueDropTarget::Unscheduled, QueueDropTarget::Day);
+        let target = date.map_or(UpcomingDropTarget::Unscheduled, UpcomingDropTarget::Day);
         let active = self.drop_target == Some(target);
         let muted = cx.theme().colors.text_muted;
         let (row_id, button_id, tooltip) = match date {
             Some(date) => (
-                ElementId::from(("queue-create-row", date.num_days_from_ce() as u64)),
-                ElementId::from(("queue-create", date.num_days_from_ce() as u32)),
+                ElementId::from(("upcoming-create-row", date.num_days_from_ce() as u64)),
+                ElementId::from(("upcoming-create", date.num_days_from_ce() as u32)),
                 format!("Add an item on {}", date.format("%A, %-d %B")),
             ),
             None => (
-                ElementId::from("queue-create-unscheduled-row"),
-                ElementId::from("queue-new-unscheduled"),
+                ElementId::from("upcoming-create-unscheduled-row"),
+                ElementId::from("upcoming-new-unscheduled"),
                 "Add an unscheduled queued action".to_owned(),
             ),
         };
@@ -604,25 +604,25 @@ impl QueueView {
     }
 }
 
-impl QueueView {
+impl UpcomingView {
     fn render_missed(&self, cx: &Context<Self>) -> AnyElement {
         div()
-            .id("queue-missed")
+            .id("upcoming-missed")
             .row()
             .size_full()
             .px_4()
             .items_center()
             .justify_between()
-            .child(self.section_toggle(QueueSection::Missed, "Missed actions".into(), cx))
+            .child(self.section_toggle(UpcomingSection::Missed, "Missed actions".into(), cx))
             .child(self.section_controls(cx))
             .into_any_element()
     }
 
     fn render_any_time(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.drop_target == Some(QueueDropTarget::Unscheduled);
+        let active = self.drop_target == Some(UpcomingDropTarget::Unscheduled);
 
         div()
-            .id("queue-unscheduled")
+            .id("upcoming-unscheduled")
             .row()
             .size_full()
             .px_4()
@@ -634,13 +634,13 @@ impl QueueView {
                     if event.bounds.contains(&event.event.position)
                         && event.drag(cx).data.actions().next().is_some()
                     {
-                        view.set_drop_target(QueueDropTarget::Unscheduled, cx);
+                        view.set_drop_target(UpcomingDropTarget::Unscheduled, cx);
                     }
                 },
             ))
             .on_drop::<DragData<DraggedItems>>(cx.listener(
                 |view, data: &DragData<DraggedItems>, window, cx| {
-                    view.commit_drop(&data.data, QueueDropTarget::Unscheduled, window, cx);
+                    view.commit_drop(&data.data, UpcomingDropTarget::Unscheduled, window, cx);
                     cx.stop_propagation();
                 },
             ))
@@ -654,9 +654,9 @@ impl QueueView {
                 cx.stop_propagation();
                 view.add_draft(None, window, cx);
             }))
-            .child(self.section_toggle(QueueSection::Unscheduled, "Unscheduled".into(), cx))
+            .child(self.section_toggle(UpcomingSection::Unscheduled, "Unscheduled".into(), cx))
             .when(
-                !matches!(self.agenda.rows.first(), Some(QueueRow::Missed)),
+                !matches!(self.agenda.rows.first(), Some(UpcomingRow::Missed)),
                 |row| row.child(self.section_controls(cx)),
             )
             .into_any_element()

@@ -392,6 +392,7 @@ impl Render for AppCommandPalette {
             .on_action(|_: &super::GoToHome, _, _| {})
             .on_action(|_: &super::GoToTimeline, _, _| {})
             .on_action(|_: &super::GoToCalendar, _, _| {})
+            .on_action(|_: &super::GoToUpcoming, _, _| {})
             .on_action(|_: &super::GoToQueue, _, _| {})
             .on_action(|_: &super::GoToFocus, _, _| {})
             .on_action(|_: &super::GoToUnqueued, _, _| {})

@@ -22,7 +22,9 @@ use crate::{
     stores::{AppDatabaseStore, DataChanged},
 };
 
-use super::main_view::{EventMoment, TemporalSnapshot, event_notice_card, ordered_focus_actions};
+use super::main_view::{
+    EventMoment, TemporalSnapshot, event_notice_card, queue_system::QueueSnapshot,
+};
 use super::{StartItemCreator, TOP_EDGE_INSET};
 
 const HOME_CARD_HEIGHT: gpui::Pixels = px(112.);
@@ -41,9 +43,17 @@ struct HomeData {
 
 impl HomeData {
     fn read(store: &AppDatabaseStore, settings: &Settings, now: DateTime<Utc>) -> Self {
-        let action = ordered_focus_actions(store.actions(), now, settings.focus_action_horizon())
-            .into_iter()
-            .next();
+        let queue = QueueSnapshot::new(
+            store.actions(),
+            store.events(),
+            now,
+            settings.schedule.granularity,
+        );
+        let action = if queue.blocker.is_none() {
+            queue.candidates.into_iter().next()
+        } else {
+            None
+        };
         let event = TemporalSnapshot::new(
             store.events(),
             &[],

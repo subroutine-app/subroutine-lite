@@ -14,7 +14,7 @@ fn scheduler_index(view: SelectedMainView) -> Option<usize> {
     match view {
         SelectedMainView::Timeline => Some(0),
         SelectedMainView::Calendar => Some(1),
-        SelectedMainView::Queue => Some(2),
+        SelectedMainView::Upcoming => Some(2),
         _ => None,
     }
 }

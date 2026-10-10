@@ -200,8 +200,10 @@ impl FocusView {
     }
 
     fn sync_event_notice(&mut self, desired: Option<EventMoment>) -> bool {
-        let desired =
-            desired.filter(|notice| self.dismissed_event_notice != Some(notice.notice_id()));
+        let desired = desired.filter(|notice| {
+            self.queue_blocker.as_ref().map(EventMoment::notice_id) == Some(notice.notice_id())
+                || self.dismissed_event_notice != Some(notice.notice_id())
+        });
         self.event_notice.sync(desired, EventMoment::notice_id)
     }
 
@@ -246,13 +248,19 @@ impl FocusView {
         );
         let mut card = self.notice_card(moment.notice_id(), card, interactive, cx);
         if interactive {
-            card = card.trailing(dismiss).on_click(move |_, window, cx| {
-                view.update(cx, |view, cx| {
-                    view.set_mode(FocusMode::Event, cx);
-                    view.focus_handle.focus(window, cx);
-                })
-                .ok();
-            });
+            card = card
+                .when(
+                    self.queue_blocker.as_ref().map(EventMoment::notice_id)
+                        != Some(moment.notice_id()),
+                    |card| card.trailing(dismiss),
+                )
+                .on_click(move |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.set_mode(FocusMode::Event, cx);
+                        view.focus_handle.focus(window, cx);
+                    })
+                    .ok();
+                });
         }
 
         div()
@@ -354,12 +362,13 @@ impl FocusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Option<AnyElement>, Option<AnyElement>, Pixels) {
-        let retained_event = temporal
-            .event_notice()
-            .map(EventMoment::notice_id)
-            .filter(|id| self.dismissed_event_notice != Some(*id));
+        let event = self
+            .queue_blocker
+            .as_ref()
+            .or_else(|| temporal.event_notice());
+        let retained_event = event.map(EventMoment::notice_id);
         let desired_event_notice = (self.mode == FocusMode::Action)
-            .then(|| temporal.event_notice().cloned())
+            .then(|| event.cloned())
             .flatten();
         let event_notice_visible = self.sync_event_notice(desired_event_notice);
         let signal_notice_visible = self.sync_signal_notice(temporal.signal.clone());

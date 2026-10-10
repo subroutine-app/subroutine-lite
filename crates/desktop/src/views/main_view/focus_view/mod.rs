@@ -29,7 +29,7 @@ use crate::{
 use super::tab::{MainViewTab, SelectedMainView};
 use gestures::CarouselScrollAxis;
 use notices::NoticeSlot;
-use reconcile::replacement_index;
+
 use temporal::{EventMoment, SignalMoment};
 
 pub(crate) use notices::event_notice_card;
@@ -66,6 +66,7 @@ pub struct FocusView {
     mode: FocusMode,
     source_actions: Vec<Action>,
     items: Vec<AnyItem>,
+    queue_blocker: Option<EventMoment>,
     events: Vec<Event>,
     event_moments: Vec<EventMoment>,
     active_event_id: Option<Uuid>,
@@ -107,60 +108,8 @@ impl FocusView {
         })
         .detach();
 
-        cx.observe(&ItemManager::global(cx), |view, manager, cx| {
-            let previous_active = view.active_id;
-            let previous_index = view.active_index();
-            let completing: HashSet<Uuid> = {
-                let manager = manager.read(cx);
-                view.items
-                    .iter()
-                    .filter(|item| manager.is_completing(item.id()))
-                    .map(AnyItem::id)
-                    .collect()
-            };
-
-            if let Some(index) =
-                previous_index.filter(|index| completing.contains(&view.items[*index].id()))
-            {
-                let replacement = ((index + 1)..view.items.len())
-                    .find(|candidate| !completing.contains(&view.items[*candidate].id()))
-                    .or_else(|| {
-                        (0..index)
-                            .rev()
-                            .find(|candidate| !completing.contains(&view.items[*candidate].id()))
-                    })
-                    .map(|index| view.items[index].id());
-                if replacement != previous_active {
-                    let leaving = view.items[index].id();
-                    view.active_id = replacement;
-                    if view.mode == FocusMode::Action {
-                        view.reset_wheel();
-                    }
-                    SelectionManager::global(cx).update(cx, |selection, cx| {
-                        selection.hand_off(SelectionScope::Focus, leaving, replacement, cx)
-                    });
-                }
-            }
-
-            view.items.retain(|item| {
-                view.source_ids.contains(&item.id()) || completing.contains(&item.id())
-            });
-            let visible_ids: HashSet<_> = view.items.iter().map(AnyItem::id).collect();
-            view.item_focus_handles
-                .retain(|id, _| visible_ids.contains(id));
-            if let Some(leaving) = previous_active.filter(|id| !visible_ids.contains(id)) {
-                view.active_id = replacement_index(previous_index, view.items.len())
-                    .and_then(|index| view.items.get(index))
-                    .map(AnyItem::id);
-                if view.mode == FocusMode::Action {
-                    view.reset_wheel();
-                }
-                SelectionManager::global(cx).update(cx, |selection, cx| {
-                    selection.hand_off(SelectionScope::Focus, leaving, view.active_id, cx)
-                });
-                view.restore_focus = true;
-            }
-            cx.notify();
+        cx.observe(&ItemManager::global(cx), |view, _, cx| {
+            view.reconcile_items(cx);
         })
         .detach();
 
@@ -178,13 +127,15 @@ impl FocusView {
             };
             let target = view
                 .active_id
-                .filter(|active| selected.contains(active))
+                .filter(|active| {
+                    selected.contains(active)
+                        && !ItemManager::global(cx).read(cx).is_completing(*active)
+                })
                 .or_else(|| {
-                    selected
-                        .iter()
-                        .rev()
-                        .copied()
-                        .find(|id| view.items.iter().any(|item| item.id() == *id))
+                    selected.iter().rev().copied().find(|id| {
+                        view.items.iter().any(|item| item.id() == *id)
+                            && !ItemManager::global(cx).read(cx).is_completing(*id)
+                    })
                 });
             if let Some(id) = target
                 && view.active_id != Some(id)
@@ -206,7 +157,6 @@ impl FocusView {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 if view
                     .update(cx, |view, cx| {
-                        view.now = Utc::now();
                         view.reconcile_items(cx);
                     })
                     .is_err()
@@ -224,6 +174,7 @@ impl FocusView {
             mode: FocusMode::default(),
             source_actions: Vec::new(),
             items: Vec::new(),
+            queue_blocker: None,
             events: Vec::new(),
             event_moments: Vec::new(),
             active_event_id: None,
@@ -281,7 +232,7 @@ impl FocusView {
     ) {
         self.events = events;
         self.signals = signals;
-        cx.notify();
+        self.reconcile_items(cx);
     }
 
     pub(super) fn set_mode(&mut self, mode: FocusMode, cx: &mut Context<Self>) {

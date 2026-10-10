@@ -43,7 +43,7 @@ impl EventEmitter<DiscardDraft> for ItemManager {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DraftView {
-    Queue,
+    Upcoming,
     Timeline,
 }
 
@@ -527,7 +527,7 @@ impl ItemManager {
         };
         let batching = end == EditEnd::Submit
             && match draft_view {
-                Some(DraftView::Queue) => settings.queue_batch_mode,
+                Some(DraftView::Upcoming) => settings.queue_batch_mode,
                 Some(DraftView::Timeline) => settings.timeline_batch_mode,
                 None => false,
             };
@@ -570,7 +570,7 @@ impl ItemManager {
                     };
                     if draft_view.is_some() {
                         let mut updated = updated;
-                        if draft_view == Some(DraftView::Queue) {
+                        if draft_view == Some(DraftView::Upcoming) {
                             updated.set_queued(true);
                         }
                         let items = if batching

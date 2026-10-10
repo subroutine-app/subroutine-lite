@@ -17,11 +17,11 @@ use crate::{
     themes::ToggleThemeMode,
     views::{
         ChooseTheme, EditSelectedItem, GoToCalendar, GoToFocus, GoToHome, GoToNow, GoToQueue,
-        GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued, MAIN_VIEW_KEY_CONTEXT, NextTab,
-        OpenConfigurationFolder, PreviousTab, Redo, RefreshPipeline, StartEventCreator,
-        StartItemCreator, StartMarkerCreator, StartRoutine, StartRoutineCreator,
-        StartSignalCreator, SyncNow, ToggleLeftSidebar, ToggleRightSidebar, Undo, UseSavedAction,
-        UseSavedEvent,
+        GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued, GoToUpcoming,
+        MAIN_VIEW_KEY_CONTEXT, NextTab, OpenConfigurationFolder, PreviousTab, Redo,
+        RefreshPipeline, StartEventCreator, StartItemCreator, StartMarkerCreator, StartRoutine,
+        StartRoutineCreator, StartSignalCreator, SyncNow, ToggleLeftSidebar, ToggleRightSidebar,
+        Undo, UseSavedAction, UseSavedEvent,
     },
 };
 
@@ -77,6 +77,7 @@ pub enum ConfigurableCommand {
     GoToHome,
     GoToTimeline,
     GoToCalendar,
+    GoToUpcoming,
     GoToQueue,
     GoToFocus,
     GoToUnqueued,
@@ -103,7 +104,7 @@ pub enum ConfigurableCommand {
 }
 
 impl ConfigurableCommand {
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 45] = [
         Self::ShowSettings,
         Self::SyncNow,
         Self::OpenConfigurationFolder,
@@ -125,6 +126,7 @@ impl ConfigurableCommand {
         Self::GoToHome,
         Self::GoToTimeline,
         Self::GoToCalendar,
+        Self::GoToUpcoming,
         Self::GoToQueue,
         Self::GoToFocus,
         Self::GoToUnqueued,
@@ -174,7 +176,8 @@ impl ConfigurableCommand {
             Self::GoToHome => "navigation.go-to-home",
             Self::GoToTimeline => "navigation.go-to-timeline",
             Self::GoToCalendar => "navigation.go-to-calendar",
-            Self::GoToQueue => "navigation.go-to-queue",
+            Self::GoToUpcoming => "navigation.go-to-queue",
+            Self::GoToQueue => "navigation.go-to-execution-queue",
             Self::GoToFocus => "navigation.go-to-focus",
             Self::GoToUnqueued => "navigation.go-to-unqueued",
             Self::GoToRoutines => "navigation.go-to-routines",
@@ -224,6 +227,7 @@ impl ConfigurableCommand {
             Self::GoToHome => "Go to Home",
             Self::GoToTimeline => "Go to Timeline",
             Self::GoToCalendar => "Go to Calendar",
+            Self::GoToUpcoming => "Go to Upcoming",
             Self::GoToQueue => "Go to Queue",
             Self::GoToFocus => "Go to Focus",
             Self::GoToUnqueued => "Go to Unqueued",
@@ -303,6 +307,7 @@ impl ConfigurableCommand {
             | Self::GoToUnqueued
             | Self::GoToRoutines
             | Self::GoToSavedItems
+            | Self::GoToUpcoming
             | Self::NextTab
             | Self::PreviousTab => "Navigation",
             Self::Refresh | Self::GoToNow => "Main views",
@@ -339,7 +344,8 @@ impl ConfigurableCommand {
             | Self::GoToFocus
             | Self::GoToUnqueued
             | Self::GoToRoutines
-            | Self::GoToSavedItems => &[],
+            | Self::GoToSavedItems
+            | Self::GoToUpcoming => &[],
             Self::ToggleLeftSidebar => &["cmd-b"],
             Self::ToggleRightSidebar => &["cmd-alt-b"],
             Self::Undo => &["cmd-z"],
@@ -386,7 +392,8 @@ impl ConfigurableCommand {
             | Self::GoToFocus
             | Self::GoToUnqueued
             | Self::GoToRoutines
-            | Self::GoToSavedItems => &["navigate", "view", "switch"],
+            | Self::GoToSavedItems
+            | Self::GoToUpcoming => &["navigate", "view", "switch"],
             Self::ToggleLeftSidebar => &["navigation", "sidebar", "rail"],
             Self::ToggleRightSidebar | Self::EditSelectedItem => &["editor", "details", "item"],
             Self::NextTab | Self::PreviousTab => &["tab", "view", "switch"],
@@ -438,6 +445,7 @@ impl ConfigurableCommand {
             Self::GoToHome => Box::new(GoToHome),
             Self::GoToTimeline => Box::new(GoToTimeline),
             Self::GoToCalendar => Box::new(GoToCalendar),
+            Self::GoToUpcoming => Box::new(GoToUpcoming),
             Self::GoToQueue => Box::new(GoToQueue),
             Self::GoToFocus => Box::new(GoToFocus),
             Self::GoToUnqueued => Box::new(GoToUnqueued),
@@ -488,6 +496,7 @@ impl ConfigurableCommand {
             Self::GoToHome => GoToHome::name_for_type(),
             Self::GoToTimeline => GoToTimeline::name_for_type(),
             Self::GoToCalendar => GoToCalendar::name_for_type(),
+            Self::GoToUpcoming => GoToUpcoming::name_for_type(),
             Self::GoToQueue => GoToQueue::name_for_type(),
             Self::GoToFocus => GoToFocus::name_for_type(),
             Self::GoToUnqueued => GoToUnqueued::name_for_type(),
@@ -538,6 +547,7 @@ impl ConfigurableCommand {
             Self::GoToHome => key(chord, GoToHome, self.context()),
             Self::GoToTimeline => key(chord, GoToTimeline, self.context()),
             Self::GoToCalendar => key(chord, GoToCalendar, self.context()),
+            Self::GoToUpcoming => key(chord, GoToUpcoming, self.context()),
             Self::GoToQueue => key(chord, GoToQueue, self.context()),
             Self::GoToFocus => key(chord, GoToFocus, self.context()),
             Self::GoToUnqueued => key(chord, GoToUnqueued, self.context()),
@@ -817,4 +827,42 @@ pub fn force_click_modifier(modifiers: &Modifiers) -> bool {
 
 fn force_click_modifier_for(is_macos: bool, modifiers: &Modifiers) -> bool {
     !is_macos && modifiers.control
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::views::SelectedMainView;
+
+    #[test]
+    fn legacy_planner_navigation_remains_distinct_from_execution_queue() {
+        for (id, view) in [
+            ("queue", SelectedMainView::Upcoming),
+            ("execution-queue", SelectedMainView::Queue),
+        ] {
+            assert_eq!(SelectedMainView::from_id(id), Some(view));
+            assert_eq!(view.id(), id);
+        }
+
+        let upcoming = ConfigurableCommand::from_id("navigation.go-to-queue").unwrap();
+        let queue = ConfigurableCommand::from_id("navigation.go-to-execution-queue").unwrap();
+        assert_eq!(upcoming, ConfigurableCommand::GoToUpcoming);
+        assert_eq!(queue, ConfigurableCommand::GoToQueue);
+        assert_eq!(upcoming.action_name(), GoToUpcoming::name_for_type());
+        assert_eq!(queue.action_name(), GoToQueue::name_for_type());
+
+        let mut keymap = KeymapConfig::from_overrides(BTreeMap::from([(
+            "navigation.go-to-queue".into(),
+            vec!["ctrl-alt-u".into()],
+        )]))
+        .unwrap();
+        assert_eq!(keymap.effective(upcoming), ["ctrl-alt-u"]);
+        assert!(keymap.effective(queue).is_empty());
+
+        keymap
+            .add("navigation.go-to-execution-queue", "ctrl-alt-q")
+            .unwrap();
+        assert_eq!(keymap.effective(upcoming), ["ctrl-alt-u"]);
+        assert_eq!(keymap.effective(queue), ["ctrl-alt-q"]);
+    }
 }

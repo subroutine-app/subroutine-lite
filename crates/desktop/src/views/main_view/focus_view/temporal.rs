@@ -162,7 +162,7 @@ impl TemporalSnapshot {
         }
     }
 
-    pub(super) fn event_notice(&self) -> Option<&EventMoment> {
+    pub(crate) fn event_notice(&self) -> Option<&EventMoment> {
         if let Some(moment) = self
             .events
             .iter()

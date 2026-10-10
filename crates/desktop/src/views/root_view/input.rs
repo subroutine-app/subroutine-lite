@@ -1,7 +1,7 @@
 use super::{
     ChooseTheme, CurrentOverlay, EditSelectedItem, FocusNext, FocusPrevious, GoToCalendar,
     GoToFocus, GoToHome, GoToQueue, GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued,
-    NavigationDestination, NextTab, OpenConfigurationFolder, OpenItemInspector,
+    GoToUpcoming, NavigationDestination, NextTab, OpenConfigurationFolder, OpenItemInspector,
     OpenSavedItemInspector, PreviousTab, Redo, RootView, StartCommandPalette, StartEventCreator,
     StartItemCreator, StartItemCreatorOnDate, StartMarkerCreator, StartMarkerCreatorOnRange,
     StartQueuedActionCreator, StartRoutine, StartRoutineCreator, StartSignalCreator, SyncNow,
@@ -181,6 +181,13 @@ impl RootView {
         .on_action(cx.listener(|view, _: &GoToCalendar, window, cx| {
             view.navigate_to_view(
                 NavigationDestination::Main(SelectedMainView::Calendar),
+                window,
+                cx,
+            );
+        }))
+        .on_action(cx.listener(|view, _: &GoToUpcoming, window, cx| {
+            view.navigate_to_view(
+                NavigationDestination::Main(SelectedMainView::Upcoming),
                 window,
                 cx,
             );

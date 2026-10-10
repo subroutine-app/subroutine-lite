@@ -83,10 +83,7 @@ impl FocusView {
         let timing_threshold = settings.focus_timing_threshold_seconds();
         let previous_timing = previous_timing_choice(timing_threshold);
         let next_timing = next_timing_choice(timing_threshold);
-        let action_horizon = settings.focus_action_horizon_hours();
-        let previous_action_horizon = previous_horizon_choice(action_horizon);
-        let next_action_horizon = next_horizon_choice(action_horizon);
-        let action_horizon_label = temporal::format_horizon(action_horizon);
+
         let event_horizon = settings.focus_horizon_hours();
         let previous_event_horizon = previous_horizon_choice(event_horizon);
         let next_event_horizon = next_horizon_choice(event_horizon);
@@ -161,93 +158,6 @@ impl FocusView {
                                                 FocusCarouselOrientation::Vertical;
                                         });
                                     }),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .row()
-                    .flex_none()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .id("focus-settings-action-horizon-label")
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Action horizon")
-                            .tooltip(|_, cx| {
-                                Tooltip::new(
-                                    "focus-action-horizon-help",
-                                    "Show scheduled actions due within this period",
-                                )
-                                .view(cx)
-                            })
-                            .semantic_in(
-                                cx,
-                                NodeSpec::new("focus-settings-action-horizon-label", Role::Text)
-                                    .text("Action horizon")
-                                    .description("Show scheduled actions due within this period"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .row()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                IconButton::new(
-                                    "focus-settings-action-horizon-decrease",
-                                    KitIcon::Minus,
-                                    "Shorten action horizon",
-                                )
-                                .small()
-                                .disabled(previous_action_horizon.is_none())
-                                .when_some(
-                                    previous_action_horizon,
-                                    |button, hours| {
-                                        button.on_click(move |_window, cx| {
-                                            Settings::update(cx, |settings| {
-                                                settings.set_focus_action_horizon_hours(hours)
-                                            });
-                                        })
-                                    },
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .id("focus-settings-action-horizon-value")
-                                    .w(px(64.))
-                                    .text_center()
-                                    .text_sm()
-                                    .child(action_horizon_label.clone())
-                                    .semantic_in(
-                                        cx,
-                                        NodeSpec::new(
-                                            "focus-settings-action-horizon-value",
-                                            Role::Status,
-                                        )
-                                        .text(format!("Action horizon: {action_horizon_label}")),
-                                    ),
-                            )
-                            .child(
-                                IconButton::new(
-                                    "focus-settings-action-horizon-increase",
-                                    KitIcon::Plus,
-                                    "Lengthen action horizon",
-                                )
-                                .small()
-                                .disabled(next_action_horizon.is_none())
-                                .when_some(
-                                    next_action_horizon,
-                                    |button, hours| {
-                                        button.on_click(move |_window, cx| {
-                                            Settings::update(cx, |settings| {
-                                                settings.set_focus_action_horizon_hours(hours)
-                                            });
-                                        })
-                                    },
-                                ),
                             ),
                     ),
             )

@@ -76,6 +76,66 @@ struct RowLayout {
     height: f32,
 }
 
+fn layout_rows(
+    items: impl ExactSizeIterator<Item = (ElementId, Pixels)>,
+    inset: f32,
+    padding: f32,
+    gap: f32,
+) -> (Vec<RowLayout>, f32) {
+    let mut rows = Vec::with_capacity(items.len());
+    let mut cursor = inset + padding;
+    for (id, height) in items {
+        let height = f32::from(height).max(0.0);
+        rows.push(RowLayout {
+            id,
+            top: cursor,
+            height,
+        });
+        cursor += height + gap;
+    }
+    let content_height = if rows.is_empty() {
+        inset + padding * 2.0
+    } else {
+        (cursor - gap).max(inset + padding) + padding
+    };
+    (rows, content_height)
+}
+
+fn row_scroll_bounds(rows: &[RowLayout], ix: usize, padding: f32) -> Option<std::ops::Range<f32>> {
+    let row = rows.get(ix)?;
+    let top = row.top - if ix == 0 { padding } else { 0.0 };
+    let bottom = row.top + row.height + if ix + 1 == rows.len() { padding } else { 0.0 };
+    Some(top..bottom)
+}
+
+fn reveal_scroll_target(
+    bounds: std::ops::Range<f32>,
+    scroll_top: f32,
+    viewport_height: f32,
+    inset: f32,
+) -> Option<f32> {
+    if bounds.end - bounds.start > viewport_height - inset || bounds.start < scroll_top + inset {
+        Some(bounds.start - inset)
+    } else if bounds.end > scroll_top + viewport_height {
+        Some(bounds.end - viewport_height)
+    } else {
+        None
+    }
+}
+
+fn drag_preview_width(measured: Pixels, padding: Pixels) -> Pixels {
+    let width = if measured > px(0.) {
+        measured
+    } else {
+        FALLBACK_PREVIEW_WIDTH
+    };
+    if padding == px(0.) {
+        width
+    } else {
+        (width - padding * 2.).max(px(1.))
+    }
+}
+
 struct ScrollAnchor {
     id: ElementId,
     within: f32,
@@ -223,6 +283,7 @@ pub struct DynamicListState<D: DynamicListDelegate> {
     layout_epoch: u64,
     marquee_active: bool,
     gap: Pixels,
+    content_padding: Pixels,
     content_inset_top: Pixels,
     overscan: usize,
     scrollbar_visible: bool,
@@ -251,6 +312,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             layout_epoch,
             marquee_active: false,
             gap: DYNAMIC_LIST_ITEM_GAP,
+            content_padding: px(0.),
             content_inset_top: px(0.),
             overscan: DEFAULT_OVERSCAN,
             scrollbar_visible: true,
@@ -281,6 +343,12 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         self
     }
 
+    pub fn content_padding(mut self, padding: Pixels) -> Self {
+        self.content_padding = padding.max(px(0.));
+        self.invalidate_initial_layout();
+        self
+    }
+
     pub fn content_inset_top(mut self, inset: Pixels) -> Self {
         self.content_inset_top = inset.max(px(0.));
         self.invalidate_initial_layout();
@@ -290,6 +358,13 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     pub fn scrollbar_visible(mut self, visible: bool) -> Self {
         self.scrollbar_visible = visible;
         self
+    }
+
+    pub fn set_scrollbar_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.scrollbar_visible != visible {
+            self.scrollbar_visible = visible;
+            cx.notify();
+        }
     }
 
     pub fn elastic_overscroll(mut self, enabled: bool) -> Self {
@@ -368,12 +443,10 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
                 let (width, height) = weak
                     .update(cx, |this, cx| {
                         this.begin_drag(drag.ix, cx);
-                        let measured = this.scroll_handle.bounds().size.width;
-                        let width = if measured > px(0.) {
-                            measured
-                        } else {
-                            FALLBACK_PREVIEW_WIDTH
-                        };
+                        let width = drag_preview_width(
+                            this.scroll_handle.bounds().size.width,
+                            this.content_padding,
+                        );
                         let height = this
                             .rows
                             .get(drag.ix)
@@ -438,10 +511,11 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         if self.layout_changed(cx) {
             self.rebuild_layout(cx);
         }
-        let Some(row) = self.rows.get(ix) else {
+        let Some(bounds) = row_scroll_bounds(&self.rows, ix, f32::from(self.content_padding))
+        else {
             return;
         };
-        let top = row.top - f32::from(self.content_inset_top);
+        let top = bounds.start - f32::from(self.content_inset_top);
         let viewport_height = f32::from(self.scroll_handle.bounds().size.height);
         let max_scroll = (self.content_height - viewport_height).max(0.0);
         let mut offset = self.scroll_handle.offset();
@@ -454,7 +528,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         if self.layout_changed(cx) {
             self.rebuild_layout(cx);
         }
-        let Some((top, bottom)) = self.rows.get(ix).map(|row| (row.top, row.top + row.height))
+        let Some(bounds) = row_scroll_bounds(&self.rows, ix, f32::from(self.content_padding))
         else {
             return;
         };
@@ -467,14 +541,12 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
 
         let mut offset = self.scroll_handle.offset();
         let scroll_top = (-f32::from(offset.y)).max(0.0);
-        let visible_top = scroll_top + f32::from(self.content_inset_top);
-        let target = if bottom - top > viewport_height - f32::from(self.content_inset_top)
-            || top < visible_top
-        {
-            top - f32::from(self.content_inset_top)
-        } else if bottom > scroll_top + viewport_height {
-            bottom - viewport_height
-        } else {
+        let Some(target) = reveal_scroll_target(
+            bounds,
+            scroll_top,
+            viewport_height,
+            f32::from(self.content_inset_top),
+        ) else {
             return;
         };
 
@@ -512,18 +584,13 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         }
         let count = self.delegate.items_count(cx);
         let gap = f32::from(self.gap);
-        let mut rows = Vec::with_capacity(count);
         let inset = f32::from(self.content_inset_top);
-        let mut cursor = inset;
-        for ix in 0..count {
-            let height = f32::from(self.delegate.item_height(ix, cx)).max(0.0);
-            rows.push(RowLayout {
-                id: self.delegate.item_id(ix, cx),
-                top: cursor,
-                height,
-            });
-            cursor += height + gap;
-        }
+        let padding = f32::from(self.content_padding);
+        let items = (0..count).map(|ix| {
+            let height = self.delegate.item_height(ix, cx);
+            (self.delegate.item_id(ix, cx), height)
+        });
+        let (rows, content_height) = layout_rows(items, inset, padding, gap);
         let geometry_changed = rows != self.rows;
         let height_reflow = self.initialized
             && geometry_changed
@@ -538,11 +605,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         let anchor = height_reflow
             .then(|| ScrollAnchor::capture(&self.rows, f32::from(offset.y), inset))
             .flatten();
-        self.content_height = if count == 0 {
-            inset
-        } else {
-            (cursor - gap).max(inset)
-        };
+        self.content_height = content_height;
 
         let now = Instant::now();
         let reduce_motion = cx.reduce_motion();
@@ -714,8 +777,8 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
                     )))
                     .absolute()
                     .top(px(screen_top))
-                    .left(px(0.))
-                    .right(px(0.))
+                    .left(self.content_padding)
+                    .right(self.content_padding)
                     .h(px(row.height))
                     .opacity(row.opacity(now))
                     .block_mouse_except_scroll()
@@ -857,8 +920,8 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             return div()
                 .absolute()
                 .top(px(top))
-                .left(px(0.))
-                .right(px(0.))
+                .left(self.content_padding)
+                .right(self.content_padding)
                 .h(px(height))
                 .opacity(0.0)
                 .into_any_element();
@@ -910,8 +973,8 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             })
             .absolute()
             .top(px(y))
-            .left(px(0.))
-            .right(px(0.))
+            .left(self.content_padding)
+            .right(self.content_padding)
             .h(px(height))
             .when(opacity < 1.0, |this| this.opacity(opacity))
             .when(can_drag, |this| {
@@ -980,23 +1043,17 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
         let body: AnyElement = if count == 0 {
             div()
                 .absolute()
-                .top(self.content_inset_top)
-                .bottom_0()
-                .left_0()
-                .right_0()
+                .top(self.content_inset_top + self.content_padding)
+                .bottom(self.content_padding)
+                .left(self.content_padding)
+                .right(self.content_padding)
                 .overflow_hidden()
                 .child(self.delegate.render_empty(window, cx))
                 .into_any_element()
         } else {
             let weak = cx.entity().downgrade();
-            let preview_width = {
-                let measured = self.scroll_handle.bounds().size.width;
-                if measured > px(0.) {
-                    measured
-                } else {
-                    FALLBACK_PREVIEW_WIDTH
-                }
-            };
+            let preview_width =
+                drag_preview_width(self.scroll_handle.bounds().size.width, self.content_padding);
 
             let range = self.visible_range(window);
             let focus = ScrollFocus::new(self.id.clone(), window, cx);
@@ -1167,5 +1224,93 @@ impl<D: DynamicListDelegate> RenderOnce for DynamicList<D> {
             .size_full()
             .refine_style(&self.style)
             .child(self.state.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn padding_layout_and_scroll_geometry() {
+        for inset in [0.0, 32.0] {
+            for padding in [0.0, 12.0] {
+                let items = [40.0, 60.0, 20.0]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, height)| (ElementId::from(ix), px(height)));
+                let (rows, height) = layout_rows(items, inset, padding, 8.0);
+                assert_eq!(rows[0].top, inset + padding);
+                assert_eq!(rows[1].top, inset + padding + 48.0);
+                assert_eq!(rows[2].top, inset + padding + 116.0);
+                assert_eq!(height, inset + padding * 2.0 + 136.0);
+
+                let first = row_scroll_bounds(&rows, 0, padding).unwrap();
+                let middle = row_scroll_bounds(&rows, 1, padding).unwrap();
+                let last = row_scroll_bounds(&rows, 2, padding).unwrap();
+                assert_eq!(first, inset..rows[0].top + rows[0].height);
+                assert_eq!(middle, rows[1].top..rows[1].top + rows[1].height);
+                assert_eq!(last, rows[2].top..height);
+                assert_eq!(first.start - inset, 0.0);
+
+                let bottom_target = reveal_scroll_target(last.clone(), 0.0, 100.0, inset).unwrap();
+                let offset = clamp_scroll_offset(-bottom_target, height, 100.0);
+                assert_eq!(offset + rows[2].top + rows[2].height + padding, 100.0);
+                assert_eq!(
+                    reveal_scroll_target(first.clone(), -offset, 100.0, inset),
+                    Some(0.0)
+                );
+                assert_eq!(
+                    reveal_scroll_target(middle.clone(), middle.start - inset, 100.0, inset),
+                    None
+                );
+
+                let padding_target = (padding > 0.0).then_some(0.0);
+                assert_eq!(
+                    reveal_scroll_target(first, padding / 2.0, 100.0, inset),
+                    padding_target
+                );
+                let padding_target = (padding > 0.0).then_some(height - 100.0);
+                assert_eq!(
+                    reveal_scroll_target(last, height - padding - 100.0, 100.0, inset),
+                    padding_target
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn padding_without_inter_row_gaps() {
+        for inset in [0.0, 32.0] {
+            for padding in [0.0, 12.0] {
+                let (rows, height) = layout_rows(std::iter::empty(), inset, padding, 8.0);
+                assert!(rows.is_empty());
+                assert_eq!(height, inset + padding * 2.0);
+                assert_eq!(row_scroll_bounds(&rows, 0, padding), None);
+
+                let (rows, height) = layout_rows(
+                    std::iter::once((ElementId::from("only"), px(40.))),
+                    inset,
+                    padding,
+                    8.0,
+                );
+                assert_eq!(height, inset + padding * 2.0 + 40.0);
+                let bounds = row_scroll_bounds(&rows, 0, padding).unwrap();
+                assert_eq!(bounds, inset..height);
+                assert_eq!(reveal_scroll_target(bounds, 0.0, 100.0, inset), None);
+                assert_eq!(clamp_scroll_offset(-100.0, height, 100.0), 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn preview_width_excludes_padding() {
+        assert_eq!(drag_preview_width(px(200.), px(12.)), px(176.));
+        assert_eq!(
+            drag_preview_width(px(0.), px(12.)),
+            FALLBACK_PREVIEW_WIDTH - px(24.)
+        );
+        assert_eq!(drag_preview_width(px(20.), px(12.)), px(1.));
+        assert_eq!(drag_preview_width(px(0.5), px(0.)), px(0.5));
     }
 }

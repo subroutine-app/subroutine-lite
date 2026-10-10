@@ -22,6 +22,7 @@ pub enum SelectionScope {
     Home,
     Timeline,
     Calendar,
+    Upcoming,
     Queue,
     Focus,
     Unqueued,

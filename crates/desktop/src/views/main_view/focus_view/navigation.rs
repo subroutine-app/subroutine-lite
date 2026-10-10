@@ -63,7 +63,10 @@ impl FocusView {
             cx.notify();
             return;
         }
-        if !self.items.iter().any(|item| item.id() == id) {
+        if self.queue_blocker.is_some()
+            || ItemManager::global(cx).read(cx).is_completing(id)
+            || !self.items.iter().any(|item| item.id() == id)
+        {
             return;
         }
 
@@ -99,8 +102,8 @@ impl FocusView {
             return;
         }
         let Some(current) = self.active_index() else {
-            if let Some(first) = self.items.first() {
-                self.activate(first.id(), window, cx);
+            if let Some(first) = self.navigable_ids(cx).first().copied() {
+                self.activate(first, window, cx);
             }
             return;
         };
@@ -187,7 +190,7 @@ impl FocusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.mode != FocusMode::Action {
+        if self.mode != FocusMode::Action || self.queue_blocker.is_some() {
             return;
         }
 

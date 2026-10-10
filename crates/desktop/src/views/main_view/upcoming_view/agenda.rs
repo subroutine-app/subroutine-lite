@@ -8,7 +8,7 @@ use gpui::{Pixels, Size, px, size};
 use subroutine_core::{AnyItem, Marker, Signal};
 use uuid::Uuid;
 
-use super::sections::QueueSection;
+use super::sections::UpcomingSection;
 
 const FUTURE_HORIZON_DAYS: i64 = 366;
 
@@ -37,7 +37,7 @@ pub(super) struct AgendaMarker {
 
 #[derive(Clone)]
 #[allow(clippy::large_enum_variant)]
-pub(super) enum QueueRow {
+pub(super) enum UpcomingRow {
     Missed,
     Day {
         date: NaiveDate,
@@ -47,7 +47,7 @@ pub(super) enum QueueRow {
     Item {
         item: AnyItem,
         projected: bool,
-        section: QueueSection,
+        section: UpcomingSection,
     },
     Create {
         date: Option<NaiveDate>,
@@ -57,28 +57,28 @@ pub(super) enum QueueRow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum QueueRowKey {
-    Heading(QueueSection),
+pub(super) enum UpcomingRowKey {
+    Heading(UpcomingSection),
     Item(Uuid),
-    Create(QueueSection),
+    Create(UpcomingSection),
 }
 
-impl QueueRow {
-    pub(super) fn key(&self) -> QueueRowKey {
+impl UpcomingRow {
+    pub(super) fn key(&self) -> UpcomingRowKey {
         match self {
-            Self::Item { item, .. } => QueueRowKey::Item(item.id()),
-            Self::Create { .. } => QueueRowKey::Create(self.section()),
-            _ => QueueRowKey::Heading(self.section()),
+            Self::Item { item, .. } => UpcomingRowKey::Item(item.id()),
+            Self::Create { .. } => UpcomingRowKey::Create(self.section()),
+            _ => UpcomingRowKey::Heading(self.section()),
         }
     }
 
-    pub(super) fn section(&self) -> QueueSection {
+    pub(super) fn section(&self) -> UpcomingSection {
         match self {
-            Self::Missed => QueueSection::Missed,
-            Self::Day { date, .. } => QueueSection::Day(*date),
+            Self::Missed => UpcomingSection::Missed,
+            Self::Day { date, .. } => UpcomingSection::Day(*date),
             Self::Item { section, .. } => *section,
             Self::Create { date } => (*date).into(),
-            Self::AnyTime => QueueSection::Unscheduled,
+            Self::AnyTime => UpcomingSection::Unscheduled,
         }
     }
 
@@ -88,11 +88,11 @@ impl QueueRow {
 
     pub(super) fn height(&self, card_height: impl Fn(&AnyItem) -> Pixels) -> Pixels {
         match self {
-            QueueRow::Day { markers, .. } if markers.is_empty() => DAY_ROW_HEIGHT,
-            QueueRow::Day { .. } => DAY_ROW_HEIGHT + MARKER_ROW_HEIGHT,
-            QueueRow::Item { item, .. } => card_height(item) + ITEM_ROW_PADDING * 2.,
-            QueueRow::Create { .. } => CREATE_ROW_HEIGHT,
-            QueueRow::Missed | QueueRow::AnyTime => DAY_ROW_HEIGHT,
+            UpcomingRow::Day { markers, .. } if markers.is_empty() => DAY_ROW_HEIGHT,
+            UpcomingRow::Day { .. } => DAY_ROW_HEIGHT + MARKER_ROW_HEIGHT,
+            UpcomingRow::Item { item, .. } => card_height(item) + ITEM_ROW_PADDING * 2.,
+            UpcomingRow::Create { .. } => CREATE_ROW_HEIGHT,
+            UpcomingRow::Missed | UpcomingRow::AnyTime => DAY_ROW_HEIGHT,
         }
     }
 }
@@ -107,7 +107,7 @@ pub(super) fn item_card_height(item: &AnyItem) -> Pixels {
 
 #[derive(Default)]
 pub(super) struct Agenda {
-    pub rows: Vec<QueueRow>,
+    pub rows: Vec<UpcomingRow>,
 }
 
 #[derive(Default)]
@@ -135,7 +135,7 @@ impl Agenda {
         let mut any_time: Vec<AnyItem> = Vec::new();
         let mut missed = Vec::new();
         for item in items {
-            if QueueSection::for_item(item, today) == QueueSection::Missed {
+            if UpcomingSection::for_item(item, today) == UpcomingSection::Missed {
                 missed.push(item.clone());
                 continue;
             }
@@ -204,28 +204,28 @@ impl Agenda {
         let mut agenda = Agenda::default();
         if !missed.is_empty() {
             missed.sort_by_key(|item| (item.start_date(), day_order(item), item.id()));
-            agenda.rows.push(QueueRow::Missed);
+            agenda.rows.push(UpcomingRow::Missed);
             agenda
                 .rows
-                .extend(missed.into_iter().map(|item| QueueRow::Item {
+                .extend(missed.into_iter().map(|item| UpcomingRow::Item {
                     item,
                     projected: false,
-                    section: QueueSection::Missed,
+                    section: UpcomingSection::Missed,
                 }));
         }
 
-        agenda.rows.push(QueueRow::AnyTime);
+        agenda.rows.push(UpcomingRow::AnyTime);
         agenda
             .rows
-            .extend(any_time.into_iter().map(|item| QueueRow::Item {
+            .extend(any_time.into_iter().map(|item| UpcomingRow::Item {
                 item,
                 projected: false,
-                section: QueueSection::Unscheduled,
+                section: UpcomingSection::Unscheduled,
             }));
-        agenda.rows.push(QueueRow::Create { date: None });
+        agenda.rows.push(UpcomingRow::Create { date: None });
 
         for date in days {
-            agenda.rows.push(QueueRow::Day {
+            agenda.rows.push(UpcomingRow::Day {
                 date,
                 markers: visible_markers
                     .iter()
@@ -241,12 +241,12 @@ impl Agenda {
             let entries = by_day.remove(&date).unwrap_or_default();
             agenda
                 .rows
-                .extend(entries.into_iter().map(|(item, projected)| QueueRow::Item {
+                .extend(entries.into_iter().map(|(item, projected)| UpcomingRow::Item {
                     item,
                     projected,
-                    section: QueueSection::Day(date),
+                    section: UpcomingSection::Day(date),
                 }));
-            agenda.rows.push(QueueRow::Create { date: Some(date) });
+            agenda.rows.push(UpcomingRow::Create { date: Some(date) });
         }
 
         agenda
@@ -254,7 +254,7 @@ impl Agenda {
 
     pub(super) fn layout(
         &self,
-        section_state: impl Fn(QueueSection) -> (bool, f32),
+        section_state: impl Fn(UpcomingSection) -> (bool, f32),
         card_height: impl Fn(&AnyItem) -> Pixels,
     ) -> AgendaLayout {
         let mut layout = AgendaLayout::default();
@@ -283,7 +283,7 @@ impl Agenda {
                 }
                 if expanded
                     && height == full_height
-                    && let QueueRow::Item {
+                    && let UpcomingRow::Item {
                         item,
                         projected: false,
                         ..

@@ -8,19 +8,19 @@ use subroutine_core::AnyItem;
 use crate::components::transition;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum QueueSection {
+pub(super) enum UpcomingSection {
     Missed,
     Unscheduled,
     Day(NaiveDate),
 }
 
-impl From<Option<NaiveDate>> for QueueSection {
+impl From<Option<NaiveDate>> for UpcomingSection {
     fn from(date: Option<NaiveDate>) -> Self {
         date.map_or(Self::Unscheduled, Self::Day)
     }
 }
 
-impl QueueSection {
+impl UpcomingSection {
     pub fn for_item(item: &AnyItem, today: NaiveDate) -> Self {
         if matches!(item, AnyItem::Action(action) if action.queued && !action.is_completed())
             && item.start_date().is_some_and(|date| date < today)
@@ -47,26 +47,26 @@ impl Default for SectionState {
 }
 
 #[derive(Default)]
-pub(super) struct QueueSections {
-    states: HashMap<QueueSection, SectionState>,
+pub(super) struct UpcomingSections {
+    states: HashMap<UpcomingSection, SectionState>,
     revealed_dates: BTreeSet<NaiveDate>,
 }
 
-impl QueueSections {
-    pub fn is_expanded(&self, section: QueueSection) -> bool {
+impl UpcomingSections {
+    pub fn is_expanded(&self, section: UpcomingSection) -> bool {
         self.states
             .get(&section)
             .is_some_and(|state| state.expanded)
     }
 
-    pub fn set_expanded(&mut self, section: QueueSection, expanded: bool) {
+    pub fn set_expanded(&mut self, section: UpcomingSection, expanded: bool) {
         let state = self.states.entry(section).or_default();
         state.expanded = expanded;
         state.reveal.set(if expanded { 1. } else { 0. });
     }
 
-    pub fn reveal(&mut self, section: QueueSection) {
-        if let QueueSection::Day(date) = section {
+    pub fn reveal(&mut self, section: UpcomingSection) {
+        if let UpcomingSection::Day(date) = section {
             self.revealed_dates.insert(date);
         }
         self.set_expanded(section, true);
@@ -95,7 +95,7 @@ impl QueueSections {
             .any(|state| state.reveal.is_animating())
     }
 
-    pub fn layout_state(&self, section: QueueSection) -> (bool, f32) {
+    pub fn layout_state(&self, section: UpcomingSection) -> (bool, f32) {
         self.states
             .get(&section)
             .map_or((false, 0.), |state| (state.expanded, state.reveal.value()))
