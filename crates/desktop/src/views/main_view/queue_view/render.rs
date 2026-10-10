@@ -234,13 +234,17 @@ fn column(
                 .border(COLUMN_BORDER)
                 .border_color(if active {
                     cx.theme().colors.accent
-                } else {
+                } else if dragging && lane != QueueLane::Missed {
                     cx.theme().colors.hairline
+                } else {
+                    gpui::transparent_black()
                 })
                 .bg(if active {
                     UxColor::Selected.wash(cx.theme())
-                } else {
+                } else if dragging && lane != QueueLane::Missed {
                     cx.theme().colors.sunken.opacity(0.45)
+                } else {
+                    gpui::transparent_black()
                 })
                 .overflow_hidden()
                 .when_else(
@@ -417,10 +421,6 @@ impl QueueView {
                 cx,
             )
             .when(interactive, |card| card.selectable(self.order.clone()))
-            .next_focus(
-                self.next_candidate()
-                    .map(|next| (next.id(), self.current_focus.clone())),
-            )
             .schedule_navigation(),
             CurrentItem::Event(moment) => super::super::event_notice_card(
                 ("execution-event", id.as_u64_pair().1),
@@ -438,7 +438,12 @@ impl QueueView {
             .opacity(opacity)
             .child(
                 card.details(self.card_states.get(id))
-                    .with_focus_handle(self.current_focus.clone())
+                    .with_focus_handle(
+                        self.item_focus_handles
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or_else(|| self.current_focus.clone()),
+                    )
                     .large_title(true)
                     .editable(false)
                     .actionable(interactive)
@@ -472,6 +477,7 @@ impl Render for QueueView {
         self.advance_handoff(animation_now, cx);
         self.card_states.animate(window, cx);
         SelectionManager::report_order(&self.order, cx);
+        self.apply_completion_focus(window, cx);
         let lanes = self.visible_lanes(cx);
         let layout = self.layout(lanes.len());
         let priority = self.next_lane();
@@ -507,10 +513,10 @@ impl Render for QueueView {
                     }
                     let pending = std::mem::take(&mut view.scroll_pending);
                     if !pending.is_empty() {
-                        cx.on_next_frame(window, move |view, _, cx| {
+                        cx.on_next_frame(window, move |view, window, cx| {
                             for column in &view.columns {
                                 if pending.contains(&column.lane) {
-                                    column.scroll_to_priority(cx);
+                                    column.scroll_to_priority(window, cx);
                                 }
                             }
                         });

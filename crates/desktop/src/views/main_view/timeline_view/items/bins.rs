@@ -12,8 +12,7 @@ use uuid::Uuid;
 use crate::{
     AppIcon,
     components::{
-        Button, ItemCard, Label, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, ext::ElementExt,
-        scrollbar::Scrollbar,
+        Button, ItemCard, Label, SIDEBAR_ITEM_HEIGHT, ext::ElementExt, scrollbar::Scrollbar,
     },
     icons::Icon,
     item_manager::ItemManager,
@@ -26,7 +25,7 @@ use super::super::{CloseTimelineBin, TimelineView};
 use super::{ItemNavigation, NavigationHandoffs, TimelineBin, TimelineSlot, attached::SlotKind};
 
 const HEADER_HEIGHT: Pixels = px(58.);
-const LIST_PADDING: Pixels = px(12.);
+const HEADER_GAP: Pixels = px(8.);
 const MAX_HEIGHT: Pixels = px(520.);
 
 pub(in crate::views::main_view::timeline_view) struct ExpandedBin {
@@ -54,7 +53,7 @@ fn expanded_bounds(
         .max(px(360.))
         .min(px(520.))
         .min((viewport.width - inset * 2.).max(px(0.)));
-    let height = (HEADER_HEIGHT + LIST_PADDING * 2. + content_height + px(2.))
+    let height = (HEADER_HEIGHT + HEADER_GAP + content_height)
         .min(MAX_HEIGHT)
         .min((viewport.height - visible_top - inset).max(px(0.)));
     let left = if expands_left {
@@ -388,8 +387,7 @@ impl TimelineView {
                     self.bin_details
                         .height(self.items[*index].item.id(), SIDEBAR_ITEM_HEIGHT)
                 })
-                .sum::<Pixels>()
-                + SIDEBAR_ITEM_GAP * members.len().saturating_sub(1) as f32;
+                .sum::<Pixels>();
             target = expanded_bounds(
                 collapsed + point(px(0.), scroll_y),
                 self.bounds
@@ -442,7 +440,17 @@ impl TimelineView {
             .items_center()
             .gap_1()
             .px_2()
-            .when(open, |header| header.border_b_1().border_color(hairline))
+            .when(open, |header| {
+                header
+                    .rounded_xl()
+                    .bg(cx.theme().colors.raised)
+                    .border_1()
+                    .border_color(if focus.is_focused(window) {
+                        accent
+                    } else {
+                        gpui::transparent_black()
+                    })
+            })
             .child(
                 div()
                     .id(("timeline-bin-disclosure", bin.key))
@@ -540,12 +548,19 @@ impl TimelineView {
             .h(bounds.size.height)
             .column()
             .overflow_hidden()
-            .rounded_xl()
-            .border_1()
-            .border_color(if selected > 0 { accent } else { hairline })
-            .bg(cx.theme().colors.panel)
+            .when_else(
+                open,
+                |frame| frame.gap(HEADER_GAP),
+                |frame| {
+                    frame
+                        .rounded_xl()
+                        .border_1()
+                        .border_color(if selected > 0 { accent } else { hairline })
+                        .bg(cx.theme().colors.panel)
+                        .shadow_sm()
+                },
+            )
             .text_color(cx.theme().colors.text)
-            .when_else(open, |frame| frame.shadow_lg(), |frame| frame.shadow_sm())
             .block_mouse_except_scroll()
             .capture_any_mouse_down(cx.listener(
                 move |view, event: &gpui::MouseDownEvent, _, cx| {
@@ -563,7 +578,7 @@ impl TimelineView {
             .track_focus(&focus)
             .tab_stop(true)
             .key_context("TimelineBin")
-            .focus_ring(cx.theme())
+            .when(!open, |frame| frame.focus_ring(cx.theme()))
             .on_action(
                 cx.listener(|view, _: &CloseTimelineBin, window, cx| view.close_bin(window, cx)),
             )
@@ -618,7 +633,8 @@ impl TimelineView {
             let rows = members
                 .iter()
                 .filter_map(|id| self.items.iter().find(|entry| entry.item.id() == *id))
-                .map(|entry| {
+                .enumerate()
+                .map(|(index, entry)| {
                     let id = entry.item.id();
                     let card = ItemCard::new_with_id(
                         ("timeline-bin-item", entry.item.id_u64()),
@@ -627,11 +643,14 @@ impl TimelineView {
                         window,
                         cx,
                     )
+                    .neighbors(
+                        index.checked_sub(1).map(|index| members[index]),
+                        members.get(index + 1).copied(),
+                    )
                     .with_focus_handle(entry.focus_handle.clone())
                     .selectable(order.clone())
                     .next_focus(handoffs.get(&id).cloned().flatten())
                     .details(self.bin_details.get(id))
-                    .border(false)
                     .draggable(true, None)
                     .w_full()
                     .h(self.bin_details.height(id, SIDEBAR_ITEM_HEIGHT))
@@ -652,8 +671,6 @@ impl TimelineView {
                                 .id(("timeline-bin-entries", bin.key))
                                 .column()
                                 .size_full()
-                                .gap(SIDEBAR_ITEM_GAP)
-                                .p(LIST_PADDING)
                                 .overflow_y_scroll()
                                 .track_scroll(&expanded.scroll)
                                 .on_mouse_down(

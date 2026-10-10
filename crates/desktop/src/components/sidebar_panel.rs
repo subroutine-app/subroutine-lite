@@ -66,7 +66,7 @@ impl ParentElement for SidebarPanel {
 }
 
 impl RenderOnce for SidebarPanel {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         div()
             .column()
             .size_full()
@@ -86,8 +86,6 @@ impl RenderOnce for SidebarPanel {
                         .flex_none()
                         .w_full()
                         .p(SIDEBAR_GUTTER)
-                        .border_t_1()
-                        .border_color(cx.theme().colors.hairline)
                         .child(footer),
                 )
             })

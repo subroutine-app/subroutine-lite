@@ -1,7 +1,8 @@
 use super::{
     RootView,
     navigation::WorkspaceRoute,
-    panels::{NAVIGATION_SIDEBAR_MAX_WIDTH, NAVIGATION_SIDEBAR_MIN_WIDTH},
+    navigation_drawer::NavigationDrawer,
+    panels::{LIBRARY_DRAWER_WIDTH, NAVIGATION_SIDEBAR_MAX_WIDTH, NAVIGATION_SIDEBAR_MIN_WIDTH},
     sources::{SourceFilterPicker, SourceSortPicker},
 };
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -16,8 +17,8 @@ use crate::{
     settings::Settings,
     stores::AppDatabaseStore,
     views::{
-        HomeView, HomeViewEvent, InspectItem, ItemInspector, MainView, RoutinesView,
-        SavedItemsView, SearchView, SelectedMainViewChanged, UnqueuedView,
+        ActionLibraryKind, ActionLibraryView, HomeView, HomeViewEvent, InspectItem, ItemInspector,
+        MainView, RoutinesView, SavedItemsView, SearchView, SelectedMainViewChanged,
         drag_navigation::DragNavigation,
     },
 };
@@ -34,6 +35,12 @@ impl RootView {
         let focus_handle = cx.focus_handle();
         let toasts = cx.new(|cx| ToastLayer::new(window, cx).corner(ToastCorner::BottomRight));
         let context_menu = ContextMenuHost::new("root-view.context-menu", window, cx);
+        cx.observe_in(context_menu.entity(), window, |view, _, window, cx| {
+            if view.navigation_drawer == NavigationDrawer::Hover {
+                view.observe_navigation_pointer(view.navigation_pointer, window, cx);
+            }
+        })
+        .detach();
 
         let layout_state = Self::create_layout_state(cx);
         let store = AppDatabaseStore::global(cx);
@@ -57,9 +64,20 @@ impl RootView {
         let source_filter_picker = cx.new(|cx| SourceFilterPicker::new(window, cx));
         let source_sort_picker = cx.new(|cx| SourceSortPicker::new(window, cx));
         let search_view = cx.new(|cx| SearchView::new(window, cx));
-        let unqueued_view = cx.new(|cx| UnqueuedView::new(window, cx));
+        let unqueued_view =
+            cx.new(|cx| ActionLibraryView::new(ActionLibraryKind::Unqueued, window, cx));
+        let unscheduled_view =
+            cx.new(|cx| ActionLibraryView::new(ActionLibraryKind::Unscheduled, window, cx));
         let routines_view = cx.new(|cx| RoutinesView::new(window, cx));
         let saved_items_view = cx.new(|cx| SavedItemsView::new(window, cx));
+
+        cx.observe(&search_view, |_, _, cx| cx.notify()).detach();
+        cx.observe(&unqueued_view, |_, _, cx| cx.notify()).detach();
+        cx.observe(&unscheduled_view, |_, _, cx| cx.notify())
+            .detach();
+        cx.observe(&routines_view, |_, _, cx| cx.notify()).detach();
+        cx.observe(&saved_items_view, |_, _, cx| cx.notify())
+            .detach();
 
         Self::subscribe_source_controls(
             &source_search,
@@ -95,6 +113,7 @@ impl RootView {
             source_sort_picker,
             search_view,
             unqueued_view,
+            unscheduled_view,
             routines_view,
             saved_items_view,
             source_kinds: Vec::new(),
@@ -102,13 +121,17 @@ impl RootView {
 
             library_drawer_route: WorkspaceRoute::Unqueued,
             library_drawer_open: false,
+            library_drawer_width: LIBRARY_DRAWER_WIDTH,
             library_background_route: WorkspaceRoute::Home,
             pending_full_source_route: None,
             item_drag_active: false,
             drag_navigation: DragNavigation::default(),
             drag_navigation_task: None,
             layout_state,
-            navigation_drawer_open: false,
+            navigation_drawer: NavigationDrawer::Closed,
+            navigation_drawer_extent: gpui::px(0.),
+            navigation_pointer: None,
+            navigation_dismiss_task: None,
             navigation_focus: cx.focus_handle(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             current_overlay: None,
@@ -126,6 +149,7 @@ impl RootView {
             });
             state
         });
+        cx.observe(&layout_state, |_, _, cx| cx.notify()).detach();
         cx.subscribe(
             &layout_state,
             |_view, _, resized: &PanelGroupResized, cx| {
@@ -167,9 +191,12 @@ impl RootView {
             cx.notify();
         })
         .detach();
-        cx.observe_window_activation(window, |_, window, cx| {
+        cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 AppDatabaseStore::global(cx).update(cx, |store, cx| store.recover_connection(cx));
+            } else if view.navigation_drawer == NavigationDrawer::Hover {
+                view.navigation_pointer = None;
+                view.dismiss_navigation_drawer(cx);
             }
         })
         .detach();

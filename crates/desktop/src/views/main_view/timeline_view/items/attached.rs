@@ -549,9 +549,10 @@ impl TimelineView {
         } else {
             sticky_span_card_top(y, y + h, card_height)
         };
-        let visible = self.bounds.is_none_or(|bounds| {
-            card_top + card_height > TOP_EDGE_INSET && card_top < bounds.size.height
-        });
+        // The transparent titlebar overlays visible content; its inset is only for sticky placement.
+        let visible = self
+            .bounds
+            .is_none_or(|bounds| card_top + card_height > px(0.) && card_top < bounds.size.height);
         let card = ItemCard::new(&item, meta_text, window, cx)
             .details(self.item_details.get(item_id))
             .compact(item_w < MIN_ITEM_WIDTH)
@@ -647,7 +648,7 @@ impl TimelineView {
         )
     }
 
-    pub(super) fn selection_order(&self) -> SelectionOrder {
+    pub(in crate::views::main_view::timeline_view) fn selection_order(&self) -> SelectionOrder {
         SelectionOrder::new(
             SelectionScope::Timeline,
             timeline_selection_ids(
@@ -749,7 +750,6 @@ impl TimelineView {
         let mut expanded_bin = None;
         let mut mounted_pending_focus = None;
         let order = self.selection_order();
-        SelectionManager::report_order(&order, cx);
         for slot in slots {
             match slot {
                 TimelineSlot::Item { index, lane } => {

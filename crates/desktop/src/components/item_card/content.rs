@@ -63,11 +63,8 @@ impl ItemCard {
 
         let action = action.clone();
         let action_id = action.id;
-        let handoff = FocusHandoff::new(
-            self.selection.as_ref().map(|order| order.scope),
-            action_id,
-            self.next_focus.clone(),
-        );
+        let scope = self.selection.as_ref().map(|order| order.scope);
+        let handoff = FocusHandoff::new(scope, action_id, self.next_focus.clone());
         let completed = action.is_completed();
         let is_completing = ItemManager::global(cx).read(cx).is_completing(action_id);
 
@@ -92,12 +89,7 @@ impl ItemCard {
                         if handler.is_completing(action_id) {
                             return;
                         }
-                        handler.begin_complete_action(
-                            action.clone(),
-                            Some(handoff.clone()),
-                            window,
-                            cx,
-                        );
+                        handler.begin_complete_action(action.clone(), scope, window, cx);
                     })
                 })
                 .into_any_element(),
@@ -274,7 +266,7 @@ impl ItemCard {
             .unwrap_or_else(|| {
                 let icon = item_icon(self.item.item_type()).text_color(colors.fg);
                 match self.title_scale {
-                    ItemCardTitleScale::Standard => icon.size_4(),
+                    ItemCardTitleScale::Small | ItemCardTitleScale::Standard => icon.size_4(),
                     ItemCardTitleScale::Large => icon.size_5(),
                     ItemCardTitleScale::Display => icon.size_6(),
                 }
@@ -448,12 +440,13 @@ impl ItemCard {
                     .map(|control| div().flex_none().child(control)),
             )
         });
+        let top_aligned = self.list_position.is_none() && self.border;
         let header = div()
             .row()
             .w_full()
             .flex_none()
             .when_else(
-                self.border,
+                top_aligned,
                 |this| this.items_start(),
                 |this| this.items_center(),
             )
@@ -506,7 +499,7 @@ impl ItemCard {
             .w_full()
             .h_full()
             .when_else(
-                self.border
+                top_aligned
                     || self
                         .details
                         .as_ref()

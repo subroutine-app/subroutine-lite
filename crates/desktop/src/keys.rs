@@ -17,7 +17,7 @@ use crate::{
     themes::ToggleThemeMode,
     views::{
         ChooseTheme, EditSelectedItem, GoToCalendar, GoToFocus, GoToHome, GoToNow, GoToQueue,
-        GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued, GoToUpcoming,
+        GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued, GoToUnscheduled, GoToUpcoming,
         MAIN_VIEW_KEY_CONTEXT, NextTab, OpenConfigurationFolder, PreviousTab, Redo,
         RefreshPipeline, StartEventCreator, StartItemCreator, StartMarkerCreator, StartRoutine,
         StartRoutineCreator, StartSignalCreator, SyncNow, ToggleLeftSidebar, ToggleRightSidebar,
@@ -81,6 +81,7 @@ pub enum ConfigurableCommand {
     GoToQueue,
     GoToFocus,
     GoToUnqueued,
+    GoToUnscheduled,
     GoToRoutines,
     GoToSavedItems,
     ToggleLeftSidebar,
@@ -104,7 +105,7 @@ pub enum ConfigurableCommand {
 }
 
 impl ConfigurableCommand {
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 46] = [
         Self::ShowSettings,
         Self::SyncNow,
         Self::OpenConfigurationFolder,
@@ -130,6 +131,7 @@ impl ConfigurableCommand {
         Self::GoToQueue,
         Self::GoToFocus,
         Self::GoToUnqueued,
+        Self::GoToUnscheduled,
         Self::GoToRoutines,
         Self::GoToSavedItems,
         Self::ToggleLeftSidebar,
@@ -180,6 +182,7 @@ impl ConfigurableCommand {
             Self::GoToQueue => "navigation.go-to-execution-queue",
             Self::GoToFocus => "navigation.go-to-focus",
             Self::GoToUnqueued => "navigation.go-to-unqueued",
+            Self::GoToUnscheduled => "navigation.go-to-unscheduled",
             Self::GoToRoutines => "navigation.go-to-routines",
             Self::GoToSavedItems => "navigation.go-to-saved-items",
             Self::ToggleLeftSidebar => "view.toggle-left-sidebar",
@@ -231,6 +234,7 @@ impl ConfigurableCommand {
             Self::GoToQueue => "Go to Queue",
             Self::GoToFocus => "Go to Focus",
             Self::GoToUnqueued => "Go to Unqueued",
+            Self::GoToUnscheduled => "Go to Unscheduled",
             Self::GoToRoutines => "Go to Routines",
             Self::GoToSavedItems => "Go to Saved Items",
             Self::ToggleLeftSidebar => "Toggle navigation sidebar",
@@ -305,6 +309,7 @@ impl ConfigurableCommand {
             | Self::GoToQueue
             | Self::GoToFocus
             | Self::GoToUnqueued
+            | Self::GoToUnscheduled
             | Self::GoToRoutines
             | Self::GoToSavedItems
             | Self::GoToUpcoming
@@ -343,6 +348,7 @@ impl ConfigurableCommand {
             | Self::GoToQueue
             | Self::GoToFocus
             | Self::GoToUnqueued
+            | Self::GoToUnscheduled
             | Self::GoToRoutines
             | Self::GoToSavedItems
             | Self::GoToUpcoming => &[],
@@ -391,6 +397,7 @@ impl ConfigurableCommand {
             | Self::GoToQueue
             | Self::GoToFocus
             | Self::GoToUnqueued
+            | Self::GoToUnscheduled
             | Self::GoToRoutines
             | Self::GoToSavedItems
             | Self::GoToUpcoming => &["navigate", "view", "switch"],
@@ -449,6 +456,7 @@ impl ConfigurableCommand {
             Self::GoToQueue => Box::new(GoToQueue),
             Self::GoToFocus => Box::new(GoToFocus),
             Self::GoToUnqueued => Box::new(GoToUnqueued),
+            Self::GoToUnscheduled => Box::new(GoToUnscheduled),
             Self::GoToRoutines => Box::new(GoToRoutines),
             Self::GoToSavedItems => Box::new(GoToSavedItems),
             Self::ToggleLeftSidebar => Box::new(ToggleLeftSidebar),
@@ -500,6 +508,7 @@ impl ConfigurableCommand {
             Self::GoToQueue => GoToQueue::name_for_type(),
             Self::GoToFocus => GoToFocus::name_for_type(),
             Self::GoToUnqueued => GoToUnqueued::name_for_type(),
+            Self::GoToUnscheduled => GoToUnscheduled::name_for_type(),
             Self::GoToRoutines => GoToRoutines::name_for_type(),
             Self::GoToSavedItems => GoToSavedItems::name_for_type(),
             Self::ToggleLeftSidebar => ToggleLeftSidebar::name_for_type(),
@@ -551,6 +560,7 @@ impl ConfigurableCommand {
             Self::GoToQueue => key(chord, GoToQueue, self.context()),
             Self::GoToFocus => key(chord, GoToFocus, self.context()),
             Self::GoToUnqueued => key(chord, GoToUnqueued, self.context()),
+            Self::GoToUnscheduled => key(chord, GoToUnscheduled, self.context()),
             Self::GoToRoutines => key(chord, GoToRoutines, self.context()),
             Self::GoToSavedItems => key(chord, GoToSavedItems, self.context()),
             Self::ToggleLeftSidebar => key(chord, ToggleLeftSidebar, self.context()),

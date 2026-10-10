@@ -1,6 +1,8 @@
 use std::{
+    cell::RefCell,
     cmp::Ordering,
     collections::{HashMap, HashSet},
+    rc::Rc,
     time::Duration,
 };
 
@@ -8,7 +10,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use gpui::{
     AnyElement, App, AppContext as _, AsyncApp, Context, ElementId, Entity, FocusHandle,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Styled, Window,
-    div,
+    div, px,
 };
 use gpui_kit::foundation::StyledExt as _;
 use subroutine_core::{ActionTemplate, AnyItem, EventTemplate};
@@ -31,7 +33,6 @@ use crate::{
 };
 
 const RESULT_HEIGHT: Pixels = SIDEBAR_ITEM_HEIGHT;
-const RESULT_GAP: Pixels = SIDEBAR_ITEM_GAP;
 
 const RECENT_COMPLETION_WINDOW_DAYS: i64 = 7;
 pub(crate) const RECENT_COMPLETION_LABEL: &str = "Recently completed (last 7 days)";
@@ -39,6 +40,7 @@ pub(crate) const RECENT_COMPLETION_LABEL: &str = "Recently completed (last 7 day
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SourceKind {
     Unqueued,
+    Unscheduled,
     Overdue,
     RecentlyCompleted,
     Completed,
@@ -52,8 +54,9 @@ pub(crate) enum SourceKind {
 }
 
 impl SourceKind {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::Unqueued,
+        Self::Unscheduled,
         Self::Overdue,
         Self::RecentlyCompleted,
         Self::Completed,
@@ -69,6 +72,7 @@ impl SourceKind {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Unqueued => "Unqueued actions",
+            Self::Unscheduled => "Unscheduled actions",
             Self::Overdue => "Overdue actions",
             Self::RecentlyCompleted => RECENT_COMPLETION_LABEL,
             Self::Completed => "All completed actions",
@@ -84,9 +88,11 @@ impl SourceKind {
 
     pub(crate) fn group(self) -> &'static str {
         match self {
-            Self::Unqueued | Self::Overdue | Self::RecentlyCompleted | Self::Completed => {
-                "Smart lists"
-            }
+            Self::Unqueued
+            | Self::Unscheduled
+            | Self::Overdue
+            | Self::RecentlyCompleted
+            | Self::Completed => "Smart lists",
             Self::SavedAction | Self::SavedEvent => "Saved",
             _ => "Live",
         }
@@ -393,6 +399,12 @@ fn matches_filter(
             && (!temporal_kind || occurs_today_or_later(entry, today)))
         || (filters.contains(&SourceKind::Unqueued)
             && matches!(entry, SourceEntry::Live(AnyItem::Action(action)) if !action.queued))
+        || (filters.contains(&SourceKind::Unscheduled)
+            && matches!(
+                entry,
+                SourceEntry::Live(AnyItem::Action(action))
+                    if action.queued && !action.is_completed() && action.start.is_none()
+            ))
 }
 
 struct RankedEntry {
@@ -548,7 +560,8 @@ struct SearchDelegate {
     results: Vec<SourceEntry>,
     cards: DynamicListCardStates,
     focus_handles: HashMap<Uuid, FocusHandle>,
-    order: SelectionOrder,
+    // Departure delegates must not report their old selection order.
+    order: Rc<RefCell<SelectionOrder>>,
 }
 
 impl SearchDelegate {
@@ -561,7 +574,10 @@ impl SearchDelegate {
             results: Vec::new(),
             cards: DynamicListCardStates::default(),
             focus_handles: HashMap::new(),
-            order: SelectionOrder::new(SelectionScope::Search, []),
+            order: Rc::new(RefCell::new(SelectionOrder::new(
+                SelectionScope::Search,
+                [],
+            ))),
         };
         this.rebuild(cx);
         this
@@ -608,7 +624,7 @@ impl SearchDelegate {
         } else {
             Vec::new()
         };
-        self.order =
+        *self.order.borrow_mut() =
             SelectionOrder::new(SelectionScope::Search, search_selection_ids(&self.results));
 
         let current: HashSet<_> = self.results.iter().map(SourceEntry::id).collect();
@@ -624,6 +640,10 @@ impl SearchDelegate {
                 .entry(id)
                 .or_insert_with(|| cx.focus_handle());
         }
+    }
+
+    fn order(&self) -> SelectionOrder {
+        self.order.borrow().clone()
     }
 
     fn index_of(&self, id: Uuid) -> Option<usize> {
@@ -648,7 +668,7 @@ impl SearchDelegate {
         let selection = selection.read(cx);
         if selection.is_selected_in(SelectionScope::Search, primary_id) {
             let selected: Vec<_> = self
-                .order
+                .order()
                 .ids()
                 .iter()
                 .copied()
@@ -738,10 +758,15 @@ impl DynamicListDelegate for SearchDelegate {
         let entry = self.results.get(ix)?.clone();
         let id = entry.id();
         let focus_handle = self.focus_handles.get(&id)?.clone();
+        let previous = ix
+            .checked_sub(1)
+            .and_then(|previous| self.results.get(previous))
+            .map(SourceEntry::id);
+        let next = self.results.get(ix + 1).map(SourceEntry::id);
 
         match entry {
             SourceEntry::Live(item) => {
-                let order = self.order.clone();
+                let order = self.order();
                 let drag_payload = self.drag_payload(id, cx)?;
                 let meta = Some(live_kind_label(&item).into());
                 Some(
@@ -756,12 +781,12 @@ impl DynamicListDelegate for SearchDelegate {
                                 window,
                                 cx,
                             )
+                            .neighbors(previous, next)
                             .details(self.cards.get(id))
                             .schedule_navigation()
                             .with_focus_handle(focus_handle)
                             .selectable(order)
                             .size_full()
-                            .border(false)
                             .drag_payload(drag_payload)
                             .block_mouse_except_scroll()
                             .on_key_down(cx.listener(
@@ -799,7 +824,7 @@ impl DynamicListDelegate for SearchDelegate {
                     SourceEntry::Live(_) => unreachable!(),
                 };
                 let drag_payload = self.drag_payload(id, cx)?;
-                let order = self.order.clone();
+                let order = self.order();
                 let keyboard_items = self.selected_saved_items(id, cx);
                 let item: AnyItem = saved_item.into();
 
@@ -840,12 +865,12 @@ impl DynamicListDelegate for SearchDelegate {
                                 window,
                                 cx,
                             )
+                            .neighbors(previous, next)
                             .details(self.cards.get(id))
                             .focus_handle(focus_handle)
                             .selectable(order)
                             .drag_payload(drag_payload)
                             .title_only(true)
-                            .border(false)
                             .size_full(),
                         )
                         .into_any_element(),
@@ -881,7 +906,7 @@ fn focus_sibling(
     let delegate = list.delegate();
     let target = if extend_selection {
         let scope = SelectionScope::Search;
-        let order = &delegate.order;
+        let order = delegate.order();
         let Some(next_id) = order
             .ids()
             .iter()
@@ -898,7 +923,7 @@ fn focus_sibling(
         let Some((_, _, handle)) = delegate.focus_target(next) else {
             return;
         };
-        Some((next, scope, next_id, handle, Some(order.clone())))
+        Some((next, scope, next_id, handle, Some(order)))
     } else {
         let Some(next) = delegate
             .index_of(id)
@@ -936,8 +961,8 @@ impl SearchView {
         let entries = source_entries(store.read(cx));
         let list = cx.new(|cx| {
             DynamicListState::new(SearchDelegate::new(entries, cx), window, cx)
-                .gap(RESULT_GAP)
-                .content_inset_top(crate::views::SEARCH_HEADER_HEIGHT + RESULT_GAP)
+                .gap(px(0.))
+                .content_inset_top(crate::views::SEARCH_HEADER_HEIGHT + SIDEBAR_ITEM_GAP)
                 .scrollbar_visible(false)
         });
 
@@ -984,6 +1009,10 @@ impl SearchView {
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    pub(crate) fn item_count(&self, cx: &App) -> usize {
+        self.list.read(cx).delegate().items_count(cx)
     }
 
     pub(crate) fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
@@ -1060,6 +1089,24 @@ impl Render for SearchView {
         self.list.update(cx, |list, cx| {
             list.scroll_marquee(&mut self.marquee, window, cx);
         });
+        SelectionManager::report_order(&self.list.read(cx).delegate().order(), cx);
+        if let Some(request) =
+            SelectionManager::take_completion_focus(SelectionScope::Search, window, cx)
+        {
+            let target = request.target.and_then(|id| {
+                let delegate = self.list.read(cx).delegate();
+                let row = delegate.index_of(id)?;
+                let (_, _, handle) = delegate.focus_target(row)?;
+                Some((row, id, handle))
+            });
+            if let Some((row, id, handle)) = target {
+                self.list
+                    .update(cx, |list, cx| list.reveal_item_for_focus(row, cx));
+                focus_item(request.scope, id, &handle, window, cx);
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
+        }
         let body = div().column().size_full().overflow_hidden().child(
             div()
                 .flex_1()
@@ -1071,5 +1118,111 @@ impl Render for SearchView {
         marquee(body, self, cx)
             .track_focus(&self.focus_handle)
             .on_dismiss(SelectionScope::Search, Some(self.focus_handle.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chronoutil::RelativeDuration;
+    use subroutine_core::{Action, Event, SchedulePoint};
+
+    #[test]
+    fn unscheduled_requires_queued_incomplete_undated_actions() {
+        let now = DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = now.with_timezone(&Local).date_naive();
+        let queued = Action::new("Queued").with_queued(true);
+        let cases = [
+            (queued.clone(), true),
+            (
+                queued
+                    .clone()
+                    .with_pinned(true)
+                    .with_duration(Some(RelativeDuration::minutes(30))),
+                true,
+            ),
+            (queued.clone().with_queued(false), false),
+            (queued.clone().with_completion(Some(now)), false),
+            (
+                queued
+                    .clone()
+                    .with_start(Some(SchedulePoint::Date(today.pred_opt().unwrap()))),
+                false,
+            ),
+            (
+                queued
+                    .clone()
+                    .with_start(Some(SchedulePoint::Date(today.succ_opt().unwrap()))),
+                false,
+            ),
+            (queued.with_start(Some(SchedulePoint::DateTime(now))), false),
+        ];
+        for (action, expected) in cases {
+            let entry = SourceEntry::Live(AnyItem::Action(action.clone()));
+            assert_eq!(
+                matches_filter(&entry, &[SourceKind::Unscheduled], today, now),
+                expected,
+                "{action:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn unscheduled_excludes_saved_items_and_combines_with_other_filters() {
+        let now = DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let today = now.with_timezone(&Local).date_naive();
+        let entries = [
+            SourceEntry::Live(AnyItem::Action(Action::new("Queued").with_queued(true))),
+            SourceEntry::Live(AnyItem::Action(Action::new("Unqueued"))),
+            SourceEntry::Live(AnyItem::Action(
+                Action::new("Completed")
+                    .with_queued(true)
+                    .with_completion(Some(now)),
+            )),
+            SourceEntry::SavedAction(ActionTemplate::new("Saved action")),
+            SourceEntry::SavedEvent(EventTemplate::new(
+                "Saved event",
+                RelativeDuration::minutes(30),
+            )),
+            SourceEntry::Live(AnyItem::Event(Event::new(
+                "Event",
+                now,
+                chrono::Duration::minutes(30),
+            ))),
+        ];
+        let titles = |filters: &[SourceKind]| {
+            matching_entries_sorted_at(
+                &entries,
+                filters,
+                "",
+                SourceSort::TitleAscending,
+                today,
+                now,
+            )
+            .into_iter()
+            .map(|entry| entry.title().to_owned())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&[SourceKind::Unscheduled]), ["Queued"]);
+        assert_eq!(
+            titles(&[SourceKind::Unscheduled, SourceKind::Unqueued]),
+            ["Queued", "Unqueued"],
+        );
+        assert_eq!(
+            titles(&[SourceKind::Unscheduled, SourceKind::Completed]),
+            ["Completed", "Queued"],
+        );
+        assert_eq!(
+            titles(&[
+                SourceKind::Unscheduled,
+                SourceKind::SavedAction,
+                SourceKind::SavedEvent,
+            ]),
+            ["Queued", "Saved action", "Saved event"],
+        );
     }
 }

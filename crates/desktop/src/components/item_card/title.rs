@@ -22,6 +22,7 @@ use super::neutral_card_colors;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::components) enum ItemCardTitleScale {
+    Small,
     Standard,
     Large,
     Display,
@@ -30,7 +31,7 @@ pub(in crate::components) enum ItemCardTitleScale {
 impl ItemCardTitleScale {
     pub(super) fn line_height(self) -> Pixels {
         match self {
-            Self::Standard => px(20.),
+            Self::Small | Self::Standard => px(20.),
             Self::Large => px(26.),
             Self::Display => px(32.),
         }
@@ -38,7 +39,7 @@ impl ItemCardTitleScale {
 
     pub(super) fn leading_extent(self) -> Pixels {
         match self {
-            Self::Standard => px(20.),
+            Self::Small | Self::Standard => px(20.),
             Self::Large => px(24.),
             Self::Display => px(32.),
         }
@@ -46,7 +47,7 @@ impl ItemCardTitleScale {
 
     pub(super) fn header_gap(self) -> Pixels {
         match self {
-            Self::Standard => px(6.),
+            Self::Small | Self::Standard => px(6.),
             Self::Large => px(8.),
             Self::Display => px(10.),
         }
@@ -54,6 +55,7 @@ impl ItemCardTitleScale {
 
     fn apply(self, element: Div) -> Div {
         let element = match self {
+            Self::Small => element.text_xs(),
             Self::Standard => element.text_sm(),
             Self::Large => element.text_lg(),
             Self::Display => element.text_2xl().font_weight(FontWeight::MEDIUM),
@@ -100,6 +102,10 @@ fn render_subject_dynamic_title(
         .flatten();
     let has_type_picker = manager.read(cx).draft_type(item_id).is_some();
     let colors = neutral_card_colors(cx.theme());
+    let (title_color, editor_scale) = match title_scale {
+        ItemCardTitleScale::Small => (cx.theme().colors.text_muted, ItemCardTitleScale::Standard),
+        _ => (colors.fg, title_scale),
+    };
     let recognition = crate::presentation::RecognitionPaint::new(cx.theme());
 
     let begin = manager.clone();
@@ -161,7 +167,7 @@ fn render_subject_dynamic_title(
                         .relative()
                         .w_full()
                         .items_center()
-                        .map(|this| title_scale.apply(this))
+                        .map(|this| editor_scale.apply(this))
                         .text_color(colors.fg)
                         .when(!has_type_picker, |this| {
                             this.on_mouse_down_out(move |_, window, cx| {
@@ -207,7 +213,7 @@ fn render_subject_dynamic_title(
                 .child(
                     title_scale
                         .apply(Label::new(title).min_w_0().flex_1())
-                        .text_color(colors.fg)
+                        .text_color(title_color)
                         .truncate()
                         .m_0()
                         .p_0()

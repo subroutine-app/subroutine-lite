@@ -19,9 +19,9 @@ use crate::{
     components::ext::InteractiveElementExt as _,
     components::{
         Button, ButtonVariants, DynamicList, DynamicListCardStates, DynamicListDelegate,
-        DynamicListState, EmptyState, ItemCard, Label, MarqueeSelection, MarqueeView,
-        SIDEBAR_GUTTER, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, SIDEBAR_MIN_WIDTH, SidebarAddButton,
-        SidebarPanel, apply_reorder, marquee,
+        DynamicListState, EmptyState, ItemCard, ItemCardPosition, Label, MarqueeSelection,
+        MarqueeView, SIDEBAR_GUTTER, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, SIDEBAR_MIN_WIDTH,
+        SidebarAddButton, SidebarPanel, apply_reorder, marquee,
     },
     icons::Icon,
     item_manager::{DiscardDraft, ItemManager},
@@ -825,7 +825,7 @@ impl DynamicListDelegate for RoutinesDelegate {
         self.items.get(ix).map_or(ROUTINE_HEIGHT, |routine| {
             self.cards.height(routine.id, ROUTINE_HEIGHT)
                 + if self.expanded.contains(&routine.id) {
-                    routine_editor_height(routine.steps.len())
+                    routine_editor_height(routine.steps.len()) + SIDEBAR_ITEM_GAP
                 } else {
                     px(0.)
                 }
@@ -868,6 +868,16 @@ impl DynamicListDelegate for RoutinesDelegate {
         let routine_id = routine.id;
         let key = routine_id.as_u64_pair().1;
         let expanded = self.expanded.contains(&routine_id);
+        let previous = ix
+            .checked_sub(1)
+            .and_then(|previous| self.items.get(previous))
+            .filter(|routine| !self.expanded.contains(&routine.id))
+            .map(|routine| routine.id);
+        let next = self
+            .items
+            .get(ix + 1)
+            .filter(|_| !expanded)
+            .map(|routine| routine.id);
         let editor = self.editors.get(&routine_id).cloned();
         let meta: Option<SharedString> = Some(match routine.steps.len() {
             0 => "No steps".into(),
@@ -948,8 +958,10 @@ impl DynamicListDelegate for RoutinesDelegate {
                 .column()
                 .size_full()
                 .px(SIDEBAR_GUTTER)
+                .when(expanded, |this| this.pb(SIDEBAR_ITEM_GAP))
                 .child(
                     ItemCard::new(&item, meta, window, cx)
+                        .neighbors(previous, next)
                         .details(self.cards.get(routine_id))
                         .schedule_navigation()
                         .with_focus_handle(handle)
@@ -957,7 +969,6 @@ impl DynamicListDelegate for RoutinesDelegate {
                         .w_full()
                         .h(self.cards.height(routine_id, ROUTINE_HEIGHT))
                         .flex_none()
-                        .border(false)
                         .trailing(trailing)
                         .draggable(!is_editing && !is_draft, None)
                         .block_mouse_except_scroll()
@@ -1003,6 +1014,32 @@ impl DynamicListDelegate for RoutinesDelegate {
                         })),
                 )
                 .when(expanded, |this| this.children(editor))
+                .into_any_element(),
+        )
+    }
+
+    fn render_drag_preview(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<DynamicListState<Self>>,
+    ) -> Option<AnyElement> {
+        let routine = self.items.get(ix)?;
+        let meta = match routine.steps.len() {
+            0 => "No steps".into(),
+            1 => "1 step".into(),
+            count => format!("{count} steps").into(),
+        };
+        Some(
+            div()
+                .size_full()
+                .px(SIDEBAR_GUTTER)
+                .child(
+                    ItemCard::new(&AnyItem::Routine(routine.clone()), Some(meta), window, cx)
+                        .position(ItemCardPosition::Standalone)
+                        .details(self.cards.get(routine.id))
+                        .size_full(),
+                )
                 .into_any_element(),
         )
     }
@@ -1064,7 +1101,7 @@ impl RoutinesView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let list = cx.new(|cx| {
             DynamicListState::new(RoutinesDelegate::new(cx), window, cx)
-                .gap(SIDEBAR_ITEM_GAP)
+                .gap(px(0.))
                 .content_inset_top(crate::views::LIBRARY_HEADER_HEIGHT + SIDEBAR_ITEM_GAP)
                 .scrollbar_visible(false)
         });
@@ -1074,6 +1111,7 @@ impl RoutinesView {
             view.list.update(cx, |list, cx| {
                 list.update_items(cx, |delegate, cx| delegate.reload(cx));
             });
+            cx.notify();
         })
         .detach();
 
@@ -1083,6 +1121,7 @@ impl RoutinesView {
             view.list.update(cx, |list, cx| {
                 list.update_items(cx, |delegate, cx| delegate.discard_draft(event.0, cx));
             });
+            cx.notify();
         })
         .detach();
 
@@ -1095,6 +1134,10 @@ impl RoutinesView {
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    pub(crate) fn item_count(&self, cx: &App) -> usize {
+        self.list.read(cx).delegate().items_count(cx)
     }
 
     pub(crate) fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {

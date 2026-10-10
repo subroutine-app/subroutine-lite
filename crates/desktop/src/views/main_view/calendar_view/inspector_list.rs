@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
     AnyElement, App, Context, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
     MouseDownEvent, MousePressureEvent, ParentElement, Pixels, Styled, WeakEntity, Window, div,
     prelude::FluentBuilder as _,
 };
+use gpui_kit_theme::ActiveTheme;
 use subroutine_core::AnyItem;
 use uuid::Uuid;
 
@@ -29,7 +30,8 @@ pub(super) struct CalendarInspectorDelegate {
     view: WeakEntity<CalendarView>,
     entries: Vec<CalendarInspectorEntry>,
     cards: DynamicListCardStates,
-    order: SelectionOrder,
+    // Departure delegates must not report their old selection order.
+    order: Rc<RefCell<SelectionOrder>>,
     focus_handles: HashMap<Uuid, FocusHandle>,
 }
 
@@ -45,7 +47,10 @@ impl CalendarInspectorDelegate {
             view,
             entries: Vec::new(),
             cards,
-            order: SelectionOrder::new(crate::selection::SelectionScope::Calendar, []),
+            order: Rc::new(RefCell::new(SelectionOrder::new(
+                crate::selection::SelectionScope::Calendar,
+                [],
+            ))),
             focus_handles: HashMap::new(),
         }
     }
@@ -66,7 +71,7 @@ impl CalendarInspectorDelegate {
                 .filter(|content| !content.trim().is_empty())
                 .map(|_| entry.item.id())
         }));
-        self.order = order;
+        *self.order.borrow_mut() = order;
         self.focus_handles = focus_handles;
     }
 
@@ -74,8 +79,8 @@ impl CalendarInspectorDelegate {
         self.cards.generation()
     }
 
-    pub(super) fn order(&self) -> &SelectionOrder {
-        &self.order
+    pub(super) fn order(&self) -> SelectionOrder {
+        self.order.borrow().clone()
     }
 
     pub(super) fn index_of(&self, id: Uuid) -> Option<usize> {
@@ -85,7 +90,8 @@ impl CalendarInspectorDelegate {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.cards.retain([]);
-        self.order = SelectionOrder::new(crate::selection::SelectionScope::Calendar, []);
+        *self.order.borrow_mut() =
+            SelectionOrder::new(crate::selection::SelectionScope::Calendar, []);
         self.focus_handles.clear();
     }
 }
@@ -149,7 +155,7 @@ impl DynamicListDelegate for CalendarInspectorDelegate {
         let pressure_view = self.view.clone();
         let pressed_view = self.view.clone();
         let focus_handle = self.focus_handles.get(&item_id).cloned();
-        let order = self.order.clone();
+        let order = self.order();
         let meta = super::super::format_item_meta(&item);
 
         Some(
@@ -160,12 +166,17 @@ impl DynamicListDelegate for CalendarInspectorDelegate {
                 window,
                 cx,
             )
+            .neighbors(
+                ix.checked_sub(1)
+                    .and_then(|ix| self.entries.get(ix))
+                    .map(|entry| entry.item.id()),
+                self.entries.get(ix + 1).map(|entry| entry.item.id()),
+            )
             .details(self.cards.get(item_id))
             .when_some(focus_handle, |card, handle| {
                 card.with_focus_handle(handle).selectable(order)
             })
             .size_full()
-            .border(false)
             .actionable(!entry.projected)
             .when(
                 entry.projected
@@ -199,12 +210,19 @@ impl DynamicListDelegate for CalendarInspectorDelegate {
     fn render_empty(
         &mut self,
         _window: &mut Window,
-        _cx: &mut Context<DynamicListState<Self>>,
+        cx: &mut Context<DynamicListState<Self>>,
     ) -> impl IntoElement {
         div()
+            .flex()
             .size_full()
+            .rounded_xl()
+            .bg(cx.theme().colors.raised)
             .items_center()
             .justify_center()
-            .child(Label::new("No items on these dates").text_sm())
+            .child(
+                Label::new("No items on these dates")
+                    .text_sm()
+                    .text_color(cx.theme().colors.text_muted),
+            )
     }
 }

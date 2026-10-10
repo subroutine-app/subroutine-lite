@@ -248,7 +248,6 @@ pub struct SettingsView {
     notification_preview_select: Entity<Select>,
     action_duration_select: Entity<Select>,
     granularity_select: Entity<Select>,
-    queue_creation_select: Entity<Select>,
     focus_orientation_select: Entity<Select>,
     timeline_toolbar_position_select: Entity<Select>,
     double_click_creation_select: Entity<Select>,
@@ -325,10 +324,6 @@ impl SettingsView {
             (
                 &self.granularity_select,
                 settings.granularity_minutes().to_string().into(),
-            ),
-            (
-                &self.queue_creation_select,
-                settings.queue_creation.id().into(),
             ),
             (
                 &self.focus_orientation_select,
@@ -725,26 +720,6 @@ impl SettingsView {
         )
         .detach();
 
-        let queue_creation_select = cx.new(|cx| {
-            Select::new("settings.queue.creation", window, cx)
-                .large()
-                .name("Upcoming plus creates")
-                .options(timeline_creation_options())
-                .selected(settings.queue_creation.id())
-        });
-        cx.subscribe_in(
-            &queue_creation_select,
-            window,
-            move |_view, _select, event: &SelectEvent, _window, cx| {
-                if let SelectEvent::Selected(id) = event
-                    && let Some(kind) = TimelineCreationKind::from_id(id)
-                {
-                    Settings::update(cx, |settings| settings.queue_creation = kind);
-                }
-            },
-        )
-        .detach();
-
         let focus_orientation_select = cx.new(|cx| {
             Select::new("settings.focus.orientation", window, cx)
                 .large()
@@ -886,7 +861,6 @@ impl SettingsView {
             notification_preview_select,
             action_duration_select,
             granularity_select,
-            queue_creation_select,
             focus_orientation_select,
             timeline_toolbar_position_select,
             double_click_creation_select,
@@ -1270,11 +1244,6 @@ impl Render for SettingsView {
             .row(
                 SettingsRow::new("settings.advanced.focus", "Focus carousel direction")
                     .select(self.focus_orientation_select.clone()),
-            )
-            .row(
-                SettingsRow::new("settings.advanced.queue-creation", "Upcoming + button creates")
-                    .search_terms(["upcoming plus"])
-                    .select(self.queue_creation_select.clone()),
             )
             .row(
                 SettingsRow::new("settings.advanced.queue-batch-mode", "Upcoming batch mode")

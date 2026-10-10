@@ -697,7 +697,6 @@ impl TimelineView {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         self.sync_annotations();
-        SelectionManager::report_order(&self.selection_order(), cx);
         self.build_signal_ticks(window, cx)
     }
 

@@ -27,7 +27,7 @@ use crate::{
     },
     icons::Icon,
     item_manager::ItemManager,
-    selection::{SelectionOrder, SelectionScope},
+    selection::SelectionOrder,
     settings::{FocusCarouselOrientation, Settings},
 };
 
@@ -52,6 +52,7 @@ struct CarouselPose {
 impl FocusView {
     pub(super) fn render_carousel(
         &mut self,
+        order: SelectionOrder,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -85,10 +86,7 @@ impl FocusView {
         } else {
             &self.event_focus_handles
         };
-        let active_handle = focus_handles
-            .get(&active_id)
-            .cloned()
-            .unwrap_or_else(|| cx.focus_handle());
+
         let (completing_ids, editing_id): (HashSet<Uuid>, Option<Uuid>) = if action_mode {
             let manager = ItemManager::global(cx);
             let manager = manager.read(cx);
@@ -106,21 +104,14 @@ impl FocusView {
         } else {
             (HashSet::new(), None)
         };
-        let order = SelectionOrder::new(
-            SelectionScope::Focus,
-            ids.iter()
-                .copied()
-                .filter(|id| !completing_ids.contains(id)),
-        );
+
         let previous = (0..active_index)
             .rev()
             .find(|index| !completing_ids.contains(&ids[*index]));
         let next =
             ((active_index + 1)..ids.len()).find(|index| !completing_ids.contains(&ids[*index]));
         let is_completing = completing_ids.contains(&active_id);
-        let completion_target = action_mode
-            .then(|| self.completion_target(active_index, cx))
-            .flatten();
+
         let viewport_width = f32::from(self.carousel_size.width);
         let viewport_height = f32::from(self.carousel_size.height);
         let (base_width, base_height) =
@@ -293,11 +284,7 @@ impl FocusView {
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| cx.focus_handle());
-            let next_focus = if is_active {
-                completion_target.clone()
-            } else {
-                Some((active_id, active_handle.clone()))
-            };
+
             let card = if action_mode {
                 let item = &self.items[index];
                 ItemCard::new_with_id(
@@ -319,7 +306,6 @@ impl FocusView {
                 |card| card.display_title(),
             )
             .tab_stop(is_active && !completing)
-            .next_focus(next_focus)
             .size_full()
             .when(self.card_states.is_open(id), |card| {
                 card.on_scroll_wheel(cx.listener(|view, _, _, cx| {
@@ -336,7 +322,8 @@ impl FocusView {
                 card.selectable(order.clone())
                     .draggable(!editing, Some(card_size))
             } else {
-                card.draggable(true, Some(card_size))
+                card.selectable(order.clone())
+                    .draggable(true, Some(card_size))
             };
 
             let card = if action_mode {

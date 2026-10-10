@@ -3,7 +3,7 @@ mod drop;
 mod render;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     components::ItemCardStates,
     item_manager::ItemManager,
-    selection::{SelectionManager, SelectionOrder, SelectionScope},
+    selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
     settings::{GlobalSettings, Settings},
     stores::AppDatabaseStore,
 };
@@ -136,6 +136,8 @@ impl Handoff {
 pub struct QueueView {
     focus_handle: FocusHandle,
     current_focus: FocusHandle,
+    // Promotion moves an action between a virtual row and the current card without changing focus.
+    item_focus_handles: HashMap<Uuid, FocusHandle>,
     actions: Vec<Action>,
     events: Vec<Event>,
     now: DateTime<Utc>,
@@ -164,6 +166,7 @@ impl QueueView {
                 view.events.clear();
                 view.current = None;
                 view.handoff = None;
+                view.item_focus_handles.clear();
                 view.dragging = false;
                 view.drop_target = None;
                 view.card_states = ItemCardStates::default();
@@ -189,6 +192,7 @@ impl QueueView {
         Self {
             focus_handle: cx.focus_handle(),
             current_focus: cx.focus_handle(),
+            item_focus_handles: HashMap::new(),
             actions: Vec::new(),
             events: Vec::new(),
             now: Utc::now(),
@@ -344,6 +348,21 @@ impl QueueView {
     }
 
     fn update_columns(&mut self, cx: &mut Context<Self>) {
+        let live: HashSet<_> =
+            self.snapshot
+                .candidates
+                .iter()
+                .map(AnyItem::id)
+                .chain(self.handoff.iter().filter_map(|motion| {
+                    motion.outgoing().and_then(|shown| shown.item.action_id())
+                }))
+                .collect();
+        self.item_focus_handles.retain(|id, _| live.contains(id));
+        for id in live {
+            self.item_focus_handles
+                .entry(id)
+                .or_insert_with(|| cx.focus_handle());
+        }
         let hidden = self.handoff.as_ref().map_or_else(
             || self.current.as_ref().and_then(CurrentItem::action_id),
             |motion| motion.hidden_action(self.current.as_ref()),
@@ -366,6 +385,7 @@ impl QueueView {
             }
             column.update(
                 items,
+                &self.item_focus_handles,
                 self.order.clone(),
                 self.snapshot.blocker.is_some(),
                 self.workspace_generation,
@@ -374,6 +394,35 @@ impl QueueView {
             if previous_priority != column.priority_id(cx) {
                 self.scroll_pending.insert(column.lane);
             }
+        }
+    }
+
+    fn focus_action(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self
+            .item_focus_handles
+            .get(&id)
+            .filter(|_| self.order.ids().contains(&id))
+            .cloned();
+        let Some(handle) = target else {
+            self.focus_handle.focus(window, cx);
+            return;
+        };
+        for column in &self.columns {
+            column.reveal_item(id, cx);
+        }
+        focus_item(SelectionScope::Queue, id, &handle, window, cx);
+    }
+
+    fn apply_completion_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request) =
+            SelectionManager::take_completion_focus(SelectionScope::Queue, window, cx)
+        else {
+            return;
+        };
+        if let Some(id) = request.target {
+            self.focus_action(id, window, cx);
+        } else {
+            self.focus_handle.focus(window, cx);
         }
     }
 
@@ -493,13 +542,7 @@ impl MainViewTab for QueueView {
     fn go_to_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.scroll_pending.extend(QueueLane::ALL);
         if let Some(id) = self.current.as_ref().and_then(CurrentItem::action_id) {
-            crate::selection::focus_item(
-                SelectionScope::Queue,
-                id,
-                &self.current_focus,
-                window,
-                cx,
-            );
+            self.focus_action(id, window, cx);
         }
         cx.notify();
     }

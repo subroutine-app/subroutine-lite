@@ -1,4 +1,6 @@
-use super::{RootView, TOP_EDGE_INSET, navigation::WorkspaceRoute};
+use super::{
+    RootView, TOP_EDGE_INSET, navigation::WorkspaceRoute, navigation_drawer::NavigationDrawer,
+};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::views::{LIBRARY_HEADER_HEIGHT, SEARCH_HEADER_HEIGHT};
 use crate::{
@@ -6,14 +8,15 @@ use crate::{
     color::ColorExt,
     components::{
         Button, ButtonVariants as _, DragData, DraggedItems, Label,
-        panel_group::{CenterPanel, PanelGroup, SidePanel},
+        panel_group::{CenterPanel, PanelGroup, SidePanel, left_resize_handle, resize_handle},
         transition::{self, WindowTransitionExt as _},
     },
     views::SelectedMainView,
 };
 use gpui::{
-    AnyElement, Context, DragMoveEvent, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Styled, Window, WindowControlArea, div, prelude::FluentBuilder, px,
+    AnyElement, AppContext as _, Context, DragMoveEvent, Empty, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_kit::{
     foundation::{StyledExt as _, ThemeOverlay},
@@ -21,70 +24,123 @@ use gpui_kit::{
     overlay::{GlassExt as _, GlassPreset},
 };
 use gpui_kit_theme::{ActiveTheme, Appearance, Elevation, Radius, Surface};
+use std::rc::Rc;
 
 pub(super) const NAVIGATION_SIDEBAR_MIN_WIDTH: gpui::Pixels = px(180.);
 pub(super) const NAVIGATION_SIDEBAR_MAX_WIDTH: gpui::Pixels = px(320.);
 pub(super) const WORKSPACE_PANEL_GAP: gpui::Pixels = px(8.);
 pub(super) const WORKSPACE_PANEL_BORDER_WIDTH: gpui::Pixels = px(1.);
-const LIBRARY_DRAWER_WIDTH: gpui::Pixels = px(420.);
+pub(super) const LIBRARY_DRAWER_WIDTH: Pixels = px(420.);
+const LIBRARY_DRAWER_MIN_WIDTH: Pixels = px(320.);
+const LIBRARY_DRAWER_MAX_WIDTH: Pixels = px(640.);
+
+struct LibraryDrawerResize;
+
+impl Render for LibraryDrawerResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
 
 impl RootView {
     pub(super) fn render_navigation_drawer(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> (Option<AnyElement>, Pixels) {
         let compact = self.layout_state.read(cx).is_compact();
         let slide =
             window.keyed_transition("navigation-drawer-slide", cx, transition::QUICK, || 0.0);
-        if !compact {
+        if self.navigation_panel_open(cx) {
             slide.snap(0.0, cx);
-            return None;
+            return (None, px(0.));
         }
-        slide.set(
-            if self.navigation_drawer_open {
-                1.0
-            } else {
-                0.0
-            },
-            cx,
-        );
+        let open = self.navigation_drawer != NavigationDrawer::Closed;
+        slide.set(if open { 1.0 } else { 0.0 }, cx);
         let progress = slide.animate(window, cx);
-        if !self.navigation_drawer_open && progress <= f32::EPSILON {
-            return None;
+        if !open && progress <= f32::EPSILON {
+            return (None, px(0.));
         }
-        let width = px(280.).min((window.viewport_size().width - px(48.)).max(px(0.)));
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .overflow_hidden()
-                .child(
+        let width = self.navigation_drawer_width(window, cx);
+        let drawer = div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .when(compact, |drawer| {
+                drawer
+                    .child(
+                        div()
+                            .id("navigation.backdrop")
+                            .absolute()
+                            .inset_0()
+                            .occlude()
+                            .bg(gpui::black().alpha(0.24 * progress))
+                            .on_any_mouse_down(cx.listener(|view, _, window, cx| {
+                                crate::selection::SelectionManager::claim_press(cx);
+                                view.close_navigation_drawer(window, cx);
+                                cx.stop_propagation();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("navigation.drawer")
+                            .absolute()
+                            .top_0()
+                            .left(width * (progress - 1.0))
+                            .w(width)
+                            .h_full()
+                            .occlude()
+                            .overflow_hidden()
+                            .child(self.render_navigation_panel(cx)),
+                    )
+            })
+            .when(!compact, |drawer| {
+                let top = WORKSPACE_PANEL_GAP
+                    + if cfg!(target_os = "macos") {
+                        px(0.)
+                    } else {
+                        TOP_EDGE_INSET
+                    };
+                let height =
+                    (window.viewport_size().height - top - WORKSPACE_PANEL_GAP).max(px(0.));
+                let top_inset = (TOP_EDGE_INSET - top - WORKSPACE_PANEL_BORDER_WIDTH).max(px(0.));
+                drawer.child(
                     div()
-                        .id("navigation.backdrop")
                         .absolute()
-                        .inset_0()
-                        .occlude()
-                        .bg(gpui::black().alpha(0.24 * progress))
-                        .on_any_mouse_down(cx.listener(|view, _, window, cx| {
-                            crate::selection::SelectionManager::claim_press(cx);
-                            view.close_navigation_drawer(window, cx);
-                            cx.stop_propagation();
-                        })),
+                        .top(top)
+                        .left(width * (progress - 1.0) + WORKSPACE_PANEL_GAP)
+                        .w(width - WORKSPACE_PANEL_GAP)
+                        .h(height)
+                        .child(
+                            div()
+                                .id("navigation.hover-drawer")
+                                .w(width - WORKSPACE_PANEL_GAP)
+                                .h(height)
+                                .occlude()
+                                .overflow_hidden()
+                                .rounded(px(cx.theme().radius(Radius::Dialog)))
+                                .border(WORKSPACE_PANEL_BORDER_WIDTH)
+                                .border_color(cx.theme().colors.hairline)
+                                .child(self.render_sidebar(top_inset, cx))
+                                .bg_frost()
+                                .glass_surface(Surface::Overlay)
+                                .glass_radius(Radius::Dialog)
+                                .glass(|glass| {
+                                    glass.tint(crate::views::frosted_overlay_tint(cx.theme()))
+                                }),
+                        )
+                        .when(open, |panel| {
+                            panel.child(left_resize_handle(
+                                &self.layout_state,
+                                "navigation-drawer-handle",
+                                width - WORKSPACE_PANEL_GAP,
+                            ))
+                        }),
                 )
-                .child(
-                    div()
-                        .id("navigation.drawer")
-                        .absolute()
-                        .top_0()
-                        .left(width * (progress - 1.0))
-                        .w(width)
-                        .h_full()
-                        .occlude()
-                        .overflow_hidden()
-                        .child(self.render_navigation_panel(cx)),
-                )
-                .into_any_element(),
+            });
+        (
+            Some(drawer.into_any_element()),
+            if compact { px(0.) } else { width * progress },
         )
     }
 
@@ -96,7 +152,7 @@ impl RootView {
     ) -> Option<AnyElement> {
         let viewport = window.viewport_size();
         let available = (viewport.width - left_panel_width - WORKSPACE_PANEL_GAP).max(px(0.));
-        let width = LIBRARY_DRAWER_WIDTH.min(available);
+        let width = self.library_drawer_width.min(available);
         let top_inset = if cfg!(target_os = "windows") {
             TOP_EDGE_INSET
         } else {
@@ -142,24 +198,36 @@ impl RootView {
             .left(offset)
             .w(width)
             .h(height)
+            .on_drag_move::<Rc<LibraryDrawerResize>>(cx.listener(
+                move |view, event: &DragMoveEvent<Rc<LibraryDrawerResize>>, _, cx| {
+                    if !view.library_drawer_open {
+                        return;
+                    }
+                    let max_width = available
+                        .min(LIBRARY_DRAWER_MAX_WIDTH)
+                        .max(LIBRARY_DRAWER_MIN_WIDTH);
+                    view.library_drawer_width = (event.event.position.x - event.bounds.left())
+                        .clamp(LIBRARY_DRAWER_MIN_WIDTH, max_width);
+                    cx.notify();
+                },
+            ))
             .child(
                 frame
-                    .bg_glass()
+                    .bg_frost()
                     .glass_surface(Surface::Overlay)
                     .glass_radius(Radius::Dialog)
-                    .glass(|glass| glass.protect_text_contrast(false))
-                    .when(cfg!(not(target_os = "macos")), |frame| {
-                        frame.glass_preset(GlassPreset::Frosted)
-                    }),
+                    .glass(|glass| glass.tint(crate::views::frosted_overlay_tint(cx.theme()))),
             )
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded(px(cx.theme().radius(Radius::Dialog)))
-                    .border(WORKSPACE_PANEL_BORDER_WIDTH)
-                    .border_color(cx.theme().colors.hairline),
-            );
+            .when(self.library_drawer_open, |panel| {
+                panel.child(
+                    resize_handle("library-drawer-handle", gpui::Axis::Horizontal)
+                        .left(width)
+                        .on_drag(LibraryDrawerResize, |_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.new(|_| LibraryDrawerResize)
+                        }),
+                )
+            });
 
         Some(
             div()
@@ -340,6 +408,7 @@ impl RootView {
             self.route,
             WorkspaceRoute::Search
                 | WorkspaceRoute::Unqueued
+                | WorkspaceRoute::Unscheduled
                 | WorkspaceRoute::Routines
                 | WorkspaceRoute::SavedItems
         ) || main_owns_top_material
@@ -377,6 +446,11 @@ impl RootView {
     }
 
     fn render_navigation_panel(&self, cx: &mut Context<Self>) -> SidePanel {
+        let top_inset = if cfg!(target_os = "macos") {
+            TOP_EDGE_INSET - WORKSPACE_PANEL_GAP - WORKSPACE_PANEL_BORDER_WIDTH
+        } else {
+            TOP_EDGE_INSET
+        };
         SidePanel::left()
             .width_range_open(NAVIGATION_SIDEBAR_MIN_WIDTH..NAVIGATION_SIDEBAR_MAX_WIDTH)
             .when(cfg!(target_os = "macos"), |panel| {
@@ -408,7 +482,7 @@ impl RootView {
                         },
                         |panel| panel.border_r_1(),
                     )
-                    .child(self.render_sidebar(cx)),
+                    .child(self.render_sidebar(top_inset, cx)),
             )
     }
 
@@ -424,6 +498,7 @@ impl RootView {
                 .map(|(height, foreground)| (height, foreground, true)),
             WorkspaceRoute::Search
             | WorkspaceRoute::Unqueued
+            | WorkspaceRoute::Unscheduled
             | WorkspaceRoute::Routines
             | WorkspaceRoute::SavedItems => {
                 let height = if self.route == WorkspaceRoute::Search {

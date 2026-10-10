@@ -13,7 +13,7 @@ use gpui_kit_assets::Icon as KitIcon;
 use crate::{
     components::{DragData, DraggedItems, DropZone, ext::ElementExt as _, menu::MenuBuilder},
     item_manager::ItemManager,
-    selection::CompleteSelected,
+    selection::{CompleteSelected, SelectionManager, SelectionOrder, SelectionScope},
     settings::{FocusCarouselOrientation, Settings},
     stores::AppDatabaseStore,
     views::{
@@ -155,6 +155,16 @@ impl Render for FocusView {
             cx,
         );
         self.reconcile_events(window, cx);
+        let order = SelectionOrder::new(
+            SelectionScope::Focus,
+            if self.mode == FocusMode::Action && self.queue_blocker.is_none() {
+                self.navigable_ids(cx)
+            } else {
+                Vec::new()
+            },
+        );
+        SelectionManager::report_order(&order, cx);
+        self.apply_completion_focus(&order, window, cx);
         if self.mode == FocusMode::Action && self.restore_focus {
             self.restore_focus = false;
             if self.focus_handle.contains_focused(window, cx) {
@@ -210,7 +220,7 @@ impl Render for FocusView {
         } else {
             gpui::px(0.)
         };
-        let content = self.render_carousel(window, cx);
+        let content = self.render_carousel(order, window, cx);
         let content_height = self
             .viewport_size
             .height

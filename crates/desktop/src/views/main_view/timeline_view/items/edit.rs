@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::item_manager::{DraftView, ItemManager, next_batch_draft};
 use crate::selection::{
-    FocusHandoff, SelectionManager, SelectionOrder, SelectionScope, focus_item,
+    CompletionFocus, SelectionManager, SelectionOrder, SelectionScope, focus_item,
     focus_item_extending,
 };
 use crate::settings::{Settings, TimelineCreationKind};
@@ -374,37 +374,7 @@ impl TimelineView {
             entries.iter().map(|entry| entry.id),
         );
 
-        if self.reveal_binned_item(target.id, cx) {
-            self.pending_item_focus = Some(target.id);
-            SelectionManager::global(cx).update(cx, |selection, cx| {
-                if extend_selection {
-                    selection.select_keyboard_range(&order, origin, target.id, cx);
-                } else {
-                    selection.select_only(SelectionScope::Timeline, target.id, cx);
-                }
-            });
-            cx.notify();
-            return true;
-        }
-
-        let scroll_y = self.scroll_offset + self.center_relative().y;
-        let top = target.visual_top + scroll_y;
-        let bottom = target.visual_bottom + scroll_y;
-        let visible_top = TOP_EDGE_INSET;
-        let visible_bottom = self
-            .bounds
-            .map(|bounds| bounds.size.height)
-            .unwrap_or_default();
-        if bottom <= visible_top || top >= visible_bottom {
-            let target_time = self.now
-                + visual_duration_at(
-                    self.pixel_duration,
-                    (target.visual_top + target.visual_bottom) / 2.,
-                );
-            self.scroll_to(target_time, cx);
-        }
-
-        if target.mounted {
+        if self.reveal_navigation_entry(&target, cx) {
             self.pending_item_focus = None;
             if extend_selection {
                 focus_item_extending(&order, origin, target.id, &target.focus_handle, window, cx);
@@ -431,13 +401,65 @@ impl TimelineView {
         true
     }
 
+    fn reveal_navigation_entry(
+        &mut self,
+        target: &NavigationEntry,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.reveal_binned_item(target.id, cx) {
+            return false;
+        }
+
+        let scroll_y = self.scroll_offset + self.center_relative().y;
+        let top = target.visual_top + scroll_y;
+        let bottom = target.visual_bottom + scroll_y;
+        let visible_top = TOP_EDGE_INSET;
+        let visible_bottom = self
+            .bounds
+            .map(|bounds| bounds.size.height)
+            .unwrap_or_default();
+        if bottom <= visible_top || top >= visible_bottom {
+            let target_time = self.now
+                + visual_duration_at(
+                    self.pixel_duration,
+                    (target.visual_top + target.visual_bottom) / 2.,
+                );
+            self.scroll_to(target_time, cx);
+        }
+        target.mounted
+    }
+
+    pub(in crate::views::main_view::timeline_view) fn apply_completion_focus(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request) =
+            SelectionManager::take_completion_focus(SelectionScope::Timeline, window, cx)
+        else {
+            return;
+        };
+
+        self.pending_item_focus = None;
+        if let Some(target) = request.target.and_then(|id| {
+            self.navigation_entries(cx, None)
+                .into_iter()
+                .find(|entry| entry.id == id)
+        }) {
+            self.reveal_navigation_entry(&target, cx);
+            self.pending_item_focus = Some(target.id);
+        }
+        self.focus_handle.focus(window, cx);
+    }
+
     pub(super) fn begin_complete_item(
         &mut self,
         action_id: Uuid,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let next_focus = self.navigation_handoffs(cx).remove(&action_id).flatten();
+        let completion_focus =
+            CompletionFocus::capture(Some(SelectionScope::Timeline), &[action_id], cx);
         let Some(item) = self
             .items
             .iter_mut()
@@ -453,7 +475,9 @@ impl TimelineView {
             return;
         }
         item.transition_state = TransitionState::Completing;
-        FocusHandoff::new(Some(SelectionScope::Timeline), action_id, next_focus).take(window, cx);
+        if let Some(focus) = completion_focus {
+            focus.request(window, cx);
+        }
         cx.notify();
     }
 }

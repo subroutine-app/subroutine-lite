@@ -1,4 +1,4 @@
-use super::{NavigationDestination, RootView};
+use super::{NavigationDestination, RootView, navigation_drawer::NavigationDrawer};
 use crate::{
     item_manager::ItemManager,
     selection::{SelectionManager, SelectionScope},
@@ -6,7 +6,7 @@ use crate::{
     stores::AppDatabaseStore,
     views::{SavedItemsFilter, SelectedMainView, SourceKind},
 };
-use gpui::{App, Context, FocusHandle, Focusable, Window};
+use gpui::{App, Context, FocusHandle, Focusable, Window, px};
 
 #[derive(Clone, Copy)]
 pub(super) enum ViewDirection {
@@ -15,7 +15,7 @@ pub(super) enum ViewDirection {
 }
 
 impl NavigationDestination {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Home,
         Self::Main(SelectedMainView::Upcoming),
         Self::Main(SelectedMainView::Queue),
@@ -23,6 +23,7 @@ impl NavigationDestination {
         Self::Main(SelectedMainView::Calendar),
         Self::Main(SelectedMainView::Focus),
         Self::Unqueued,
+        Self::Unscheduled,
         Self::Routines,
         Self::SavedItems,
         Self::Search,
@@ -53,6 +54,7 @@ impl NavigationDestination {
             Self::Main(_) => WorkspaceRoute::Main,
             Self::Search => WorkspaceRoute::Search,
             Self::Unqueued => WorkspaceRoute::Unqueued,
+            Self::Unscheduled => WorkspaceRoute::Unscheduled,
             Self::Routines => WorkspaceRoute::Routines,
             Self::SavedItems => WorkspaceRoute::SavedItems,
         }
@@ -65,6 +67,7 @@ pub(super) enum WorkspaceRoute {
     Main,
     Search,
     Unqueued,
+    Unscheduled,
     Routines,
     SavedItems,
 }
@@ -76,6 +79,7 @@ impl WorkspaceRoute {
             Self::Main => NavigationDestination::Main(main_view),
             Self::Search => NavigationDestination::Search,
             Self::Unqueued => NavigationDestination::Unqueued,
+            Self::Unscheduled => NavigationDestination::Unscheduled,
             Self::Routines => NavigationDestination::Routines,
             Self::SavedItems => NavigationDestination::SavedItems,
         }
@@ -84,7 +88,11 @@ impl WorkspaceRoute {
     pub(super) fn drawer_background(self, previous: Self) -> Self {
         match self {
             Self::Home | Self::Main => self,
-            Self::Search | Self::Unqueued | Self::Routines | Self::SavedItems => previous,
+            Self::Search
+            | Self::Unqueued
+            | Self::Unscheduled
+            | Self::Routines
+            | Self::SavedItems => previous,
         }
     }
 
@@ -97,6 +105,7 @@ impl WorkspaceRoute {
             Self::Main => "main",
             Self::Search => "search",
             Self::Unqueued => "unqueued",
+            Self::Unscheduled => "unscheduled",
             Self::Routines => "routines",
             Self::SavedItems => "saved-items",
         }
@@ -145,6 +154,11 @@ impl RootView {
                 self.pending_navigation_focus = true;
             }
         }
+        if self.navigation_drawer == NavigationDrawer::Hover
+            && (self.navigation_panel_open(cx) || self.current_overlay.is_some())
+        {
+            self.dismiss_navigation_drawer(cx);
+        }
         if self.layout_state.read(cx).is_compact() {
             let route = self
                 .pending_full_source_route
@@ -164,26 +178,29 @@ impl RootView {
         }
     }
 
-    pub(super) fn navigation_open(&self, cx: &App) -> bool {
+    pub(super) fn navigation_panel_open(&self, cx: &App) -> bool {
         let layout = self.layout_state.read(cx);
-        if layout.is_compact() {
-            self.navigation_drawer_open
-        } else {
-            layout.left_panel.as_ref().is_some_and(|panel| panel.open)
-        }
+        !layout.is_compact() && layout.left_panel.as_ref().is_some_and(|panel| panel.open)
+    }
+
+    pub(super) fn navigation_open(&self, cx: &App) -> bool {
+        self.navigation_panel_open(cx) || self.navigation_drawer != NavigationDrawer::Closed
     }
 
     pub(super) fn open_navigation_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.layout_state.read(cx).is_compact()
-            || self.navigation_drawer_open
-            || self.current_overlay.is_some()
-        {
+        if self.navigation_open(cx) || self.current_overlay.is_some() {
             return;
         }
-        self.navigation_drawer_open = true;
+        self.navigation_dismiss_task = None;
+        if !self.layout_state.read(cx).is_compact() {
+            self.navigation_drawer = NavigationDrawer::Hover;
+            cx.notify();
+            return;
+        }
+        self.navigation_drawer = NavigationDrawer::Compact;
         self.pending_navigation_focus = false;
         cx.on_next_frame(window, |view, window, cx| {
-            if view.navigation_drawer_open
+            if view.navigation_drawer == NavigationDrawer::Compact
                 && view.current_overlay.is_none()
                 && !cx.has_active_drag()
             {
@@ -195,34 +212,52 @@ impl RootView {
     }
 
     pub(super) fn dismiss_navigation_drawer(&mut self, cx: &mut Context<Self>) {
-        if self.navigation_drawer_open {
-            self.navigation_drawer_open = false;
+        self.navigation_dismiss_task = None;
+        if self.navigation_drawer != NavigationDrawer::Closed {
+            self.navigation_drawer = NavigationDrawer::Closed;
             self.cancel_drag_navigation();
             cx.notify();
         }
     }
 
     pub(super) fn close_navigation_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.navigation_drawer_open {
-            self.dismiss_navigation_drawer(cx);
-            self.workspace_focus_handle(cx).focus(window, cx);
+        if self.navigation_drawer == NavigationDrawer::Closed {
+            return;
+        }
+        let restore_focus = self.navigation_drawer == NavigationDrawer::Compact
+            || self.navigation_focus.contains_focused(window, cx);
+        self.dismiss_navigation_drawer(cx);
+        if restore_focus {
+            let route = if self.library_drawer_open {
+                self.library_drawer_route
+            } else {
+                self.route
+            };
+            self.route_focus_handle(route, cx).focus(window, cx);
         }
     }
 
     pub(super) fn toggle_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.layout_state.read(cx).is_compact() {
-            if self.navigation_drawer_open {
+            if self.navigation_drawer == NavigationDrawer::Compact {
                 self.close_navigation_drawer(window, cx);
             } else {
                 self.open_navigation_drawer(window, cx);
             }
             return;
         }
+        let revealed_width = self.navigation_drawer_extent;
+        self.dismiss_navigation_drawer(cx);
         let open = self.layout_state.update(cx, |state, cx| {
             state.toggle_left();
             cx.notify();
             state.left_panel.as_ref().is_some_and(|panel| panel.open)
         });
+        if open && revealed_width > px(0.) {
+            self.layout_state.update(cx, |state, _| {
+                state.animate_left_from(revealed_width);
+            });
+        }
         if !open {
             self.cancel_drag_navigation();
             self.library_drawer_open = false;
@@ -238,6 +273,7 @@ impl RootView {
         match id {
             "search" => Some(WorkspaceRoute::Search),
             "unqueued" => Some(WorkspaceRoute::Unqueued),
+            "unscheduled" => Some(WorkspaceRoute::Unscheduled),
             "routines" => Some(WorkspaceRoute::Routines),
             "saved-items" => Some(WorkspaceRoute::SavedItems),
             _ => None,
@@ -258,6 +294,11 @@ impl RootView {
                 self.set_source_kinds(vec![SourceKind::Unqueued], cx);
                 self.clear_source_query(cx);
                 self.unqueued_view.read(cx).focus_handle()
+            }
+            WorkspaceRoute::Unscheduled => {
+                self.set_source_kinds(vec![SourceKind::Unscheduled], cx);
+                self.clear_source_query(cx);
+                self.unscheduled_view.read(cx).focus_handle()
             }
             WorkspaceRoute::Routines => {
                 self.set_source_kinds(vec![SourceKind::Routine], cx);
@@ -284,6 +325,7 @@ impl RootView {
         let scope = match self.library_drawer_route {
             WorkspaceRoute::Search => Some(SelectionScope::Search),
             WorkspaceRoute::Unqueued => Some(SelectionScope::Unqueued),
+            WorkspaceRoute::Unscheduled => Some(SelectionScope::Unscheduled),
             WorkspaceRoute::Routines => Some(SelectionScope::Routines),
             WorkspaceRoute::SavedItems => Some(SelectionScope::SavedItems),
             WorkspaceRoute::Home | WorkspaceRoute::Main => None,
@@ -299,11 +341,16 @@ impl RootView {
     }
 
     fn workspace_focus_handle(&self, cx: &App) -> FocusHandle {
-        match self.route {
+        self.route_focus_handle(self.route, cx)
+    }
+
+    fn route_focus_handle(&self, route: WorkspaceRoute, cx: &App) -> FocusHandle {
+        match route {
             WorkspaceRoute::Home => self.home_view.read(cx).focus_handle(cx),
             WorkspaceRoute::Main => self.main_view.read(cx).focus_handle.clone(),
             WorkspaceRoute::Search => self.source_search.read(cx).focus_handle(cx),
             WorkspaceRoute::Unqueued => self.unqueued_view.read(cx).focus_handle(),
+            WorkspaceRoute::Unscheduled => self.unscheduled_view.read(cx).focus_handle(),
             WorkspaceRoute::Routines => self.routines_view.read(cx).focus_handle(),
             WorkspaceRoute::SavedItems => self.saved_items_view.read(cx).focus_handle(),
         }
@@ -375,7 +422,9 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dismiss_navigation_drawer(cx);
+        if self.navigation_drawer == NavigationDrawer::Compact {
+            self.dismiss_navigation_drawer(cx);
+        }
         self.cancel_drag_navigation();
         if id == WorkspaceRoute::Home.id() {
             SelectionManager::clear_global(cx);
@@ -443,7 +492,7 @@ impl RootView {
             let selected_view = self.main_view.read(cx).selected_view();
             cx.on_next_frame(window, move |view, window, cx| {
                 if view.route != route
-                    || view.navigation_drawer_open
+                    || view.navigation_drawer == NavigationDrawer::Compact
                     || view.library_drawer_open
                     || view.pending_full_source_route.is_some()
                     || view.current_overlay.is_some()

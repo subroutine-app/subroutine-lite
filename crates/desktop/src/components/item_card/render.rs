@@ -1,9 +1,9 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    App, Bounds, Hsla, InteractiveElement, IntoElement, KeyContext, MouseButton, ParentElement,
-    PathBuilder, Pixels, RenderOnce, StatefulInteractiveElement, Styled, Window, canvas, div,
-    point, prelude::FluentBuilder, px,
+    App, Bounds, Corners, Edges, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyContext,
+    MouseButton, ParentElement, PathBuilder, Pixels, RenderOnce, StatefulInteractiveElement,
+    Styled, Window, canvas, div, point, prelude::FluentBuilder, px,
 };
 
 use gpui_kit::foundation::FocusRing as _;
@@ -24,8 +24,9 @@ use crate::{
 };
 
 use super::{
-    DraggedItems, ItemCard, ToggleItemDetails, availability::projected_event_availability_target,
-    card_background, content::CardContentGeometry, create_drag_data, draft_type::open_type_menu,
+    DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale, ToggleItemDetails,
+    availability::projected_event_availability_target, card_background,
+    content::CardContentGeometry, create_drag_data, draft_type::open_type_menu,
     menu::card_context_menu, neutral_card_colors, notes::item_content,
 };
 
@@ -34,6 +35,63 @@ pub(super) const ITEM_CARD_BORDER: Pixels = px(2.);
 const ITEM_SKIN_SPACING: Pixels = px(16.);
 const ITEM_SKIN_DOT: Pixels = px(1.);
 const ITEM_SKIN_ALPHA: f32 = 0.085;
+
+fn card_border_widths(
+    position: ItemCardPosition,
+    marked: bool,
+    [previous_marked, next_marked]: [bool; 2],
+) -> Edges<Pixels> {
+    let top = match position {
+        ItemCardPosition::Standalone | ItemCardPosition::First => ITEM_CARD_BORDER,
+        _ if marked && !previous_marked => ITEM_CARD_BORDER,
+        _ => px(0.),
+    };
+    let bottom = match position {
+        ItemCardPosition::Standalone | ItemCardPosition::Last => ITEM_CARD_BORDER,
+        _ if !marked && next_marked => px(0.),
+        _ if marked && !next_marked => ITEM_CARD_BORDER,
+        _ => px(1.),
+    };
+    Edges {
+        top,
+        bottom,
+        left: ITEM_CARD_BORDER,
+        right: ITEM_CARD_BORDER,
+    }
+}
+
+fn inset_card_focus_ring(
+    focus: FocusHandle,
+    borders: Edges<Pixels>,
+    corners: Corners<Pixels>,
+    background: Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    let rings = cx
+        .theme()
+        .focus_ring_on(background)
+        .into_iter()
+        .map(gpui::BoxShadow::inset)
+        .collect::<Vec<_>>();
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            if focus.is_focused(window) && window.focus_is_visible() {
+                window.paint_inset_shadows(
+                    bounds,
+                    corners.clamp_radii_for_quad_size(bounds.size),
+                    &rings,
+                );
+            }
+        },
+    )
+    .absolute()
+    // Keep focus inside the same content box even when selection borders are shared.
+    .top(ITEM_CARD_BORDER - borders.top)
+    .bottom(ITEM_CARD_BORDER - borders.bottom)
+    .left(ITEM_CARD_BORDER - borders.left)
+    .right(ITEM_CARD_BORDER - borders.right)
+}
 
 fn item_card_key_context(navigation_context: Option<&'static str>, actionable: bool) -> KeyContext {
     let mut context = KeyContext::default();
@@ -76,7 +134,17 @@ fn item_card_skin(color: Hsla) -> impl IntoElement {
 
 impl RenderOnce for ItemCard {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let colors = neutral_card_colors(cx.theme());
+        let subtle = self.title_scale == ItemCardTitleScale::Small;
+        let mut colors = neutral_card_colors(cx.theme());
+        let bg = if subtle {
+            card_background(cx).alpha(0.45)
+        } else {
+            card_background(cx)
+        };
+        if subtle {
+            colors.fg = cx.theme().colors.text_muted;
+            colors.hover = bg.blend(cx.theme().colors.hover);
+        }
 
         let (is_editing, is_draft) = {
             let manager = ItemManager::global(cx);
@@ -138,7 +206,23 @@ impl RenderOnce for ItemCard {
                 .read(cx)
                 .is_selected_in(scope, item_id)
         });
-        let is_marked = is_editing || is_multi_selected || has_focus;
+        let is_marked =
+            is_editing || is_multi_selected || (self.list_position.is_none() && has_focus);
+        let neighbor_marks = self.neighbors.map(|neighbor| {
+            neighbor.is_some_and(|id| {
+                ItemManager::global(cx).read(cx).is_being_edited(id)
+                    || selection_scope.is_some_and(|scope| {
+                        SelectionManager::global(cx)
+                            .read(cx)
+                            .is_selected_in(scope, id)
+                    })
+            })
+        });
+        let position = self.list_position.unwrap_or_default();
+        let borders = card_border_widths(position, is_marked, neighbor_marks);
+        let joined_above = matches!(position, ItemCardPosition::Middle | ItemCardPosition::Last);
+        let joined_below = matches!(position, ItemCardPosition::First | ItemCardPosition::Middle);
+        let standalone = position == ItemCardPosition::Standalone;
 
         let drag_payload = self.drag_payload.clone();
         let dragged = self.draggable.then(|| {
@@ -199,7 +283,7 @@ impl RenderOnce for ItemCard {
         }
         let has_content = !self.title_only && has_notes;
         let skin_color = colors.fg.alpha(ITEM_SKIN_ALPHA);
-        let skin = (!self.compact && !has_content).then(|| item_card_skin(skin_color));
+        let skin = (!subtle && !self.compact && !has_content).then(|| item_card_skin(skin_color));
         let measured_geometry = has_notes.then(|| {
             window.use_keyed_state((self.element_id.clone(), "notes-geometry"), cx, |_, _| {
                 CardContentGeometry::default()
@@ -209,7 +293,6 @@ impl RenderOnce for ItemCard {
             .as_ref()
             .map_or_default(|geometry| *geometry.read(cx));
         let owner = window.current_view();
-        let bg = card_background(cx);
         let content = self.render_content(colors, geometry, menu_enabled, window, cx);
         let content = if let Some(geometry) = measured_geometry {
             div()
@@ -231,12 +314,13 @@ impl RenderOnce for ItemCard {
             content
         };
 
-        self.base
+        let mut card = self
+            .base
             .border(ITEM_CARD_BORDER)
             .when(self.border, |this| {
                 this.when_some(colors.border, |this, color| this.border_color(color))
             })
-            .bg(bg)
+            .when(!subtle || is_marked, |card| card.bg(bg))
             .opacity(draft_opacity)
             .hover(|s| s.bg(colors.hover))
             .when(is_marked, |this| this.border_color(cx.theme().colors.focus))
@@ -250,10 +334,21 @@ impl RenderOnce for ItemCard {
                 |this| this.rounded_lg(),
                 |this| this.rounded_xl(),
             )
+            .when(joined_above, |card| card.rounded_t(px(0.)))
+            .when(joined_below, |card| card.rounded_b(px(0.)))
+            // Reserve the same space whether an edge is a border, a divider, or shared.
+            .when(self.list_position.is_some(), |card| {
+                card.border_t(borders.top)
+                    .border_b(borders.bottom)
+                    .pt(ITEM_CARD_BORDER - borders.top)
+                    .pb(ITEM_CARD_BORDER - borders.bottom)
+            })
             .overflow_hidden()
-            .shadow_sm()
-            .track_focus(&self.focus_handle.tab_stop(self.tab_stop))
-            .focus_ring(cx.theme())
+            .when(!subtle && standalone, |this| this.shadow_sm())
+            .track_focus(&self.focus_handle.clone().tab_stop(self.tab_stop))
+            .when(self.list_position.is_none(), |card| {
+                card.focus_ring(cx.theme())
+            })
             .key_context(key_context)
             .when(can_change_type, |card| {
                 card.on_mouse_down_out(move |event, window, cx| {
@@ -391,6 +486,84 @@ impl RenderOnce for ItemCard {
                         .size_full(),
                 )
             })
-            .child(content)
+            .child(content);
+
+        if self.list_position.is_some() {
+            let radii = &card.style().corner_radii;
+            let [top_left, top_right, bottom_right, bottom_left] = [
+                radii.top_left,
+                radii.top_right,
+                radii.bottom_right,
+                radii.bottom_left,
+            ]
+            .map(|radius| {
+                (radius.map_or(px(0.), |radius| radius.to_pixels(window.rem_size()))
+                    - ITEM_CARD_BORDER)
+                    .max(px(0.))
+            });
+            card = card.child(inset_card_focus_ring(
+                self.focus_handle,
+                borders,
+                Corners {
+                    top_left,
+                    top_right,
+                    bottom_right,
+                    bottom_left,
+                },
+                bg,
+                cx,
+            ));
+        }
+        card
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_rows_draw_each_boundary_once() {
+        for (upper_selected, lower_selected, seam) in [
+            (false, false, px(1.)),
+            (false, true, ITEM_CARD_BORDER),
+            (true, false, ITEM_CARD_BORDER),
+            (true, true, px(1.)),
+        ] {
+            let upper = card_border_widths(
+                ItemCardPosition::First,
+                upper_selected,
+                [false, lower_selected],
+            );
+            let lower = card_border_widths(
+                ItemCardPosition::Last,
+                lower_selected,
+                [upper_selected, false],
+            );
+            assert_eq!(upper.bottom + lower.top, seam);
+            assert_eq!(upper.top, ITEM_CARD_BORDER);
+            assert_eq!(lower.bottom, ITEM_CARD_BORDER);
+            assert_eq!(upper.left, lower.left);
+            assert_eq!(upper.right, lower.right);
+        }
+    }
+
+    #[test]
+    fn selection_runs_close_at_unselected_rows_and_group_boundaries() {
+        let middle = card_border_widths(ItemCardPosition::Middle, true, [true, true]);
+        assert_eq!(middle.top, px(0.));
+        assert_eq!(middle.bottom, px(1.));
+
+        let isolated = card_border_widths(ItemCardPosition::Middle, true, [false, false]);
+        assert_eq!(isolated.top, ITEM_CARD_BORDER);
+        assert_eq!(isolated.bottom, ITEM_CARD_BORDER);
+
+        let first = card_border_widths(ItemCardPosition::First, true, [true, true]);
+        let last = card_border_widths(ItemCardPosition::Last, true, [true, true]);
+        let single = card_border_widths(ItemCardPosition::Standalone, true, [true, true]);
+        assert_eq!(first.top, ITEM_CARD_BORDER);
+        assert_eq!(last.bottom, ITEM_CARD_BORDER);
+        assert_eq!(single.top, ITEM_CARD_BORDER);
+        assert_eq!(single.bottom, ITEM_CARD_BORDER);
     }
 }

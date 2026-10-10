@@ -17,7 +17,7 @@ use crate::{
     components::{Button, ButtonVariants as _, ItemCard, ItemCardStates},
     icons::Icon,
     item_manager::ItemManager,
-    selection::{SelectionOrder, SelectionScope},
+    selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
     settings::{GlobalSettings, Settings},
     stores::{AppDatabaseStore, DataChanged},
 };
@@ -75,6 +75,7 @@ impl HomeData {
 
 pub struct HomeView {
     focus_handle: FocusHandle,
+    action_focus: FocusHandle,
     details: ItemCardStates,
     workspace_generation: u64,
     action: Option<AnyItem>,
@@ -153,6 +154,7 @@ impl HomeView {
         let data = HomeData::read(store.read(cx), &settings, Utc::now());
         Self {
             focus_handle: cx.focus_handle(),
+            action_focus: cx.focus_handle(),
             details: ItemCardStates::default(),
             workspace_generation: data.workspace_generation,
             action: data.action,
@@ -300,11 +302,29 @@ impl Render for HomeView {
 
         let order = SelectionOrder::new(
             SelectionScope::Home,
-            self.action
+            action
                 .iter()
                 .map(AnyItem::id)
                 .chain(self.event.iter().map(|moment| moment.card_event().id)),
         );
+        SelectionManager::report_order(&order, cx);
+        if let Some(request) =
+            SelectionManager::take_completion_focus(SelectionScope::Home, window, cx)
+        {
+            let replacement = action.as_ref().filter(|item| {
+                let manager = ItemManager::global(cx);
+                let manager = manager.read(cx);
+                matches!(item, AnyItem::Action(action) if !action.is_completed())
+                    && !manager.is_draft(item.id())
+                    && !manager.is_completing(item.id())
+                    && request.target.is_none_or(|target| target == item.id())
+            });
+            if let Some(item) = replacement {
+                focus_item(request.scope, item.id(), &self.action_focus, window, cx);
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
+        }
         let action_card = action.map(|item| {
             let meta = format_item_meta(&item, now);
             let details = self.details.get(item.id());
@@ -316,6 +336,7 @@ impl Render for HomeView {
                 window,
                 cx,
             )
+            .with_focus_handle(self.action_focus.clone())
             .details(details)
             .h(action_height)
             .into_any_element()

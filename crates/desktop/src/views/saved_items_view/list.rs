@@ -312,34 +312,59 @@ impl SavedItemsList {
             .column()
             .w_full()
             .when(!actions.is_empty(), |this| {
-                this.child(self.section_header("Actions", cx))
-                    .children(actions.iter().filter_map(|(template, _)| {
-                        let handle = focus_handles.get(&template.id)?.clone();
-                        Some(self.render_action_template(
-                            template,
-                            handle,
-                            order.clone(),
-                            view.clone(),
-                            drop_target,
-                            window,
-                            cx,
-                        ))
-                    }))
+                this.child(self.section_header("Actions", cx)).child(
+                    div().column().w_full().pb(SIDEBAR_ITEM_GAP).children(
+                        actions
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(ix, (template, _))| {
+                                let handle = focus_handles.get(&template.id)?.clone();
+                                Some(
+                                    self.render_action_template(
+                                        template,
+                                        (
+                                            ix.checked_sub(1)
+                                                .and_then(|previous| actions.get(previous))
+                                                .map(|(template, _)| template.id),
+                                            actions.get(ix + 1).map(|(template, _)| template.id),
+                                        ),
+                                        handle,
+                                        order.clone(),
+                                        view.clone(),
+                                        drop_target,
+                                        window,
+                                        cx,
+                                    ),
+                                )
+                            }),
+                    ),
+                )
             })
             .when(!events.is_empty(), |this| {
-                this.child(self.section_header("Events", cx))
-                    .children(events.iter().filter_map(|(template, _)| {
-                        let handle = focus_handles.get(&template.id)?.clone();
-                        Some(self.render_event_template(
-                            template,
-                            handle,
-                            order.clone(),
-                            view.clone(),
-                            drop_target,
-                            window,
-                            cx,
-                        ))
-                    }))
+                this.child(self.section_header("Events", cx)).child(
+                    div().column().w_full().pb(SIDEBAR_ITEM_GAP).children(
+                        events.iter().enumerate().filter_map(|(ix, (template, _))| {
+                            let handle = focus_handles.get(&template.id)?.clone();
+                            Some(
+                                self.render_event_template(
+                                    template,
+                                    (
+                                        ix.checked_sub(1)
+                                            .and_then(|previous| events.get(previous))
+                                            .map(|(template, _)| template.id),
+                                        events.get(ix + 1).map(|(template, _)| template.id),
+                                    ),
+                                    handle,
+                                    order.clone(),
+                                    view.clone(),
+                                    drop_target,
+                                    window,
+                                    cx,
+                                ),
+                            )
+                        }),
+                    ),
+                )
             })
     }
 
@@ -347,6 +372,7 @@ impl SavedItemsList {
     fn render_action_template(
         &self,
         template: &ActionTemplate,
+        neighbors: (Option<Uuid>, Option<Uuid>),
         focus_handle: FocusHandle,
         order: SelectionOrder,
         view: gpui::Entity<SavedItemsView>,
@@ -365,6 +391,7 @@ impl SavedItemsList {
             SavedItem::Action(template.clone()),
             SavedItemKind::Action,
             template.id,
+            neighbors,
             meta.map(|text| (AppIcon::Clock, text)),
             focus_handle,
             order,
@@ -380,6 +407,7 @@ impl SavedItemsList {
     fn render_event_template(
         &self,
         template: &EventTemplate,
+        neighbors: (Option<Uuid>, Option<Uuid>),
         focus_handle: FocusHandle,
         order: SelectionOrder,
         view: gpui::Entity<SavedItemsView>,
@@ -396,6 +424,7 @@ impl SavedItemsList {
             SavedItem::Event(template.clone()),
             SavedItemKind::Event,
             template.id,
+            neighbors,
             meta.map(|text| (AppIcon::Clock, text)),
             focus_handle,
             order,
@@ -413,6 +442,7 @@ impl SavedItemsList {
         saved_item: SavedItem,
         kind: SavedItemKind,
         id: Uuid,
+        neighbors: (Option<Uuid>, Option<Uuid>),
         meta: Option<(AppIcon, SharedString)>,
         focus_handle: FocusHandle,
         order: SelectionOrder,
@@ -456,10 +486,9 @@ impl SavedItemsList {
                 );
             })
             .relative()
-            .h(height + SIDEBAR_ITEM_GAP)
+            .h(height)
             .flex_none()
             .px(SIDEBAR_GUTTER)
-            .pb(SIDEBAR_ITEM_GAP)
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if event.is_held || ItemManager::global(cx).read(cx).is_being_edited(id) {
                     return;
@@ -547,7 +576,7 @@ impl SavedItemsList {
                         .left(SIDEBAR_GUTTER)
                         .right(SIDEBAR_GUTTER)
                         .when(target.before, |line| line.top_0())
-                        .when(!target.before, |line| line.bottom(SIDEBAR_ITEM_GAP))
+                        .when(!target.before, |line| line.bottom_0())
                         .h(px(2.))
                         .rounded_full()
                         .bg(cx.theme().colors.accent),
@@ -561,12 +590,12 @@ impl SavedItemsList {
                     window,
                     cx,
                 )
+                .neighbors(neighbors.0, neighbors.1)
                 .details(self.details.get(id))
                 .focus_handle(focus_handle)
                 .selectable(order)
                 .drag_payload(drag_payload)
                 .title_only(true)
-                .border(false)
                 .w_full()
                 .h(height)
                 .flex_none(),

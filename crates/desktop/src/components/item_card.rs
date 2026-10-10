@@ -97,6 +97,26 @@ impl CardMeta {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ItemCardPosition {
+    #[default]
+    Standalone,
+    First,
+    Middle,
+    Last,
+}
+
+impl ItemCardPosition {
+    pub fn from_neighbors(previous: bool, next: bool) -> Self {
+        match (previous, next) {
+            (false, false) => Self::Standalone,
+            (false, true) => Self::First,
+            (true, true) => Self::Middle,
+            (true, false) => Self::Last,
+        }
+    }
+}
+
 #[derive(IntoElement)]
 pub struct ItemCard {
     base: Stateful<Div>,
@@ -107,6 +127,8 @@ pub struct ItemCard {
     tab_stop: bool,
     navigation_context: Option<&'static str>,
     border: bool,
+    list_position: Option<ItemCardPosition>,
+    neighbors: [Option<Uuid>; 2],
     editable: bool,
     title_scale: ItemCardTitleScale,
     actionable: bool,
@@ -194,6 +216,8 @@ impl ItemCard {
             tab_stop: true,
             navigation_context: None,
             border: true,
+            list_position: None,
+            neighbors: [None, None],
             editable: true,
             title_scale: ItemCardTitleScale::Standard,
             actionable: true,
@@ -296,6 +320,21 @@ impl ItemCard {
         self
     }
 
+    pub fn position(mut self, position: ItemCardPosition) -> Self {
+        self.list_position = Some(position);
+        self.neighbors = [None, None];
+        self
+    }
+
+    pub fn neighbors(mut self, previous: Option<Uuid>, next: Option<Uuid>) -> Self {
+        self.list_position = Some(ItemCardPosition::from_neighbors(
+            previous.is_some(),
+            next.is_some(),
+        ));
+        self.neighbors = [previous, next];
+        self
+    }
+
     pub fn editable(mut self, editable: bool) -> Self {
         self.editable = editable;
         self
@@ -312,6 +351,11 @@ impl ItemCard {
 
     pub fn display_title(mut self) -> Self {
         self.title_scale = ItemCardTitleScale::Display;
+        self
+    }
+
+    pub fn subtle(mut self) -> Self {
+        self.title_scale = ItemCardTitleScale::Small;
         self
     }
 

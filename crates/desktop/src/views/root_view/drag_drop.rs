@@ -21,6 +21,8 @@ impl RootView {
             .update(cx, |main, cx| main.finish_item_drag(cx));
         self.unqueued_view
             .update(cx, |unqueued, cx| unqueued.clear_drop_target(cx));
+        self.unscheduled_view
+            .update(cx, |unscheduled, cx| unscheduled.clear_drop_target(cx));
         self.saved_items_view
             .update(cx, |saved, cx| saved.clear_drag_feedback(cx));
     }
@@ -34,6 +36,8 @@ impl RootView {
         SelectionManager::clear_global(cx);
         self.unqueued_view
             .update(cx, |unqueued, cx| unqueued.clear_drop_target(cx));
+        self.unscheduled_view
+            .update(cx, |unscheduled, cx| unscheduled.clear_drop_target(cx));
         self.saved_items_view
             .update(cx, |saved, cx| saved.clear_drop_target(cx));
         cx.notify();
@@ -203,6 +207,10 @@ impl RootView {
             LibraryDropTarget::Unqueued => (
                 "Move",
                 "Move these actions to Unqueued, removing their scheduled dates and pins.",
+            ),
+            LibraryDropTarget::Unscheduled => (
+                "Move",
+                "Move these actions to Unscheduled, removing their scheduled dates but keeping them queued and preserving pins.",
             ),
             LibraryDropTarget::SavedItems => (
                 "Save",

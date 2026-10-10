@@ -672,15 +672,12 @@ impl ItemInspector {
     }
 
     fn complete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (items, used_selection) = self.destructive_items(cx);
+        let (items, _) = self.destructive_items(cx);
         if items.is_empty() {
             return;
         }
         if !bulk::complete(&items, window, cx) {
             return;
-        }
-        if used_selection {
-            SelectionManager::clear_global(cx);
         }
         self.load(None, cx);
         window.dispatch_action(Box::new(CloseOverlay), cx);

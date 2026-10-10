@@ -1,12 +1,14 @@
 use super::{
     ChooseTheme, CurrentOverlay, EditSelectedItem, FocusNext, FocusPrevious, GoToCalendar,
     GoToFocus, GoToHome, GoToQueue, GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued,
-    GoToUpcoming, NavigationDestination, NextTab, OpenConfigurationFolder, OpenItemInspector,
-    OpenSavedItemInspector, PreviousTab, Redo, RootView, StartCommandPalette, StartEventCreator,
-    StartItemCreator, StartItemCreatorOnDate, StartMarkerCreator, StartMarkerCreatorOnRange,
-    StartQueuedActionCreator, StartRoutine, StartRoutineCreator, StartSignalCreator, SyncNow,
-    ToggleLeftSidebar, ToggleRightSidebar, Undo, UseSavedAction, UseSavedEvent, ViewScheduledItem,
+    GoToUnscheduled, GoToUpcoming, NavigationDestination, NextTab, OpenConfigurationFolder,
+    OpenItemInspector, OpenSavedItemInspector, PreviousTab, Redo, RootView, StartCommandPalette,
+    StartEventCreator, StartItemCreator, StartItemCreatorOnDate, StartMarkerCreator,
+    StartMarkerCreatorOnRange, StartQueuedActionCreator, StartRoutine, StartRoutineCreator,
+    StartSignalCreator, SyncNow, ToggleLeftSidebar, ToggleRightSidebar, Undo, UseSavedAction,
+    UseSavedEvent, ViewScheduledItem,
     navigation::{ViewDirection, WorkspaceRoute},
+    navigation_drawer::NavigationDrawer,
 };
 use crate::{
     components::CloseOverlay,
@@ -42,7 +44,7 @@ pub(super) fn dismiss_root(focus: &FocusHandle, window: &mut Window, cx: &mut Ap
 
 impl RootView {
     fn on_root_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.current_overlay.is_none() && self.navigation_drawer_open {
+        if self.current_overlay.is_none() && self.navigation_drawer != NavigationDrawer::Closed {
             self.close_navigation_drawer(window, cx);
         } else if self.current_overlay.is_none() && self.library_drawer_open {
             self.close_library_drawer(window, cx);
@@ -209,6 +211,9 @@ impl RootView {
         .on_action(cx.listener(|view, _: &GoToUnqueued, window, cx| {
             view.navigate_to_view(NavigationDestination::Unqueued, window, cx);
         }))
+        .on_action(cx.listener(|view, _: &GoToUnscheduled, window, cx| {
+            view.navigate_to_view(NavigationDestination::Unscheduled, window, cx);
+        }))
         .on_action(cx.listener(|view, _: &GoToRoutines, window, cx| {
             view.navigate_to_view(NavigationDestination::Routines, window, cx);
         }))
@@ -239,8 +244,14 @@ impl RootView {
                 let _ = store.redo(cx);
             });
         }))
-        .on_action(|_: &FocusNext, window, cx| window.focus_next(cx))
-        .on_action(|_: &FocusPrevious, window, cx| window.focus_prev(cx))
+        .on_action(|_: &FocusNext, window, cx| {
+            SelectionManager::cancel_completion_focus(cx);
+            window.focus_next(cx);
+        })
+        .on_action(|_: &FocusPrevious, window, cx| {
+            SelectionManager::cancel_completion_focus(cx);
+            window.focus_prev(cx);
+        })
         .on_action(cx.listener(|view, _: &CompleteSelected, window, cx| {
             let handled = view.route.owns_main_commands(
                 view.library_drawer_open || view.pending_full_source_route.is_some(),

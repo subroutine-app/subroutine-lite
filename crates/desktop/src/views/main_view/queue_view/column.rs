@@ -1,6 +1,6 @@
 use std::{
-    cell::Cell,
-    collections::{HashMap, HashSet},
+    cell::{Cell, RefCell},
+    collections::HashMap,
     rc::Rc,
 };
 
@@ -28,7 +28,7 @@ use crate::{
 use super::super::{format_item_meta, queue_system::QueueLane};
 
 pub(super) const CARD_HEIGHT: Pixels = px(76.);
-pub(super) const GAP: Pixels = px(8.);
+
 pub(super) const LIST_PADDING: Pixels = px(12.);
 
 pub(super) struct QueueColumn {
@@ -41,7 +41,7 @@ impl QueueColumn {
     pub(super) fn new(lane: QueueLane, window: &mut Window, cx: &mut App) -> Self {
         let list = cx.new(|cx| {
             DynamicListState::new(QueueDelegate::new(), window, cx)
-                .gap(GAP)
+                .gap(px(0.))
                 .content_padding(LIST_PADDING)
                 .scrollbar_visible(false)
         });
@@ -92,6 +92,7 @@ impl QueueColumn {
     pub(super) fn update(
         &mut self,
         items: Vec<AnyItem>,
+        focus_handles: &HashMap<Uuid, FocusHandle>,
         order: SelectionOrder,
         blocked: bool,
         generation: u64,
@@ -100,27 +101,28 @@ impl QueueColumn {
         let delegate = self.list.read(cx).delegate();
         let generation_changed = delegate.cards.generation() != generation;
         let items_changed = !same_candidates(&delegate.items, &items);
+        let current_order = delegate.order();
         if !generation_changed
             && !items_changed
             && delegate.blocked == blocked
-            && delegate.order.scope == order.scope
-            && delegate.order.ids() == order.ids()
+            && current_order.scope == order.scope
+            && current_order.ids() == order.ids()
         {
             return;
         }
 
         self.list.update(cx, |list, cx| {
             if generation_changed {
-                list.reset_items(cx, |delegate, cx| {
-                    delegate.replace(items, order, blocked, generation, cx);
+                list.reset_items(cx, |delegate, _| {
+                    delegate.replace(items, focus_handles, order, blocked, generation);
                 });
             } else if items_changed {
-                list.update_items(cx, |delegate, cx| {
-                    delegate.replace(items, order, blocked, generation, cx);
+                list.update_items(cx, |delegate, _| {
+                    delegate.replace(items, focus_handles, order, blocked, generation);
                 });
             } else {
                 let delegate = list.delegate_mut();
-                delegate.order = order;
+                *delegate.order.borrow_mut() = order;
                 delegate.blocked = blocked;
                 cx.notify();
             }
@@ -148,10 +150,35 @@ impl QueueColumn {
         scroll.offset().y <= -max_offset + px(1.)
     }
 
-    pub(super) fn scroll_to_priority(&self, cx: &mut App) {
-        if let Some(last) = self.len(cx).checked_sub(1) {
+    pub(super) fn reveal_item(&self, id: Uuid, cx: &mut App) {
+        let index = self
+            .list
+            .read(cx)
+            .delegate()
+            .items
+            .iter()
+            .position(|item| item.id() == id);
+        if let Some(index) = index {
+            self.list
+                .update(cx, |list, cx| list.reveal_item_for_focus(index, cx));
+        }
+    }
+
+    pub(super) fn scroll_to_priority(&self, window: &Window, cx: &mut App) {
+        let delegate = self.list.read(cx).delegate();
+        let target = delegate
+            .items
+            .iter()
+            .position(|item| {
+                delegate
+                    .focus_handles
+                    .get(&item.id())
+                    .is_some_and(|handle| handle.contains_focused(window, cx))
+            })
+            .or_else(|| delegate.items.len().checked_sub(1));
+        if let Some(index) = target {
             self.list.update(cx, |list, cx| {
-                list.scroll_item_into_view(last, cx);
+                list.scroll_item_into_view(index, cx);
             });
         }
     }
@@ -162,7 +189,8 @@ pub(super) struct QueueDelegate {
     items: Vec<AnyItem>,
     cards: DynamicListCardStates,
     focus_handles: HashMap<Uuid, FocusHandle>,
-    order: SelectionOrder,
+    // Departure delegates must not report their old selection order.
+    order: Rc<RefCell<SelectionOrder>>,
     blocked: bool,
     suppressed: Option<Uuid>,
 }
@@ -173,7 +201,7 @@ impl QueueDelegate {
             items: Vec::new(),
             cards: DynamicListCardStates::default(),
             focus_handles: HashMap::new(),
-            order: SelectionOrder::new(SelectionScope::Queue, []),
+            order: Rc::new(RefCell::new(SelectionOrder::new(SelectionScope::Queue, []))),
             blocked: false,
             suppressed: None,
         }
@@ -182,16 +210,14 @@ impl QueueDelegate {
     fn replace(
         &mut self,
         items: Vec<AnyItem>,
+        focus_handles: &HashMap<Uuid, FocusHandle>,
         order: SelectionOrder,
         blocked: bool,
         generation: u64,
-        cx: &mut App,
     ) {
-        if self.cards.set_generation(generation) {
-            self.focus_handles.clear();
-        }
+        self.cards.set_generation(generation);
         self.items = items;
-        self.order = order;
+        *self.order.borrow_mut() = order;
         self.blocked = blocked;
         self.suppressed = None;
         self.cards.retain(self.items.iter().filter_map(|item| {
@@ -199,13 +225,20 @@ impl QueueDelegate {
                 .filter(|content| !content.trim().is_empty())
                 .map(|_| item.id())
         }));
-        let ids: HashSet<_> = self.items.iter().map(AnyItem::id).collect();
-        self.focus_handles.retain(|id, _| ids.contains(id));
-        for id in ids {
-            self.focus_handles
-                .entry(id)
-                .or_insert_with(|| cx.focus_handle());
-        }
+        self.focus_handles = self
+            .items
+            .iter()
+            .filter_map(|item| {
+                focus_handles
+                    .get(&item.id())
+                    .cloned()
+                    .map(|handle| (item.id(), handle))
+            })
+            .collect();
+    }
+
+    fn order(&self) -> SelectionOrder {
+        self.order.borrow().clone()
     }
 }
 
@@ -273,12 +306,21 @@ impl DynamicListDelegate for QueueDelegate {
             window,
             cx,
         )
+        .neighbors(
+            ix.checked_sub(1)
+                .and_then(|ix| self.items.get(ix))
+                .map(AnyItem::id)
+                .filter(|id| self.suppressed != Some(*id)),
+            self.items
+                .get(ix + 1)
+                .map(AnyItem::id)
+                .filter(|id| self.suppressed != Some(*id)),
+        )
         .details(self.cards.get(id))
         .schedule_navigation()
         .with_focus_handle(handle)
-        .when(!self.blocked, |card| card.selectable(self.order.clone()))
+        .when(!self.blocked, |card| card.selectable(self.order()))
         .size_full()
-        .border(false)
         .editable(false)
         .actionable(!self.blocked)
         .tab_stop(true)
@@ -356,7 +398,7 @@ fn focus_sibling(
     if delegate.blocked {
         handle.focus(window, cx);
     } else if extend {
-        focus_item_extending(&delegate.order, id, next_id, handle, window, cx);
+        focus_item_extending(&delegate.order(), id, next_id, handle, window, cx);
     } else {
         focus_item(SelectionScope::Queue, next_id, handle, window, cx);
     }

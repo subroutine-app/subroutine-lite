@@ -524,6 +524,21 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         cx.notify();
     }
 
+    /// Reveal a row before focusing it, without letting reflow hide it or report old focus bounds.
+    pub fn reveal_item_for_focus(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.layout_changed(cx) {
+            self.rebuild_layout(cx);
+        }
+        let Some(row) = self.rows.get(ix) else {
+            return;
+        };
+        self.motions
+            .insert(row.id.clone(), Motion::snapped(row.top, Instant::now()));
+        self.overscroll.reset();
+        self.scroll_item_into_view(ix, cx);
+        cx.notify();
+    }
+
     pub fn scroll_item_into_view(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.layout_changed(cx) {
             self.rebuild_layout(cx);

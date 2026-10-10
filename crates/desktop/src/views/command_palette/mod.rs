@@ -396,6 +396,7 @@ impl Render for AppCommandPalette {
             .on_action(|_: &super::GoToQueue, _, _| {})
             .on_action(|_: &super::GoToFocus, _, _| {})
             .on_action(|_: &super::GoToUnqueued, _, _| {})
+            .on_action(|_: &super::GoToUnscheduled, _, _| {})
             .on_action(|_: &super::GoToRoutines, _, _| {})
             .on_action(|_: &super::GoToSavedItems, _, _| {})
             .on_action(|_: &super::ToggleLeftSidebar, _, _| {})

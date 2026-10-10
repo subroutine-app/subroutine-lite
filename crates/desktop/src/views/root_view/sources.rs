@@ -225,6 +225,8 @@ impl RootView {
                         .update(cx, |search, cx| search.set_query(query, cx));
                     view.unqueued_view
                         .update(cx, |unqueued, cx| unqueued.set_query(query, cx));
+                    view.unscheduled_view
+                        .update(cx, |unscheduled, cx| unscheduled.set_query(query, cx));
                     view.routines_view
                         .update(cx, |routines, cx| routines.set_query(query, cx));
                     view.saved_items_view
@@ -306,13 +308,24 @@ impl RootView {
         in_drawer: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let title = match route {
-            WorkspaceRoute::Home => "Home",
-            WorkspaceRoute::Search => "Search",
-            WorkspaceRoute::Unqueued => "Unqueued",
-            WorkspaceRoute::Routines => "Routines",
-            WorkspaceRoute::SavedItems => "Saved items",
-            WorkspaceRoute::Main => "",
+        let (title, item_count) = match route {
+            WorkspaceRoute::Home => ("Home", None),
+            WorkspaceRoute::Search => ("Search", Some(self.search_view.read(cx).item_count(cx))),
+            WorkspaceRoute::Unqueued => {
+                ("Unqueued", Some(self.unqueued_view.read(cx).item_count(cx)))
+            }
+            WorkspaceRoute::Unscheduled => (
+                "Unscheduled",
+                Some(self.unscheduled_view.read(cx).item_count(cx)),
+            ),
+            WorkspaceRoute::Routines => {
+                ("Routines", Some(self.routines_view.read(cx).item_count(cx)))
+            }
+            WorkspaceRoute::SavedItems => (
+                "Saved items",
+                Some(self.saved_items_view.read(cx).item_count()),
+            ),
+            WorkspaceRoute::Main => ("", None),
         };
 
         let searching = route == WorkspaceRoute::Search;
@@ -330,6 +343,7 @@ impl RootView {
             WorkspaceRoute::Home => "home",
             WorkspaceRoute::Search => "search",
             WorkspaceRoute::Unqueued => "unqueued",
+            WorkspaceRoute::Unscheduled => "unscheduled",
             WorkspaceRoute::Routines => "routines",
             WorkspaceRoute::SavedItems => "saved-items",
             WorkspaceRoute::Main => "main",
@@ -341,9 +355,22 @@ impl RootView {
             .items_center()
             .justify_between()
             .child(
-                Label::new(title)
-                    .when_else(in_drawer, |title| title.text_lg(), |title| title.text_2xl())
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                div()
+                    .row()
+                    .items_baseline()
+                    .gap_2()
+                    .child(
+                        Label::new(title)
+                            .when_else(in_drawer, |title| title.text_lg(), |title| title.text_2xl())
+                            .font_weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .when_some(item_count, |row, count| {
+                        row.child(
+                            Label::new(count.to_string())
+                                .text_sm()
+                                .text_color(cx.theme().colors.text_muted),
+                        )
+                    }),
             )
             .when(in_drawer, |row| {
                 let expand_root = root.clone();
@@ -417,12 +444,7 @@ impl RootView {
         let header_frame = div()
             .id(format!("{route_ident}.header"))
             .size_full()
-            .when(in_drawer, |frame| {
-                frame
-                    .overflow_hidden()
-                    .border_b_1()
-                    .border_color(cx.theme().colors.hairline)
-            })
+            .when(in_drawer, |frame| frame.overflow_hidden())
             .child(header);
         if cfg!(any(target_os = "macos", target_os = "windows")) && !in_drawer {
             return header_frame.into_any_element();
@@ -470,6 +492,7 @@ impl RootView {
             WorkspaceRoute::Home => self.home_view.clone().into_any_element(),
             WorkspaceRoute::Search => self.search_view.clone().into_any_element(),
             WorkspaceRoute::Unqueued => self.unqueued_view.clone().into_any_element(),
+            WorkspaceRoute::Unscheduled => self.unscheduled_view.clone().into_any_element(),
             WorkspaceRoute::Routines => self.routines_view.clone().into_any_element(),
             WorkspaceRoute::SavedItems => self.saved_items_view.clone().into_any_element(),
             WorkspaceRoute::Main => div().into_any_element(),

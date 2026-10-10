@@ -53,7 +53,6 @@ pub(super) struct PersistedSettings {
     #[serde(default)]
     notification_preview: Option<String>,
     account_sync_interval_minutes: u64,
-    queue_creation: String,
     #[serde(default = "default_enabled")]
     queue_batch_mode: bool,
     focus_carousel_orientation: String,
@@ -121,7 +120,6 @@ impl PersistedSettings {
             notification_lead_seconds: settings.notifications.lead_seconds(),
             notification_preview: Some(settings.notifications.preview.id().into()),
             account_sync_interval_minutes: settings.account_sync.interval_minutes(),
-            queue_creation: settings.queue_creation.id().into(),
             queue_batch_mode: settings.queue_batch_mode,
             focus_carousel_orientation: settings.focus_carousel_orientation.id().into(),
             focus_timing_threshold_seconds: settings.focus_timing_threshold_seconds(),
@@ -188,8 +186,6 @@ impl PersistedSettings {
     }
 
     fn apply_creation_and_focus(&self, settings: &mut Settings) -> Result<(), String> {
-        settings.queue_creation = TimelineCreationKind::from_id(&self.queue_creation)
-            .ok_or_else(|| format!("unknown queue creation kind {}", self.queue_creation))?;
         settings.queue_batch_mode = self.queue_batch_mode;
         settings.focus_carousel_orientation = FocusCarouselOrientation::from_id(
             &self.focus_carousel_orientation,

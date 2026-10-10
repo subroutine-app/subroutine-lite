@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry},
     rc::Rc,
 };
 
@@ -15,10 +15,10 @@ const FUTURE_HORIZON_DAYS: i64 = 366;
 const MAX_DAYS: usize = 400;
 
 const DAY_ROW_HEIGHT: Pixels = px(38.);
-pub(super) const MARKER_ROW_HEIGHT: Pixels = px(20.);
+
 const ITEM_CARD_HEIGHT: Pixels = px(64.);
 const TITLE_ONLY_ITEM_CARD_HEIGHT: Pixels = px(40.);
-pub(super) const ITEM_ROW_PADDING: Pixels = px(3.);
+
 const CREATE_ROW_HEIGHT: Pixels = px(44.);
 
 pub(super) fn row_top_inset(index: usize) -> Pixels {
@@ -50,10 +50,8 @@ pub(super) enum UpcomingRow {
         section: UpcomingSection,
     },
     Create {
-        date: Option<NaiveDate>,
+        date: NaiveDate,
     },
-
-    AnyTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,24 +73,46 @@ impl UpcomingRow {
     pub(super) fn section(&self) -> UpcomingSection {
         match self {
             Self::Missed => UpcomingSection::Missed,
-            Self::Day { date, .. } => UpcomingSection::Day(*date),
+            Self::Day { date, .. } | Self::Create { date } => UpcomingSection::Day(*date),
             Self::Item { section, .. } => *section,
-            Self::Create { date } => (*date).into(),
-            Self::AnyTime => UpcomingSection::Unscheduled,
         }
     }
 
     pub(super) fn is_heading(&self) -> bool {
-        matches!(self, Self::Missed | Self::Day { .. } | Self::AnyTime)
+        matches!(self, Self::Missed | Self::Day { .. })
     }
 
-    pub(super) fn height(&self, card_height: impl Fn(&AnyItem) -> Pixels) -> Pixels {
+    pub(super) fn selectable_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+        let item = match self {
+            Self::Item {
+                item,
+                projected: false,
+                ..
+            } => Some(item.id()),
+            _ => None,
+        };
+        let markers = match self {
+            Self::Day { markers, .. } => markers.as_slice(),
+            _ => &[],
+        };
+        item.into_iter().chain(
+            markers
+                .iter()
+                .filter(|entry| !entry.projected)
+                .map(|entry| entry.marker.id),
+        )
+    }
+
+    pub(super) fn height(
+        &self,
+        card_height: impl Fn(&AnyItem) -> Pixels,
+        day_height: impl Fn(NaiveDate) -> Pixels,
+    ) -> Pixels {
         match self {
-            UpcomingRow::Day { markers, .. } if markers.is_empty() => DAY_ROW_HEIGHT,
-            UpcomingRow::Day { .. } => DAY_ROW_HEIGHT + MARKER_ROW_HEIGHT,
-            UpcomingRow::Item { item, .. } => card_height(item) + ITEM_ROW_PADDING * 2.,
+            UpcomingRow::Day { date, .. } => day_height(*date),
+            UpcomingRow::Item { item, .. } => card_height(item),
             UpcomingRow::Create { .. } => CREATE_ROW_HEIGHT,
-            UpcomingRow::Missed | UpcomingRow::AnyTime => DAY_ROW_HEIGHT,
+            UpcomingRow::Missed => DAY_ROW_HEIGHT,
         }
     }
 }
@@ -132,19 +152,16 @@ impl Agenda {
         let projected_items = subroutine_core::projected_items_between(items, start, end);
 
         let mut by_day: BTreeMap<NaiveDate, Vec<(AnyItem, bool)>> = BTreeMap::new();
-        let mut any_time: Vec<AnyItem> = Vec::new();
         let mut missed = Vec::new();
         for item in items {
-            if UpcomingSection::for_item(item, today) == UpcomingSection::Missed {
-                missed.push(item.clone());
-                continue;
-            }
-            match item.start_date() {
-                Some(date) if (start..=end).contains(&date) || revealed_dates.contains(&date) => {
+            match UpcomingSection::for_item(item, today) {
+                Some(UpcomingSection::Missed) => missed.push(item.clone()),
+                Some(UpcomingSection::Day(date))
+                    if (start..=end).contains(&date) || revealed_dates.contains(&date) =>
+                {
                     by_day.entry(date).or_default().push((item.clone(), false));
                 }
-                Some(_) => {}
-                None => any_time.push(item.clone()),
+                Some(UpcomingSection::Day(_)) | None => {}
             }
         }
         for (signal, projected) in &visible_signals {
@@ -214,16 +231,6 @@ impl Agenda {
                 }));
         }
 
-        agenda.rows.push(UpcomingRow::AnyTime);
-        agenda
-            .rows
-            .extend(any_time.into_iter().map(|item| UpcomingRow::Item {
-                item,
-                projected: false,
-                section: UpcomingSection::Unscheduled,
-            }));
-        agenda.rows.push(UpcomingRow::Create { date: None });
-
         for date in days {
             agenda.rows.push(UpcomingRow::Day {
                 date,
@@ -239,23 +246,48 @@ impl Agenda {
             });
 
             let entries = by_day.remove(&date).unwrap_or_default();
-            agenda
-                .rows
-                .extend(entries.into_iter().map(|(item, projected)| UpcomingRow::Item {
-                    item,
-                    projected,
-                    section: UpcomingSection::Day(date),
-                }));
-            agenda.rows.push(UpcomingRow::Create { date: Some(date) });
+            agenda.rows.extend(
+                entries
+                    .into_iter()
+                    .map(|(item, projected)| UpcomingRow::Item {
+                        item,
+                        projected,
+                        section: UpcomingSection::Day(date),
+                    }),
+            );
+            agenda.rows.push(UpcomingRow::Create { date });
         }
 
         agenda
+    }
+
+    pub(super) fn item_neighbors(&self, index: usize) -> (Option<Uuid>, Option<Uuid>) {
+        let Some(UpcomingRow::Item { section, .. }) = self.rows.get(index) else {
+            return (None, None);
+        };
+        let neighbor_id = |row: &UpcomingRow| match row {
+            UpcomingRow::Item {
+                item,
+                section: neighbor,
+                ..
+            } if neighbor == section => Some(item.id()),
+            _ => None,
+        };
+        // Reveal clipping and virtualization must not create new compound-card endpoints.
+        (
+            index
+                .checked_sub(1)
+                .and_then(|index| self.rows.get(index))
+                .and_then(neighbor_id),
+            self.rows.get(index + 1).and_then(neighbor_id),
+        )
     }
 
     pub(super) fn layout(
         &self,
         section_state: impl Fn(UpcomingSection) -> (bool, f32),
         card_height: impl Fn(&AnyItem) -> Pixels,
+        day_height: impl Fn(NaiveDate) -> Pixels,
     ) -> AgendaLayout {
         let mut layout = AgendaLayout::default();
         let mut sizes = Vec::new();
@@ -266,11 +298,11 @@ impl Agenda {
             let mut remaining = group
                 .iter()
                 .filter(|row| !row.is_heading())
-                .map(|row| row.height(&card_height))
+                .map(|row| row.height(&card_height, &day_height))
                 .sum::<Pixels>()
                 * fraction;
             for (index, row) in group.iter().enumerate() {
-                let full_height = row.height(&card_height);
+                let full_height = row.height(&card_height, &day_height);
                 let height = if row.is_heading() || fraction == 1. {
                     full_height
                 } else {
@@ -281,16 +313,13 @@ impl Agenda {
                 if height <= px(0.) {
                     continue;
                 }
-                if expanded
-                    && height == full_height
-                    && let UpcomingRow::Item {
-                        item,
-                        projected: false,
-                        ..
-                    } = row
-                {
-                    layout.order.push(item.id());
-                    layout.positions.insert(item.id(), layout.rows.len());
+                if row.is_heading() || (expanded && height == full_height) {
+                    for id in row.selectable_ids() {
+                        if let Entry::Vacant(entry) = layout.positions.entry(id) {
+                            entry.insert(layout.rows.len());
+                            layout.order.push(id);
+                        }
+                    }
                 }
                 layout.rows.push(offset + index);
                 sizes.push(size(px(0.), height + row_top_inset(offset + index)));
@@ -429,4 +458,209 @@ fn project_signals(
     visible.sort_by_key(|(signal, _)| (signal.datetime, signal.lineage_id));
     visible.dedup_by_key(|(signal, _)| (signal.datetime, signal.lineage_id));
     visible
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use subroutine_core::{Action, SchedulePoint};
+
+    #[test]
+    fn item_neighbors_include_projections_and_stop_at_boundaries() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let day = UpcomingSection::Day(today);
+        let item = |id, section, projected| UpcomingRow::Item {
+            item: AnyItem::Action(Action {
+                id: Uuid::from_u128(id),
+                ..Action::new("Item")
+            }),
+            projected,
+            section,
+        };
+        let agenda = Agenda {
+            rows: vec![
+                UpcomingRow::Missed,
+                item(1, UpcomingSection::Missed, false),
+                item(2, UpcomingSection::Missed, true),
+                item(3, UpcomingSection::Missed, false),
+                UpcomingRow::Day {
+                    date: today,
+                    markers: Vec::new(),
+                    relative: None,
+                },
+                item(5, day, false),
+                UpcomingRow::Create { date: today },
+                item(7, day, true),
+                item(8, UpcomingSection::Day(today.succ_opt().unwrap()), false),
+            ],
+        };
+        for (index, (previous, next)) in [
+            (None, None),
+            (None, Some(2)),
+            (Some(1), Some(3)),
+            (Some(2), None),
+            (None, None),
+            (None, None),
+            (None, None),
+            (None, None),
+            (None, None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                agenda.item_neighbors(index),
+                (previous.map(Uuid::from_u128), next.map(Uuid::from_u128)),
+                "row {index}",
+            );
+        }
+        assert_eq!(agenda.item_neighbors(agenda.rows.len()), (None, None));
+        assert_eq!(agenda.item_neighbors(usize::MAX), (None, None));
+    }
+
+    #[test]
+    fn layout_selects_visible_concrete_items_and_unique_heading_markers() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let tomorrow = today + Duration::days(1);
+        let mut spanning = Marker::new("Multi-day", today);
+        spanning.end_date = Some(tomorrow);
+        let marker = Marker::new("Tomorrow", tomorrow);
+        let projected_marker = Marker::new("Projected", today);
+        let first =
+            AnyItem::Action(Action::new("First").with_start(Some(SchedulePoint::Date(today))));
+        let second =
+            AnyItem::Action(Action::new("Second").with_start(Some(SchedulePoint::Date(tomorrow))));
+        let projected_item =
+            AnyItem::Action(Action::new("Projected").with_start(Some(SchedulePoint::Date(today))));
+        let projected_id = projected_item.id();
+        let agenda = Agenda {
+            rows: vec![
+                UpcomingRow::Day {
+                    date: today,
+                    markers: vec![
+                        AgendaMarker {
+                            marker: spanning.clone(),
+                            projected: false,
+                        },
+                        AgendaMarker {
+                            marker: projected_marker,
+                            projected: true,
+                        },
+                    ],
+                    relative: None,
+                },
+                UpcomingRow::Item {
+                    item: first.clone(),
+                    projected: false,
+                    section: UpcomingSection::Day(today),
+                },
+                UpcomingRow::Item {
+                    item: projected_item,
+                    projected: true,
+                    section: UpcomingSection::Day(today),
+                },
+                UpcomingRow::Day {
+                    date: tomorrow,
+                    markers: vec![
+                        AgendaMarker {
+                            marker: spanning.clone(),
+                            projected: false,
+                        },
+                        AgendaMarker {
+                            marker: marker.clone(),
+                            projected: false,
+                        },
+                    ],
+                    relative: None,
+                },
+                UpcomingRow::Item {
+                    item: second.clone(),
+                    projected: false,
+                    section: UpcomingSection::Day(tomorrow),
+                },
+            ],
+        };
+        let day_height = |date| if date == today { px(130.) } else { px(84.) };
+
+        for (expanded, fraction, rows, heights, selected) in [
+            (
+                false,
+                0.,
+                vec![0, 3],
+                vec![],
+                vec![(spanning.id, 0), (marker.id, 1)],
+            ),
+            (
+                false,
+                1.,
+                vec![0, 1, 2, 3, 4],
+                vec![40., 40., 40.],
+                vec![(spanning.id, 0), (marker.id, 3)],
+            ),
+            (
+                true,
+                0.,
+                vec![0, 3],
+                vec![],
+                vec![(spanning.id, 0), (marker.id, 1)],
+            ),
+            (
+                true,
+                0.25,
+                vec![0, 1, 3, 4],
+                vec![20., 10.],
+                vec![(spanning.id, 0), (marker.id, 2)],
+            ),
+            (
+                true,
+                0.5,
+                vec![0, 1, 3, 4],
+                vec![40., 20.],
+                vec![(spanning.id, 0), (first.id(), 1), (marker.id, 2)],
+            ),
+            (
+                true,
+                1.,
+                vec![0, 1, 2, 3, 4],
+                vec![40., 40., 40.],
+                vec![
+                    (spanning.id, 0),
+                    (first.id(), 1),
+                    (marker.id, 3),
+                    (second.id(), 4),
+                ],
+            ),
+        ] {
+            let layout = agenda.layout(|_| (expanded, fraction), |_| px(40.), day_height);
+            assert_eq!(layout.rows, rows);
+            assert_eq!(agenda.item_neighbors(1), (None, Some(projected_id)));
+            assert_eq!(agenda.item_neighbors(2), (Some(first.id()), None));
+            assert_eq!(agenda.item_neighbors(4), (None, None));
+            let item_heights: Vec<_> = layout
+                .rows
+                .iter()
+                .zip(layout.sizes.iter())
+                .filter_map(|(source, size)| {
+                    matches!(agenda.rows[*source], UpcomingRow::Item { .. }).then_some(size.height)
+                })
+                .collect();
+            assert_eq!(
+                item_heights,
+                heights.into_iter().map(px).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                layout.order,
+                selected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+            );
+            assert_eq!(layout.positions, selected.into_iter().collect());
+            for (index, row) in layout.rows.iter().enumerate() {
+                if let UpcomingRow::Day { date, .. } = &agenda.rows[*row] {
+                    assert_eq!(
+                        layout.sizes[index].height,
+                        day_height(*date) + row_top_inset(*row)
+                    );
+                }
+            }
+        }
+    }
 }

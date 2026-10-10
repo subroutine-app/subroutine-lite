@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::components::timed_toast;
 use crate::item_subject::{ItemSubject, ItemSubjectKey, SavedItem};
-use crate::selection::FocusHandoff;
+use crate::selection::{CompletionFocus, SelectionScope};
 use crate::settings::Settings;
 use crate::stores::AppDatabaseStore;
 
@@ -812,11 +812,12 @@ impl ItemManager {
     pub(super) fn begin_complete_action(
         &mut self,
         action: Action,
-        handoff: Option<FocusHandoff>,
+        scope: Option<SelectionScope>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let action_id = action.id;
+        let focus = CompletionFocus::capture(scope, &[action_id], cx);
         let transaction = AppDatabaseStore::global(cx)
             .update(cx, |store, cx| store.complete_action(action_id, cx));
         let Ok(Some(transaction)) = transaction else {
@@ -834,8 +835,8 @@ impl ItemManager {
             return;
         };
 
-        if let Some(handoff) = handoff {
-            handoff.take(window, cx);
+        if let Some(focus) = focus {
+            focus.request(window, cx);
         }
         self.completing.insert(action_id);
         let title = action.title;

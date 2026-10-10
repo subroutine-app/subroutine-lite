@@ -19,7 +19,7 @@ use crate::{
     },
     item_manager::{DiscardDraft, DraftSubmitted, DraftView, ItemManager},
     keys::{force_click_modifier, key},
-    selection::{SelectionManager, SelectionScope},
+    selection::{CompletionFocusCancelled, SelectionManager, SelectionScope},
     settings::{GlobalSettings, Settings, TimelineToolbarPosition},
     views::{DeleteItem, TOP_EDGE_INSET},
 };
@@ -289,6 +289,12 @@ impl TimelineView {
         .detach();
 
         let selection = SelectionManager::global(cx);
+        cx.subscribe(&selection, |view, _, _: &CompletionFocusCancelled, cx| {
+            if view.pending_item_focus.take().is_some() {
+                cx.notify();
+            }
+        })
+        .detach();
         cx.observe(&selection, |view, selection, cx| {
             if view.pending_item_focus.is_some_and(|id| {
                 !selection
@@ -532,6 +538,8 @@ impl MarqueeView for TimelineView {
 impl Render for TimelineView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.animate_card_details(window, cx);
+        SelectionManager::report_order(&self.selection_order(), cx);
+        self.apply_completion_focus(window, cx);
         self.marquee.scroll_region(window);
         let entity = cx.entity();
         let hook_entity = entity.clone();

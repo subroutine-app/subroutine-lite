@@ -65,7 +65,7 @@ impl ItemCard {
         let label = format!("{} draft — Change item type", kind.label());
         let icon = item_icon(kind.item_type());
         let icon = match self.title_scale {
-            ItemCardTitleScale::Standard => icon.size_4(),
+            ItemCardTitleScale::Small | ItemCardTitleScale::Standard => icon.size_4(),
             ItemCardTitleScale::Large => icon.size_5(),
             ItemCardTitleScale::Display => icon.size_6(),
         };

@@ -1,7 +1,8 @@
-use gpui::{AnyElement, App, IntoElement, Pixels, px};
+use crate::color::ColorExt as _;
+use gpui::{AnyElement, App, Hsla, IntoElement, Pixels, px};
 #[cfg(not(target_os = "macos"))]
 use gpui_kit::foundation::ThemeOverlay;
-use gpui_kit_theme::Theme;
+use gpui_kit_theme::{Appearance, Theme};
 
 pub(crate) const LIST_VIEW_MIN_WIDTH: Pixels = px(360.);
 pub(crate) const LIST_VIEW_MAX_WIDTH: Pixels = px(760.);
@@ -22,6 +23,14 @@ pub(crate) fn platform_material_scope(child: impl IntoElement) -> AnyElement {
     }
 }
 
+pub(crate) fn frosted_overlay_tint(theme: &Theme) -> Hsla {
+    let tint = match theme.appearance {
+        Appearance::Dark => gpui::black(),
+        Appearance::Light => gpui::white(),
+    };
+    theme.colors.overlay.mix(tint, 0.65)
+}
+
 pub(crate) fn fixed_glass_bevel_theme(theme: &Theme, initial_short_edge: f32) -> Theme {
     let upper = theme
         .effects
@@ -36,6 +45,7 @@ pub(crate) fn fixed_glass_bevel_theme(theme: &Theme, initial_short_edge: f32) ->
     })
 }
 
+mod action_library_view;
 mod command_palette;
 mod drag_navigation;
 mod drop_confirmation;
@@ -49,8 +59,8 @@ mod routines_view;
 mod saved_items_view;
 mod search_view;
 mod settings_view;
-mod unqueued_view;
 
+pub use action_library_view::*;
 pub use home_view::*;
 pub use item_creator::*;
 pub use item_inspector::*;
@@ -60,7 +70,6 @@ pub use routines_view::*;
 pub use saved_items_view::*;
 pub use search_view::*;
 pub use settings_view::*;
-pub use unqueued_view::*;
 
 pub fn init(cx: &mut App) {
     root_view::init(cx);

@@ -4,8 +4,9 @@ use std::rc::Rc;
 use crate::components::{menu::MenuBuilder, timed_toast};
 use chrono::{Duration as ChronoDuration, Local};
 use gpui::{
-    App, AppContext, Bounds, ClipboardItem, Context, Entity, FocusHandle, Global,
-    InteractiveElement, Modifiers, MouseDownEvent, Pixels, Point, Window, actions, point,
+    AnyWindowHandle, App, AppContext, Bounds, ClipboardItem, Context, Entity, EventEmitter,
+    FocusHandle, Global, InteractiveElement, Modifiers, MouseDownEvent, Pixels, Point, Window,
+    actions, point,
 };
 use gpui_kit::{display::badge::Tone, overlay::toast};
 use subroutine_core::{Action, AnyItem, Routine, RoutineStep};
@@ -26,6 +27,7 @@ pub enum SelectionScope {
     Queue,
     Focus,
     Unqueued,
+    Unscheduled,
     Routines,
     SavedItems,
     Search,
@@ -160,6 +162,7 @@ pub struct SelectionManager {
     press_claimed: bool,
     painting: Vec<CardRect>,
     painted: Vec<CardRect>,
+    completion_focus: Option<(AnyWindowHandle, CompletionFocus)>,
 }
 
 struct CardRect {
@@ -167,6 +170,9 @@ struct CardRect {
     id: Uuid,
     bounds: Bounds<Pixels>,
 }
+
+pub struct CompletionFocusCancelled;
+impl EventEmitter<CompletionFocusCancelled> for SelectionManager {}
 
 struct GlobalSelectionManager(Entity<SelectionManager>);
 impl Global for GlobalSelectionManager {}
@@ -182,6 +188,7 @@ impl SelectionManager {
             press_claimed: false,
             painting: Vec::new(),
             painted: Vec::new(),
+            completion_focus: None,
         }
     }
 
@@ -297,6 +304,32 @@ impl SelectionManager {
         });
     }
 
+    pub fn take_completion_focus(
+        scope: SelectionScope,
+        window: &Window,
+        cx: &mut App,
+    ) -> Option<CompletionFocus> {
+        let generation = AppDatabaseStore::global(cx).read(cx).workspace_generation();
+        Self::global(cx).update(cx, |selection, _| {
+            let (owner, request) = selection.completion_focus.as_ref()?;
+            let selection_matches = match request.target {
+                Some(id) => selection.scope == Some(request.scope) && selection.selected == [id],
+                None => selection.selected.is_empty(),
+            };
+            if request.workspace_generation != generation || !selection_matches {
+                selection.completion_focus = None;
+                return None;
+            }
+            if *owner != window.window_handle() || request.scope != scope {
+                return None;
+            }
+            selection
+                .completion_focus
+                .take()
+                .map(|(_, request)| request)
+        })
+    }
+
     pub fn settle_geometry(cx: &mut App) {
         Self::global(cx).update(cx, |selection, _| {
             selection.painted = std::mem::take(&mut selection.painting);
@@ -324,6 +357,7 @@ impl SelectionManager {
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.completion_focus = None;
         if self.selected.is_empty() && self.scope.is_none() {
             return;
         }
@@ -347,7 +381,15 @@ impl SelectionManager {
         });
     }
 
+    pub fn cancel_completion_focus(cx: &mut App) {
+        Self::global(cx).update(cx, |selection, cx| {
+            selection.completion_focus = None;
+            cx.emit(CompletionFocusCancelled);
+        });
+    }
+
     pub fn begin_press(cx: &mut App) {
+        Self::cancel_completion_focus(cx);
         Self::global(cx).update(cx, |selection, _| selection.press_claimed = false);
     }
 
@@ -495,6 +537,9 @@ impl SelectionManager {
     }
 
     fn enter(&mut self, scope: SelectionScope) {
+        if self.scope != Some(scope) {
+            self.completion_focus = None;
+        }
         self.last_scope = Some(scope);
         if self.scope != Some(scope) {
             self.scope = Some(scope);
@@ -641,6 +686,113 @@ pub fn focus_item_extending(
     });
 }
 
+pub struct CompletionFocus {
+    pub scope: SelectionScope,
+    pub target: Option<Uuid>,
+    workspace_generation: u64,
+}
+
+impl CompletionFocus {
+    pub fn capture(scope: Option<SelectionScope>, leaving: &[Uuid], cx: &App) -> Option<Self> {
+        let selection = SelectionManager::global(cx);
+        let selection = selection.read(cx);
+        let scope = scope.or(selection.scope)?;
+        let order = selection.orders.get(&scope)?;
+        if !order.iter().any(|id| leaving.contains(id)) {
+            return None;
+        }
+        let store = AppDatabaseStore::global(cx);
+        let store = store.read(cx);
+        let completable: HashSet<_> = store
+            .actions()
+            .iter()
+            .filter(|action| !action.is_completed())
+            .map(|action| action.id)
+            .collect();
+        Some(Self {
+            scope,
+            target: completion_successor(order, leaving, |id| completable.contains(&id)),
+            workspace_generation: store.workspace_generation(),
+        })
+    }
+
+    pub fn request(self, window: &mut Window, cx: &mut App) {
+        SelectionManager::global(cx).update(cx, |selection, cx| {
+            match self.target {
+                Some(id) => selection.select_only(self.scope, id, cx),
+                None => selection.clear(cx),
+            }
+            // Resolve focus after the view has reconciled removals, promotions and virtual rows.
+            selection.completion_focus = Some((window.window_handle(), self));
+            selection.changed(cx);
+        });
+    }
+}
+
+fn completion_successor(
+    order: &[Uuid],
+    leaving: &[Uuid],
+    mut completable: impl FnMut(Uuid) -> bool,
+) -> Option<Uuid> {
+    let position = order.iter().rposition(|id| leaving.contains(id))?;
+    order[position + 1..]
+        .iter()
+        .chain(order[..position].iter().rev())
+        .copied()
+        .find(|id| !leaving.contains(id) && completable(*id))
+}
+
+#[cfg(test)]
+mod completion_focus_tests {
+    use super::completion_successor;
+    use uuid::Uuid;
+
+    #[test]
+    fn advances_past_non_completable_items() {
+        let [first, event, completed, draft, next] = [1, 2, 3, 4, 5].map(Uuid::from_u128);
+        let order = [first, event, completed, draft, next];
+        assert_eq!(
+            completion_successor(&order, &[first], |id| [first, next].contains(&id)),
+            Some(next),
+        );
+    }
+
+    #[test]
+    fn falls_back_to_nearest_previous_action() {
+        let [first, previous, event, last] = [1, 2, 3, 4].map(Uuid::from_u128);
+        assert_eq!(
+            completion_successor(&[first, previous, event, last], &[last], |id| id != event),
+            Some(previous),
+        );
+    }
+
+    #[test]
+    fn skips_entire_completion_batch() {
+        let [first, middle, last, next] = [1, 2, 3, 4].map(Uuid::from_u128);
+        let order = [first, middle, last, next];
+        assert_eq!(
+            completion_successor(&order, &[last, first], |_| true),
+            Some(next),
+        );
+        assert_eq!(
+            completion_successor(&order, &[last, first, next], |_| true),
+            Some(middle),
+        );
+        assert_eq!(completion_successor(&order, &order, |_| true), None);
+    }
+
+    #[test]
+    fn does_not_invent_a_target_for_an_empty_or_unrelated_list() {
+        let [action, other] = [1, 2].map(Uuid::from_u128);
+        assert_eq!(completion_successor(&[], &[action], |_| true), None);
+        assert_eq!(completion_successor(&[action], &[other], |_| true), None);
+        assert_eq!(
+            completion_successor(&[action, other], &[action], |_| false),
+            None
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct FocusHandoff {
     scope: Option<SelectionScope>,
@@ -688,6 +840,7 @@ pub fn dismiss_view(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
+    SelectionManager::cancel_completion_focus(cx);
     let manager = ItemManager::global(cx);
     if manager.read(cx).is_editing() {
         manager.update(cx, |manager, cx| manager.discard_edit(window, cx));
@@ -789,9 +942,7 @@ pub fn complete_selected(window: &mut Window, cx: &mut App) {
     if items.is_empty() {
         return;
     }
-    if bulk::complete(&items, window, cx) {
-        SelectionManager::clear_global(cx);
-    }
+    bulk::complete(&items, window, cx);
 }
 
 pub fn toggle_queued_selected(cx: &mut App) {
@@ -1070,11 +1221,15 @@ pub mod bulk {
             .filter(|action| !action.is_completed())
             .map(|action| action.id)
             .collect();
+        let focus = CompletionFocus::capture(None, &ids, cx);
         let outcome =
             AppDatabaseStore::global(cx).update(cx, |store, cx| store.complete_actions(&ids, cx));
         let Ok(Some((transaction, affected))) = outcome else {
             return false;
         };
+        if let Some(focus) = focus {
+            focus.request(window, cx);
+        }
         let message = if affected == 1 {
             "Completed 1 action".to_owned()
         } else {
@@ -1315,9 +1470,7 @@ pub fn selection_context_menu(items: Vec<AnyItem>) -> MenuBuilder {
                 format!("Complete {incomplete}"),
                 CompleteSelected,
                 move |window, cx| {
-                    if bulk::complete(&items, window, cx) {
-                        SelectionManager::clear_global(cx);
-                    }
+                    bulk::complete(&items, window, cx);
                 },
             )
         })

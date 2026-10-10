@@ -4,6 +4,7 @@ mod editor;
 mod input;
 mod lifecycle;
 mod navigation;
+mod navigation_drawer;
 mod overlays;
 mod panels;
 mod sidebar;
@@ -17,9 +18,9 @@ use crate::{
     keys::{ConfigurableCommand, VIEW_SWITCH_KEY_CONTEXT, key},
     selection::{self, KEY_CONTEXT, SelectionScope},
     views::{
-        CreatorMode, HomeView, ItemCreator, ItemInspector, MainView, NextTab, PreviousTab,
-        RoutinesView, SavedItemsView, ScheduledItemDestination, SearchView, SelectedMainView,
-        SettingsView, SourceKind, UnqueuedView,
+        ActionLibraryView, CreatorMode, HomeView, ItemCreator, ItemInspector, MainView, NextTab,
+        PreviousTab, RoutinesView, SavedItemsView, ScheduledItemDestination, SearchView,
+        SelectedMainView, SettingsView, SourceKind,
     },
 };
 use chrono::NaiveDate;
@@ -36,6 +37,7 @@ use gpui_kit::{
 };
 use gpui_kit_theme::ActiveTheme;
 use navigation::WorkspaceRoute;
+use navigation_drawer::NavigationDrawer;
 use sources::{SourceFilterPicker, SourceSortPicker};
 use subroutine_core::SchedulePoint;
 
@@ -45,6 +47,7 @@ pub(crate) enum NavigationDestination {
     Main(SelectedMainView),
     Search,
     Unqueued,
+    Unscheduled,
     Routines,
     SavedItems,
 }
@@ -100,6 +103,7 @@ actions!(
         GoToQueue,
         GoToFocus,
         GoToUnqueued,
+        GoToUnscheduled,
         GoToRoutines,
         GoToSavedItems,
         ToggleLeftSidebar,
@@ -159,7 +163,8 @@ pub struct RootView {
     source_filter_picker: Entity<SourceFilterPicker>,
     source_sort_picker: Entity<SourceSortPicker>,
     search_view: Entity<SearchView>,
-    unqueued_view: Entity<UnqueuedView>,
+    unqueued_view: Entity<ActionLibraryView>,
+    unscheduled_view: Entity<ActionLibraryView>,
     routines_view: Entity<RoutinesView>,
     saved_items_view: Entity<SavedItemsView>,
     source_kinds: Vec<SourceKind>,
@@ -167,13 +172,17 @@ pub struct RootView {
 
     library_drawer_route: WorkspaceRoute,
     library_drawer_open: bool,
+    library_drawer_width: gpui::Pixels,
     library_background_route: WorkspaceRoute,
     pending_full_source_route: Option<WorkspaceRoute>,
     item_drag_active: bool,
     drag_navigation: DragNavigation,
     drag_navigation_task: Option<Task<()>>,
     layout_state: Entity<PanelGroupState>,
-    navigation_drawer_open: bool,
+    navigation_drawer: NavigationDrawer,
+    navigation_drawer_extent: gpui::Pixels,
+    navigation_pointer: Option<gpui::Point<gpui::Pixels>>,
+    navigation_dismiss_task: Option<Task<()>>,
     navigation_focus: FocusHandle,
     sidebar_scroll: gpui::ScrollHandle,
     current_overlay: Option<(CurrentOverlay, Option<FocusHandle>)>,
@@ -202,10 +211,14 @@ impl Render for RootView {
         }
 
         self.prepare_shell_layout(window, cx);
+        if self.navigation_drawer == NavigationDrawer::Hover {
+            self.observe_navigation_pointer(self.navigation_pointer, window, cx);
+        }
         self.restore_navigation_focus(window, cx);
 
         let content_owns_top_material = self.content_owns_top_material(cx);
-        let left_panel_open = self.navigation_open(cx);
+        let left_panel_open =
+            self.navigation_panel_open(cx) || self.navigation_drawer == NavigationDrawer::Compact;
         let left_panel_width = self.layout_state.read(cx).animated_left_px;
         let toggle_left = Self::navigation_toggle_left(left_panel_width);
         #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -213,8 +226,11 @@ impl Render for RootView {
         let workspace = self.render_workspace(content_owns_top_material, cx);
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         let workspace = self.with_workspace_header(workspace, window_header, cx);
-        let library_drawer = self.render_library_drawer(left_panel_width, window, cx);
-        let navigation_drawer = self.render_navigation_drawer(window, cx);
+        let (navigation_drawer, navigation_drawer_width) =
+            self.render_navigation_drawer(window, cx);
+        self.navigation_drawer_extent = navigation_drawer_width;
+        let library_drawer =
+            self.render_library_drawer(left_panel_width.max(navigation_drawer_width), window, cx);
 
         let root = div()
             .column()
@@ -239,6 +255,7 @@ impl Render for RootView {
                 cx.listener(|view, _, _, cx| view.finish_item_drag(cx)),
             )
             .child(self.drag_lifecycle_observer(cx))
+            .child(self.navigation_hover_observer(cx))
             .map(|root| self.bind_actions(root, cx))
             .child(workspace)
             .children(library_drawer)
@@ -288,7 +305,7 @@ impl Render for RootView {
 
         let root = div().absolute().inset_0().child(root).when(
             self.current_overlay.is_none()
-                && !self.navigation_drawer_open
+                && self.navigation_drawer != NavigationDrawer::Compact
                 && self.route == WorkspaceRoute::Main
                 && self.pending_full_source_route.is_none(),
             |root| {

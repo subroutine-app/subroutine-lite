@@ -17,7 +17,7 @@ use gpui::{
     ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled, Task, Window, actions, div,
     ease_in_out, prelude::FluentBuilder, px, relative,
 };
-use gpui_kit::foundation::{Sizable, ThemeOverlay};
+use gpui_kit::foundation::Sizable;
 use gpui_kit::layout::ScrollFade;
 use gpui_kit::overlay::{GlassExt as _, GlassPreset};
 use gpui_kit_theme::ActiveTheme;
@@ -33,8 +33,7 @@ use crate::{
     AppIcon,
     components::{
         DragData, DraggedItems, DropZone, DynamicList, DynamicListEvent, DynamicListState,
-        MarqueeSelection, MarqueeView, MonthSelect, MonthSelectEvent, MonthSelectState,
-        SIDEBAR_ITEM_GAP, marquee,
+        MarqueeSelection, MarqueeView, MonthSelect, MonthSelectEvent, MonthSelectState, marquee,
     },
     dates::InclusiveDateRange,
     item_manager::{DiscardDraft, ItemManager},
@@ -72,11 +71,11 @@ const DAY_NAMES_TOP: Pixels = if cfg!(any(target_os = "macos", target_os = "wind
 const MAX_CALENDAR_WIDTH: Pixels = px(1440.);
 const DAY_INSPECTOR_MIN_WIDTH: Pixels = px(360.);
 const DAY_INSPECTOR_MAX_WIDTH: Pixels = px(520.);
-const DAY_INSPECTOR_MIN_HEIGHT: Pixels = px(240.);
+const DAY_INSPECTOR_COMPACT_HEIGHT: Pixels = px(240.);
 const DAY_INSPECTOR_MAX_HEIGHT: Pixels = px(520.);
 const DAY_INSPECTOR_HEADER_HEIGHT: Pixels = px(48.);
-const DAY_INSPECTOR_ENTRIES_PADDING: Pixels = px(12.);
-const DAY_INSPECTOR_BORDER_WIDTH: Pixels = px(1.);
+const DAY_INSPECTOR_HEADER_GAP: Pixels = px(8.);
+const DAY_INSPECTOR_PADDING: Pixels = px(12.);
 const DAY_INSPECTOR_VIEWPORT_INSET: Pixels = px(32.);
 const EDGE_SCROLL_ZONE: Pixels = px(96.);
 const EDGE_SCROLL_MAX_SPEED: f32 = 22.;
@@ -394,7 +393,7 @@ impl CalendarView {
                 window,
                 cx,
             )
-            .gap(SIDEBAR_ITEM_GAP)
+            .gap(px(0.))
         });
         cx.subscribe(&inspector_list, |view, _, event: &DynamicListEvent, cx| {
             if let DynamicListEvent::LayoutChanged { scroll_delta } = event {
@@ -893,6 +892,7 @@ impl CalendarView {
     }
 
     fn clear_inspector_selection(&mut self, cx: &mut Context<Self>) {
+        SelectionManager::cancel_completion_focus(cx);
         self.inspector_item_press = None;
         self.inspector_item_opened = None;
         if self.marquee.end() {
@@ -1553,7 +1553,7 @@ impl CalendarView {
             list.set_marquee_active(self.marquee.is_active(), cx);
         });
         let inspector_list = self.inspector_list.read(cx);
-        let inspector_order = inspector_list.delegate().order().clone();
+        let inspector_order = inspector_list.delegate().order();
         let viewport = self.bounds?;
         let cell = self.day_bounds_for(date)?;
         let available_width =
@@ -1564,16 +1564,15 @@ impl CalendarView {
             .min(available_width);
         let list_height = inspector_list.content_height();
         let desired_height = DAY_INSPECTOR_HEADER_HEIGHT
-            + DAY_INSPECTOR_ENTRIES_PADDING * 2.
-            + DAY_INSPECTOR_BORDER_WIDTH * 2.
-            + list_height;
+            + DAY_INSPECTOR_HEADER_GAP
+            + DAY_INSPECTOR_PADDING * 2.
+            + list_height.max(crate::components::SIDEBAR_ITEM_HEIGHT);
         let visible_top = self.visible_top().min(viewport.size.height);
         let visible_height = (viewport.size.height - visible_top).max(px(0.));
         let available_height = (visible_height - DAY_INSPECTOR_VIEWPORT_INSET)
             .max(cell.size.height)
             .min(visible_height);
         let target_height = desired_height
-            .max(DAY_INSPECTOR_MIN_HEIGHT)
             .min(DAY_INSPECTOR_MAX_HEIGHT)
             .min(available_height);
         let transition = window.keyed_transition(
@@ -1615,7 +1614,6 @@ impl CalendarView {
             )
         };
         let entity = cx.entity();
-        let glass_short_edge = f32::from(cell.size.width).min(f32::from(cell.size.height));
 
         let frame = div()
             .id(("calendar-day-inspector", date_key))
@@ -1657,10 +1655,9 @@ impl CalendarView {
             .column()
             .w(width)
             .h(height)
+            .gap(DAY_INSPECTOR_HEADER_GAP)
+            .p(DAY_INSPECTOR_PADDING)
             .overflow_hidden()
-            .rounded(px(cx.theme().radii.dialog))
-            .border_1()
-            .border_color(cx.theme().colors.hairline)
             .text_color(cx.theme().colors.text)
             .block_mouse_except_scroll()
             .on_mouse_down(MouseButton::Right, {
@@ -1685,8 +1682,6 @@ impl CalendarView {
                     .gap_1()
                     .min_w_0()
                     .px_3()
-                    .border_b_1()
-                    .border_color(cx.theme().colors.hairline)
                     .child(
                         Label::new(title)
                             .font_weight(FontWeight::SEMIBOLD)
@@ -1744,7 +1739,6 @@ impl CalendarView {
                     .min_w_0()
                     .min_h_0()
                     .overflow_hidden()
-                    .p(DAY_INSPECTOR_ENTRIES_PADDING)
                     .child(DynamicList::new(&self.inspector_list).size_full()),
                 self,
                 cx,
@@ -1758,21 +1752,16 @@ impl CalendarView {
             .w(width)
             .h(height)
             .opacity(reveal)
-            .shadow_lg()
             .on_prepaint(move |bounds, _, cx| {
                 inspector.update(cx, |view, _| view.inspector_bounds = Some(bounds));
             })
-            .child(ThemeOverlay::new(
-                move |theme| crate::views::fixed_glass_bevel_theme(theme, glass_short_edge),
+            .child(
                 frame
-                    .bg_glass()
+                    .bg_frost()
                     .glass_surface(Surface::Overlay)
                     .glass_radius(Radius::Dialog)
-                    .glass(|glass| glass.protect_text_contrast(false))
-                    .when(cfg!(not(target_os = "macos")), |frame| {
-                        frame.glass_preset(GlassPreset::Frosted)
-                    }),
-            ));
+                    .glass(|glass| glass.tint(crate::views::frosted_overlay_tint(cx.theme()))),
+            );
 
         Some(panel)
     }
@@ -2082,10 +2071,29 @@ impl Render for CalendarView {
                     .text_only()
                     .child(self.render_grid(window, cx)),
             );
+        SelectionManager::report_order(&self.inspector_list.read(cx).delegate().order(), cx);
+        if let Some(request) =
+            SelectionManager::take_completion_focus(SelectionScope::Calendar, window, cx)
+        {
+            let target = request.target.and_then(|id| {
+                let row = self.inspector_list.read(cx).delegate().index_of(id)?;
+                let handle = self.inspector_item_focus_handles.get(&id)?.clone();
+                Some((row, id, handle))
+            });
+            if let Some((row, id, handle)) = target {
+                self.inspector_list
+                    .update(cx, |list, cx| list.reveal_item_for_focus(row, cx));
+                focus_item(request.scope, id, &handle, window, cx);
+            } else if self.inspector_date.is_some() {
+                self.inspector_focus.focus(window, cx);
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
+        }
         let inspector = self.render_day_inspector(window, cx);
         let compact_inspector = inspector.is_some()
             && self.bounds.is_some_and(|bounds| {
-                bounds.size.height - self.visible_top() < DAY_INSPECTOR_MIN_HEIGHT
+                bounds.size.height - self.visible_top() < DAY_INSPECTOR_COMPACT_HEIGHT
             });
         let calendar = div()
             .relative()

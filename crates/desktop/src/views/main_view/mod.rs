@@ -429,6 +429,7 @@ impl MainView {
         }
 
         if self.selected_view != view {
+            SelectionManager::cancel_completion_focus(cx);
             let leaving_scope = match self.selected_view {
                 SelectedMainView::Timeline => Some(SelectionScope::Timeline),
                 SelectedMainView::Calendar => Some(SelectionScope::Calendar),

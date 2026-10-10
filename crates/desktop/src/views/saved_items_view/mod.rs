@@ -160,6 +160,10 @@ impl SavedItemsView {
         self.focus_handle.clone()
     }
 
+    pub(crate) fn item_count(&self) -> usize {
+        self.items.matching_ids().len() + usize::from(self.draft.is_some())
+    }
+
     pub(crate) fn set_filter(&mut self, filter: SavedItemsFilter, cx: &mut Context<Self>) {
         if self.items.filter == filter {
             return;

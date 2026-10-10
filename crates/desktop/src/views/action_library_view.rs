@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use crate::components::ext::InteractiveElementExt;
 use crate::components::menu::MenuBuilder;
@@ -7,7 +11,7 @@ use chrono::{Local, NaiveDate};
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, DragMoveEvent, ElementId, Entity,
     FocusHandle, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render,
-    StatefulInteractiveElement, Styled, Window, div,
+    StatefulInteractiveElement, Styled, Window, div, px,
 };
 use gpui_kit_theme::ActiveTheme;
 use subroutine_core::{Action, AnyItem};
@@ -24,33 +28,70 @@ use crate::{
     item_manager::{DiscardDraft, ItemManager},
     presentation::UxColor,
     selection::{
-        DismissExt as _, SelectionOrder, SelectionScope, focus_item, focus_item_extending,
+        DismissExt as _, SelectionManager, SelectionOrder, SelectionScope, focus_item,
+        focus_item_extending,
     },
     settings::Settings,
     stores::{AppDatabaseStore, DataChanged},
     views::main_view::format_item_duration,
 };
 
-const ITEM_HEIGHT: Pixels = SIDEBAR_ITEM_HEIGHT;
-const ITEM_GAP: Pixels = SIDEBAR_ITEM_GAP;
+use super::{
+    drop_confirmation::{confirm_drop, resolve_dragged},
+    library_drop::{LibraryDropItem, LibraryDropTarget},
+};
 
-fn unqueued_actions(store: &Entity<AppDatabaseStore>, cx: &App) -> Vec<Action> {
-    let settings = Settings::global(cx);
-    store
-        .read(cx)
-        .pipeline(&settings)
-        .waiting()
-        .into_iter()
-        .cloned()
-        .collect()
+const ITEM_HEIGHT: Pixels = SIDEBAR_ITEM_HEIGHT;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActionLibraryKind {
+    Unqueued,
+    Unscheduled,
 }
 
-fn unqueued_meta(action: &Action, cx: &App) -> Vec<CardMeta> {
+impl ActionLibraryKind {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Unqueued => "unqueued",
+            Self::Unscheduled => "unscheduled",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unqueued => "Unqueued",
+            Self::Unscheduled => "Unscheduled",
+        }
+    }
+
+    fn scope(self) -> SelectionScope {
+        match self {
+            Self::Unqueued => SelectionScope::Unqueued,
+            Self::Unscheduled => SelectionScope::Unscheduled,
+        }
+    }
+
+    fn actions(self, store: &Entity<AppDatabaseStore>, cx: &App) -> Vec<Action> {
+        let settings = Settings::global(cx);
+        let pipeline = store.read(cx).pipeline(&settings);
+        let actions = match self {
+            Self::Unqueued => pipeline.waiting(),
+            Self::Unscheduled => pipeline
+                .queue()
+                .into_iter()
+                .filter(|action| action.start.is_none())
+                .collect(),
+        };
+        actions.into_iter().cloned().collect()
+    }
+}
+
+fn action_meta(action: &Action, cx: &App) -> Vec<CardMeta> {
     let mut meta = Vec::new();
 
     if let Some(date) = action.start.map(|start| start.date_naive()) {
         let today = Local::now().date_naive();
-        let (text, role) = unqueued_date_meta(date, today);
+        let (text, role) = date_meta(date, today);
         meta.push(
             CardMeta::new(text)
                 .icon(AppIcon::CalendarClock)
@@ -68,7 +109,7 @@ fn unqueued_meta(action: &Action, cx: &App) -> Vec<CardMeta> {
     meta
 }
 
-fn unqueued_date_meta(date: NaiveDate, today: NaiveDate) -> (String, UxColor) {
+fn date_meta(date: NaiveDate, today: NaiveDate) -> (String, UxColor) {
     let text = if date < today {
         format!("Overdue · {}", date.format("%b %-d"))
     } else if date == today {
@@ -82,26 +123,29 @@ fn unqueued_date_meta(date: NaiveDate, today: NaiveDate) -> (String, UxColor) {
 }
 
 #[derive(Clone)]
-struct UnqueuedDelegate {
-    unqueued: Vec<Action>,
+struct ActionLibraryDelegate {
+    kind: ActionLibraryKind,
+    actions: Vec<Action>,
     drafts: Vec<Action>,
     query: String,
     items: Vec<Action>,
     cards: DynamicListCardStates,
     focus_handles: HashMap<Uuid, FocusHandle>,
-    order: SelectionOrder,
+    // Departure delegates must not report their old selection order.
+    order: Rc<RefCell<SelectionOrder>>,
 }
 
-impl UnqueuedDelegate {
-    fn new(cx: &mut App) -> Self {
+impl ActionLibraryDelegate {
+    fn new(kind: ActionLibraryKind, cx: &mut App) -> Self {
         let mut this = Self {
-            unqueued: Vec::new(),
+            kind,
+            actions: Vec::new(),
             drafts: Vec::new(),
             query: String::new(),
             items: Vec::new(),
             cards: DynamicListCardStates::default(),
             focus_handles: HashMap::new(),
-            order: SelectionOrder::new(SelectionScope::Unqueued, []),
+            order: Rc::new(RefCell::new(SelectionOrder::new(kind.scope(), []))),
         };
         this.reload(cx);
         this
@@ -116,9 +160,9 @@ impl UnqueuedDelegate {
             self.drafts.clear();
             self.focus_handles.clear();
         }
-        self.unqueued = unqueued_actions(&store, cx);
+        self.actions = self.kind.actions(&store, cx);
         self.drafts
-            .retain(|draft| !self.unqueued.iter().any(|action| action.id == draft.id));
+            .retain(|draft| store.read(cx).get_item(draft.id).is_none());
         self.rebuild(cx);
     }
 
@@ -133,7 +177,7 @@ impl UnqueuedDelegate {
     }
 
     fn rebuild(&mut self, cx: &mut App) {
-        let mut items = self.unqueued.clone();
+        let mut items = self.actions.clone();
         items.extend(self.drafts.iter().cloned());
         let tokens = self
             .query
@@ -161,10 +205,8 @@ impl UnqueuedDelegate {
             }
         });
         self.items = items;
-        self.order = SelectionOrder::new(
-            SelectionScope::Unqueued,
-            self.items.iter().map(|action| action.id),
-        );
+        *self.order.borrow_mut() =
+            SelectionOrder::new(self.kind.scope(), self.items.iter().map(|action| action.id));
 
         let current: HashSet<Uuid> = self.items.iter().map(|action| action.id).collect();
         self.cards.retain(self.items.iter().filter_map(|action| {
@@ -182,6 +224,10 @@ impl UnqueuedDelegate {
         }
     }
 
+    fn order(&self) -> SelectionOrder {
+        self.order.borrow().clone()
+    }
+
     fn index_of(&self, id: Uuid) -> Option<usize> {
         self.items.iter().position(|action| action.id == id)
     }
@@ -192,7 +238,7 @@ impl UnqueuedDelegate {
     }
 }
 
-impl DynamicListDelegate for UnqueuedDelegate {
+impl DynamicListDelegate for ActionLibraryDelegate {
     type Item = AnyElement;
 
     fn items_count(&self, _cx: &App) -> usize {
@@ -245,7 +291,7 @@ impl DynamicListDelegate for UnqueuedDelegate {
     ) -> Option<Self::Item> {
         let action = self.items.get(ix)?.clone();
         let action_id = action.id;
-        let meta = unqueued_meta(&action, cx);
+        let meta = action_meta(&action, cx);
         let handle = self
             .focus_handles
             .get(&action_id)
@@ -261,13 +307,18 @@ impl DynamicListDelegate for UnqueuedDelegate {
                 .px(SIDEBAR_GUTTER)
                 .child(
                     ItemCard::new(&item, None, window, cx)
+                        .neighbors(
+                            ix.checked_sub(1)
+                                .and_then(|previous| self.items.get(previous))
+                                .map(|action| action.id),
+                            self.items.get(ix + 1).map(|action| action.id),
+                        )
                         .details(self.cards.get(action_id))
                         .meta(meta)
                         .schedule_navigation()
                         .with_focus_handle(handle)
-                        .selectable(self.order.clone())
+                        .selectable(self.order())
                         .size_full()
-                        .border(false)
                         .draggable(true, None)
                         .block_mouse_except_scroll()
                         .on_key_down(cx.listener(move |list, event: &KeyDownEvent, window, cx| {
@@ -314,21 +365,25 @@ impl DynamicListDelegate for UnqueuedDelegate {
         _window: &mut Window,
         _cx: &mut Context<DynamicListState<Self>>,
     ) -> impl IntoElement {
-        if self.query.trim().is_empty() {
-            EmptyState::new(Icon::new(AppIcon::Inbox), "Nothing unqueued")
+        let label = if self.query.trim().is_empty() {
+            match self.kind {
+                ActionLibraryKind::Unqueued => "Nothing unqueued",
+                ActionLibraryKind::Unscheduled => "Nothing unscheduled",
+            }
         } else {
-            EmptyState::new(Icon::new(AppIcon::Inbox), "No matches")
-        }
+            "No matches"
+        };
+        EmptyState::new(Icon::new(AppIcon::Inbox), label)
     }
 }
 
 fn focus_sibling(
-    list: &mut DynamicListState<UnqueuedDelegate>,
+    list: &mut DynamicListState<ActionLibraryDelegate>,
     id: Uuid,
     offset: isize,
     extend_selection: bool,
     window: &mut Window,
-    cx: &mut Context<DynamicListState<UnqueuedDelegate>>,
+    cx: &mut Context<DynamicListState<ActionLibraryDelegate>>,
 ) {
     let delegate = list.delegate();
     let Some(pos) = delegate.index_of(id) else {
@@ -346,29 +401,30 @@ fn focus_sibling(
     let Some(next_id) = delegate.items.get(next).map(|action| action.id) else {
         return;
     };
-    let order = delegate.order.clone();
+    let order = delegate.order();
 
     if extend_selection {
         focus_item_extending(&order, id, next_id, &handle, window, cx);
     } else {
-        focus_item(SelectionScope::Unqueued, next_id, &handle, window, cx);
+        focus_item(delegate.kind.scope(), next_id, &handle, window, cx);
     }
     list.scroll_item_into_view(next, cx);
 }
 
-pub struct UnqueuedView {
-    list: Entity<DynamicListState<UnqueuedDelegate>>,
+pub struct ActionLibraryView {
+    kind: ActionLibraryKind,
+    list: Entity<DynamicListState<ActionLibraryDelegate>>,
     focus_handle: FocusHandle,
     drop_active: bool,
     marquee: MarqueeSelection,
 }
 
-impl UnqueuedView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl ActionLibraryView {
+    pub fn new(kind: ActionLibraryKind, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let list = cx.new(|cx| {
-            DynamicListState::new(UnqueuedDelegate::new(cx), window, cx)
-                .gap(ITEM_GAP)
-                .content_inset_top(crate::views::LIBRARY_HEADER_HEIGHT + ITEM_GAP)
+            DynamicListState::new(ActionLibraryDelegate::new(kind, cx), window, cx)
+                .gap(px(0.))
+                .content_inset_top(crate::views::LIBRARY_HEADER_HEIGHT + SIDEBAR_ITEM_GAP)
                 .scrollbar_visible(false)
         });
 
@@ -377,6 +433,7 @@ impl UnqueuedView {
             view.list.update(cx, |list, cx| {
                 list.update_items(cx, |delegate, cx| delegate.reload(cx));
             });
+            cx.notify();
         })
         .detach();
 
@@ -387,19 +444,25 @@ impl UnqueuedView {
             view.list.update(cx, |list, cx| {
                 list.update_items(cx, |delegate, cx| delegate.discard_draft(id, cx));
             });
+            cx.notify();
         })
         .detach();
 
         Self {
+            kind,
             list,
             focus_handle: cx.focus_handle(),
             drop_active: false,
-            marquee: MarqueeSelection::new(SelectionScope::Unqueued),
+            marquee: MarqueeSelection::new(kind.scope()),
         }
     }
 
     pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    pub(crate) fn item_count(&self, cx: &App) -> usize {
+        self.list.read(cx).delegate().items_count(cx)
     }
 
     pub(crate) fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
@@ -414,8 +477,8 @@ impl UnqueuedView {
         cx.notify();
     }
 
-    fn add_draft_unqueued_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let action = Action::new("");
+    fn add_draft_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let action = Action::new("").with_queued(self.kind == ActionLibraryKind::Unscheduled);
         let id = action.id;
         let any_item = AnyItem::Action(action.clone());
 
@@ -439,12 +502,45 @@ impl UnqueuedView {
         }
     }
 
+    fn drop_unscheduled(
+        &mut self,
+        dragged: &DraggedItems,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let store = AppDatabaseStore::global(cx);
+        let items = resolve_dragged(dragged, cx)
+            .items
+            .into_iter()
+            .map(|item| LibraryDropItem {
+                from_saved_items: store.read(cx).get_item(item.id()).is_none(),
+                item,
+            })
+            .collect::<Vec<_>>();
+        let Some(plan) = LibraryDropTarget::Unscheduled.plan(&items) else {
+            return;
+        };
+        confirm_drop(
+            plan.accepted,
+            "Move",
+            "Move these actions to Unscheduled, queueing them without scheduled dates and preserving their pins."
+                .into(),
+            window,
+            cx,
+            move |_, cx| {
+                store.update(cx, |store, cx| {
+                    let _ = store.update_items(plan.items, cx);
+                });
+            },
+        );
+    }
+
     fn drop_zone(
         &self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> DropZone<DragData<DraggedItems>> {
-        DropZone::new("unqueued-drop")
+        DropZone::new(format!("{}-drop", self.kind.id()))
             .size_full()
             .active(self.drop_active)
             .transparent_background()
@@ -464,6 +560,10 @@ impl UnqueuedView {
                         return;
                     }
                     this.clear_drop_target(cx);
+                    if this.kind == ActionLibraryKind::Unscheduled {
+                        this.drop_unscheduled(&data.data, window, cx);
+                        return;
+                    }
                     let db_store = AppDatabaseStore::global(cx);
                     let mut seen = std::collections::HashSet::new();
                     let ids: Vec<_> = data
@@ -498,15 +598,15 @@ impl UnqueuedView {
     }
 }
 
-fn unqueued_context_menu(view: Entity<UnqueuedView>) -> MenuBuilder {
+fn action_context_menu(view: Entity<ActionLibraryView>, kind: ActionLibraryKind) -> MenuBuilder {
     MenuBuilder::new()
-        .label("Unqueued Actions")
+        .label(format!("{} Actions", kind.label()))
         .item("New action", move |window, cx| {
-            view.update(cx, |view, cx| view.add_draft_unqueued_action(window, cx));
+            view.update(cx, |view, cx| view.add_draft_action(window, cx));
         })
 }
 
-impl MarqueeView for UnqueuedView {
+impl MarqueeView for ActionLibraryView {
     fn marquee(&self) -> &MarqueeSelection {
         &self.marquee
     }
@@ -520,22 +620,39 @@ impl MarqueeView for UnqueuedView {
     }
 }
 
-impl Render for UnqueuedView {
+impl Render for ActionLibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.list.update(cx, |list, cx| {
             list.scroll_marquee(&mut self.marquee, window, cx);
         });
+        SelectionManager::report_order(&self.list.read(cx).delegate().order(), cx);
+        if let Some(request) =
+            SelectionManager::take_completion_focus(self.kind.scope(), window, cx)
+        {
+            let target = request.target.and_then(|id| {
+                let delegate = self.list.read(cx).delegate();
+                let row = delegate.index_of(id)?;
+                Some((row, id, delegate.focus_handle_at(row)?))
+            });
+            if let Some((row, id, handle)) = target {
+                self.list
+                    .update(cx, |list, cx| list.reveal_item_for_focus(row, cx));
+                focus_item(request.scope, id, &handle, window, cx);
+            } else {
+                self.focus_handle.focus(window, cx);
+            }
+        }
         let entity = cx.entity();
 
-        let body = SidebarPanel::new("unqueued-backdrop")
+        let body = SidebarPanel::new(format!("{}-backdrop", self.kind.id()))
             .footer(
-                SidebarAddButton::new("new-unqueued-item", "New action")
-                    .tooltip("Add an action to the unqueued list")
+                SidebarAddButton::new(format!("new-{}-item", self.kind.id()), "New action")
+                    .tooltip(format!("Add an action to the {} list", self.kind.id()))
                     .on_click({
                         let entity = entity.clone();
                         move |_event, window, cx| {
                             entity.update(cx, |view, cx| {
-                                view.add_draft_unqueued_action(window, cx);
+                                view.add_draft_action(window, cx);
                             });
                         }
                     }),
@@ -544,13 +661,13 @@ impl Render for UnqueuedView {
                 let entity = entity.clone();
                 move |_event: &ClickEvent, window, cx| {
                     entity.update(cx, |view, cx| {
-                        view.add_draft_unqueued_action(window, cx);
+                        view.add_draft_action(window, cx);
                     });
                 }
             })
-            .on_aux_click(cx.listener(move |_view, event: &ClickEvent, window, cx| {
+            .on_aux_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
                 if event.is_right_click() {
-                    let builder = unqueued_context_menu(cx.entity().clone());
+                    let builder = action_context_menu(cx.entity().clone(), view.kind);
                     crate::components::menu::open_context_menu(
                         builder,
                         event.position(),
@@ -569,6 +686,6 @@ impl Render for UnqueuedView {
             );
         marquee(body, self, cx)
             .track_focus(&self.focus_handle)
-            .on_dismiss(SelectionScope::Unqueued, Some(self.focus_handle.clone()))
+            .on_dismiss(self.kind.scope(), Some(self.focus_handle.clone()))
     }
 }

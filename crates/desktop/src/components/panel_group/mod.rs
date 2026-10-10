@@ -1,8 +1,9 @@
 use crate::components::ext::ElementExt;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Element, ElementId, Empty, Entity,
-    EventEmitter, IntoElement, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render,
-    RenderOnce, Style, StyleRefinement, Styled, Window, div, prelude::FluentBuilder, px,
+    EventEmitter, IntoElement, MouseButton, MouseCancelEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Render, RenderOnce, Style, StyleRefinement, Styled, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_kit::foundation::StyledExt;
 
@@ -14,7 +15,7 @@ use crate::components::ext::StyledRefineExt as _;
 use crate::components::transition::{self, WindowTransitionExt as _};
 pub use center_panel::*;
 
-use resize_handle::*;
+pub(crate) use resize_handle::resize_handle;
 pub use side_panel::*;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,6 +32,7 @@ pub struct PanelGroupState {
     prev_container_width: Pixels,
     pub animated_left_px: Pixels,
     left_content_px: Pixels,
+    left_animation_seed: Option<Pixels>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,6 +92,19 @@ impl PanelGroupState {
         self.bounds.size.width < self.center_panel.min_width + sidebar_minimum
     }
 
+    pub fn is_resizing(&self) -> bool {
+        self.resizing
+    }
+
+    pub fn left_open_width(&self) -> Pixels {
+        self.widths(0.25).left_content
+    }
+
+    pub fn animate_left_from(&mut self, width: Pixels) {
+        self.animated_left_px = width;
+        self.left_animation_seed = Some(width);
+    }
+
     fn widths(&self, left_fallback: f32) -> PanelWidths {
         let container_width = self.bounds.size.width;
         let preferred_left = self
@@ -144,7 +159,40 @@ impl PanelGroupState {
             .min(panel.width_range.end);
         let clamped = new_width.max(panel.width_range.start).min(max_width);
         panel.opened_proportion = clamped / container_width;
+        self.left_content_px = clamped;
     }
+
+    fn finish_resize(&mut self, cx: &mut Context<Self>) {
+        if !self.resizing {
+            return;
+        }
+        self.resizing = false;
+        cx.emit(PanelGroupResized {
+            left_proportion: self
+                .left_panel
+                .as_ref()
+                .map(|panel| panel.opened_proportion),
+        });
+        cx.notify();
+    }
+}
+
+pub(crate) fn left_resize_handle(
+    state: &Entity<PanelGroupState>,
+    id: impl Into<ElementId>,
+    offset: Pixels,
+) -> impl IntoElement {
+    let state = state.downgrade();
+    resize_handle(id, gpui::Axis::Horizontal)
+        .left(offset)
+        .on_drag((), move |_, _, _, cx| {
+            cx.stop_propagation();
+            let _ = state.update(cx, |state, cx| {
+                state.resizing = true;
+                cx.notify();
+            });
+            cx.new(|_| DragHandle)
+        })
 }
 
 type ContentOverlay = Box<dyn FnOnce(Pixels, Pixels, &mut Window, &mut App) -> AnyElement>;
@@ -208,7 +256,7 @@ impl Styled for PanelGroup {
 impl RenderOnce for PanelGroup {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = self.state.clone();
-        let weak_state = state.downgrade();
+
         let left_initial_proportion = self.left.as_ref().map(|panel| panel.initial_proportion);
 
         let group_state = state.read(cx).clone();
@@ -229,6 +277,8 @@ impl RenderOnce for PanelGroup {
                 });
             if group_state.resizing || snap_layout {
                 transition.snap(left_target, cx);
+            } else if let Some(seed) = group_state.left_animation_seed {
+                transition.snap(seed.as_f32(), cx);
             }
             transition.set(left_target, cx);
             px(transition.animate(window, cx))
@@ -240,6 +290,7 @@ impl RenderOnce for PanelGroup {
             let changed = s.animated_left_px != left_px;
             s.animated_left_px = left_px;
             s.left_content_px = left_open_px;
+            s.left_animation_seed = None;
             s.prev_container_width = container_width;
             changed
         });
@@ -249,23 +300,8 @@ impl RenderOnce for PanelGroup {
         }
         let left_visible = left_px > px(0.);
 
-        let left_handle = if self.left.is_some() && left_visible {
-            let weak = weak_state.clone();
-            Some(
-                resize_handle("left-panel-handle", gpui::Axis::Horizontal)
-                    .left(left_px)
-                    .on_drag((), move |_, _, _, cx| {
-                        cx.stop_propagation();
-                        weak.update(cx, |s, _| {
-                            s.resizing = true;
-                        })
-                        .ok();
-                        cx.new(|_| DragHandle)
-                    }),
-            )
-        } else {
-            None
-        };
+        let left_handle = (self.left.is_some() && left_visible)
+            .then(|| left_resize_handle(&state, "left-panel-handle", left_px));
 
         let PanelGroup {
             style,
@@ -399,13 +435,12 @@ impl Element for PanelGroupDragElement {
         _: &mut (),
         _: &mut (),
         window: &mut Window,
-        cx: &mut App,
+        _: &mut App,
     ) {
         window.on_mouse_event({
             let state = self.state.clone();
-            let resizing = state.read(cx).resizing;
             move |e: &MouseMoveEvent, phase, _window, cx| {
-                if !phase.bubble() || !resizing {
+                if !phase.capture() || !state.read(cx).resizing {
                     return;
                 }
                 state.update(cx, |s, cx| {
@@ -417,24 +452,75 @@ impl Element for PanelGroupDragElement {
 
         window.on_mouse_event({
             let state = self.state.clone();
-            let resizing = state.read(cx).resizing;
-            move |_: &MouseUpEvent, phase, _window, cx| {
-                if !resizing {
-                    return;
-                }
-                if phase.bubble() {
-                    state.update(cx, |s, cx| {
-                        s.resizing = false;
-                        cx.emit(PanelGroupResized {
-                            left_proportion: s
-                                .left_panel
-                                .as_ref()
-                                .map(|panel| panel.opened_proportion),
-                        });
-                        cx.notify();
-                    });
+            move |event: &MouseUpEvent, phase, _window, cx| {
+                if phase.capture() && event.button == MouseButton::Left {
+                    state.update(cx, |state, cx| state.finish_resize(cx));
                 }
             }
         });
+        window.on_mouse_event({
+            let state = self.state.clone();
+            move |_: &MouseCancelEvent, phase, _window, cx| {
+                if phase.capture() {
+                    state.update(cx, |state, cx| state.finish_resize(cx));
+                }
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{point, size};
+
+    fn hidden_sidebar() -> PanelGroupState {
+        let mut state = PanelGroupState {
+            left_panel: Some(SidePanelState {
+                width_range: px(180.)..px(320.),
+                opened_proportion: 0.25,
+                open: false,
+            }),
+            ..Default::default()
+        };
+        state.prepare_layout(Bounds::new(
+            point(px(20.), px(0.)),
+            size(px(1000.), px(800.)),
+        ));
+        state
+    }
+
+    #[test]
+    fn resizing_hidden_sidebar_updates_drawer_and_pinned_width() {
+        let mut state = hidden_sidebar();
+        state.resize_left(px(320.));
+        assert_eq!(state.left_open_width(), px(300.));
+        let panel = state.left_panel.as_ref().unwrap();
+        assert!(!panel.open);
+        assert_eq!(panel.opened_proportion, 0.3);
+
+        state.toggle_left();
+        assert_eq!(state.left_open_width(), px(300.));
+        state.resize_left(px(240.));
+        state.toggle_left();
+        assert_eq!(state.left_open_width(), px(220.));
+    }
+
+    #[test]
+    fn drawer_resize_respects_shared_sidebar_and_workspace_limits() {
+        let mut state = hidden_sidebar();
+        state.resize_left(px(0.));
+        assert_eq!(state.left_open_width(), px(180.));
+        state.resize_left(px(900.));
+        assert_eq!(state.left_open_width(), px(320.));
+
+        state.prepare_layout(Bounds::new(
+            point(px(20.), px(0.)),
+            size(px(700.), px(800.)),
+        ));
+        state.resize_left(px(900.));
+        assert_eq!(state.left_open_width(), px(200.));
+        state.toggle_left();
+        assert_eq!(state.left_open_width(), px(200.));
     }
 }

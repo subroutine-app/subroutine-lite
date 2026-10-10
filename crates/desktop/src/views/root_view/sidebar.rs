@@ -1,9 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use super::{
-    FocusNext, FocusPrevious, RootView, StartItemCreator, TOP_EDGE_INSET,
-    navigation::WorkspaceRoute,
-    panels::{WORKSPACE_PANEL_BORDER_WIDTH, WORKSPACE_PANEL_GAP},
+    FocusNext, FocusPrevious, RootView, StartItemCreator, navigation::WorkspaceRoute,
+    navigation_drawer::NavigationDrawer,
 };
 use crate::{
     AppIcon,
@@ -110,18 +109,17 @@ fn main_navigation_icon(view: SelectedMainView) -> AppIcon {
 }
 
 impl RootView {
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_sidebar(
+        &self,
+        top_inset: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let active = self.active_navigation_id(cx);
         let navigation = SidebarNavigation {
             handles: Rc::default(),
             tab_stop: self.navigation_open(cx),
         };
         let account_button = navigation.button(self.render_account_button(cx));
-        let top_inset = if cfg!(target_os = "macos") {
-            TOP_EDGE_INSET - WORKSPACE_PANEL_GAP - WORKSPACE_PANEL_BORDER_WIDTH
-        } else {
-            TOP_EDGE_INSET
-        };
 
         let search = Button::new("navigation.search")
             .map(|button| navigation.button(button))
@@ -165,7 +163,9 @@ impl RootView {
 
         div()
             .track_focus(&self.navigation_focus)
-            .map(|sidebar| navigation.bind(sidebar, self.navigation_drawer_open))
+            .map(|sidebar| {
+                navigation.bind(sidebar, self.navigation_drawer == NavigationDrawer::Compact)
+            })
             .column()
             .size_full()
             .child(div().h(top_inset).w_full().flex_none())
@@ -268,6 +268,16 @@ impl RootView {
                             )
                             .child(
                                 self.render_route_button(
+                                    "unscheduled",
+                                    "Unscheduled",
+                                    AppIcon::CalendarClock,
+                                    active,
+                                    cx,
+                                )
+                                .map(|button| navigation.button(button)),
+                            )
+                            .child(
+                                self.render_route_button(
                                     "routines",
                                     "Routines",
                                     AppIcon::Repeat,
@@ -310,9 +320,10 @@ impl RootView {
             .icon(main_navigation_icon(view))
             .label(view.name())
             .selected(active == id)
-            .when(!self.navigation_drawer_open, |button| {
-                button.current(active == id)
-            })
+            .when(
+                self.navigation_drawer != NavigationDrawer::Compact,
+                |button| button.current(active == id),
+            )
             .when(active == id, |button| {
                 button.font_weight(gpui::FontWeight::SEMIBOLD)
             })
@@ -388,7 +399,8 @@ impl RootView {
             .label(label)
             .selected(active == id)
             .when(
-                id == WorkspaceRoute::Home.id() && !self.navigation_drawer_open,
+                id == WorkspaceRoute::Home.id()
+                    && self.navigation_drawer != NavigationDrawer::Compact,
                 |button| button.current(active == id),
             )
             .when(active == id, |button| {

@@ -1,10 +1,10 @@
-use gpui::{App, Context, FocusHandle, Window};
+use gpui::{App, Context, Window};
 use subroutine_core::AnyItem;
 use uuid::Uuid;
 
 use crate::{
     item_manager::ItemManager,
-    selection::{FocusHandoff, SelectionManager, SelectionOrder, SelectionScope},
+    selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
 };
 
 use super::{FocusMode, FocusView, temporal::EventMoment};
@@ -35,16 +35,34 @@ impl FocusView {
         }
     }
 
-    pub(super) fn completion_target(&self, index: usize, cx: &App) -> Option<(Uuid, FocusHandle)> {
-        self.adjacent_index(index, 1, cx)
-            .or_else(|| self.adjacent_index(index, -1, cx))
-            .and_then(|index| self.items.get(index))
-            .and_then(|item| {
+    pub(super) fn apply_completion_focus(
+        &mut self,
+        order: &SelectionOrder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request) =
+            SelectionManager::take_completion_focus(SelectionScope::Focus, window, cx)
+        else {
+            return;
+        };
+        self.restore_focus = false;
+        let target = request
+            .target
+            .filter(|id| order.ids().contains(id))
+            .and_then(|id| {
                 self.item_focus_handles
-                    .get(&item.id())
-                    .cloned()
-                    .map(|handle| (item.id(), handle))
-            })
+                    .get(&id)
+                    .map(|handle| (id, handle.clone()))
+            });
+        if let Some((id, handle)) = target {
+            self.active_id = Some(id);
+            self.reset_wheel();
+            self.carousel_overscroll.reset();
+            focus_item(request.scope, id, &handle, window, cx);
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
     }
 
     pub(super) fn activate(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
@@ -209,13 +227,8 @@ impl FocusView {
         SelectionManager::global(cx).update(cx, |selection, cx| {
             selection.select_only(SelectionScope::Focus, action.id, cx);
         });
-        let handoff = FocusHandoff::new(
-            Some(SelectionScope::Focus),
-            action.id,
-            self.completion_target(index, cx),
-        );
         manager.update(cx, |manager, cx| {
-            manager.begin_complete_action(action, Some(handoff), window, cx);
+            manager.begin_complete_action(action, Some(SelectionScope::Focus), window, cx);
         });
     }
 }

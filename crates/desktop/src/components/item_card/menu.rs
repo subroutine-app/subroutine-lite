@@ -78,7 +78,12 @@ fn action_context_menu(
         menu.item_with_keybinding("Complete", CompleteSelected, move |window, cx| {
             ItemManager::global(cx).update(cx, |manager, cx| {
                 if !manager.is_completing(action_id) {
-                    manager.begin_complete_action(completion_action.clone(), None, window, cx);
+                    manager.begin_complete_action(
+                        completion_action.clone(),
+                        selection_scope,
+                        window,
+                        cx,
+                    );
                 }
             });
         })
