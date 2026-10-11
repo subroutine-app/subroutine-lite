@@ -1112,6 +1112,35 @@ impl Render for SettingsView {
                     .select(self.theme_select.clone()),
             )
             .row(
+                SettingsRow::new(
+                    "settings.appearance.frosted-background",
+                    "Frosted background",
+                )
+                .description(if cfg!(any(target_os = "macos", target_os = "windows")) {
+                    "Blur the content behind the window."
+                } else {
+                    "Available on macOS and Windows."
+                })
+                .info(if cfg!(target_os = "windows") {
+                    "Requires Windows 10 version 1809 or newer and Transparency effects. High Contrast, Energy Saver, remote sessions, and unsupported systems use a solid background."
+                } else {
+                    "System and theme Reduce Transparency settings take precedence."
+                })
+                .search_terms(["blur", "glass", "acrylic", "transparency"])
+                .switch(
+                    Switch::new("settings-frosted-background")
+                        .named("Frosted background")
+                        .on(settings.frosted_background)
+                        .disabled(!cfg!(any(target_os = "macos", target_os = "windows")))
+                        .large()
+                        .on_change(|enabled, _window, cx| {
+                            Settings::update(cx, |settings| {
+                                settings.frosted_background = enabled;
+                            });
+                        }),
+                ),
+            )
+            .row(
                 SettingsRow::new("settings.appearance.reduce-motion", "Reduce motion").switch(
                     Switch::new("settings-reduce-motion")
                         .named("Reduce motion")

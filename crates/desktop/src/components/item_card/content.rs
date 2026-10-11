@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, Bounds, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Point, Size, Styled, Window, div, prelude::FluentBuilder, px, size,
+    AnyElement, App, Bounds, FocusHandle, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Pixels, Point, Size, Styled, Window, div, prelude::FluentBuilder, px, size,
 };
 use gpui_kit::foundation::{Sizable, StyledExt as _};
 use gpui_kit_theme::ActiveTheme;
@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    CardMeta, ItemCard, ItemCardTitleScale,
+    CardMeta, CardPresentation, ItemCard, ItemCardTitleScale, PREVIEW_HOVER_GROUP,
     availability::event_availability_indicator,
     item_icon,
     menu::{RESTORE_ACTION_LABEL, card_context_menu, restore_action_label},
@@ -112,7 +112,9 @@ impl ItemCard {
                 .icon(AppIcon::Ellipsis)
                 .tooltip("More actions")
                 .text_color(cx.theme().colors.text_muted)
-                .block_mouse_except_scroll()
+                .when(self.presentation != CardPresentation::Preview, |button| {
+                    button.block_mouse_except_scroll()
+                })
                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                 .on_click(move |event, window, cx| {
                     cx.stop_propagation();
@@ -135,12 +137,16 @@ impl ItemCard {
     fn render_details_toggle(
         &self,
         wide: bool,
+        notes_focus: Option<&FocusHandle>,
         window: &Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
         let details = self.details.as_ref()?.clone();
         item_content(&self.item)?;
         let expanded = details.expanded();
+        let row_focus = self.focus_handle.clone();
+        let notes_focus = notes_focus.cloned();
+        let preview = self.presentation == CardPresentation::Preview;
         let owner = window.current_view();
         Some(
             Button::new((self.element_id.clone(), "details-disclosure"))
@@ -162,18 +168,52 @@ impl ItemCard {
                     "Expand details"
                 })
                 .text_color(cx.theme().colors.text_muted)
-                .block_mouse_except_scroll()
+                .when_else(
+                    preview,
+                    |button| {
+                        button.on_any_mouse_down(|event, _, cx| {
+                            if event.button != MouseButton::Left {
+                                cx.stop_propagation();
+                            }
+                        })
+                    },
+                    |button| button.block_mouse_except_scroll(),
+                )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| {
                     SelectionManager::claim_press(cx);
                     cx.stop_propagation();
                 })
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, window, cx| {
                     cx.stop_propagation();
-                    details.toggle();
+                    details.toggle(&row_focus, notes_focus.as_ref(), window, cx);
                     cx.notify(owner);
                 })
                 .into_any_element(),
         )
+    }
+
+    fn preview_controls(
+        &self,
+        controls: impl IntoElement,
+        window: &Window,
+        cx: &App,
+    ) -> AnyElement {
+        let controls = controls.into_any_element();
+        if self.presentation != CardPresentation::Preview {
+            return controls;
+        }
+
+        // Visibility::Hidden removes tab stops; keep them mounted and reveal on descendant focus.
+        div()
+            .flex_none()
+            .opacity(if self.focus_handle.contains_focused(window, cx) {
+                1.0
+            } else {
+                0.0
+            })
+            .group_hover(PREVIEW_HOVER_GROUP, |style| style.opacity(1.0))
+            .child(controls)
+            .into_any_element()
     }
 
     pub(super) fn render_content(
@@ -181,9 +221,16 @@ impl ItemCard {
         colors: ButtonColors,
         geometry: CardContentGeometry,
         menu_enabled: bool,
+        notes_focus: Option<&FocusHandle>,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
+        let preview = self.presentation == CardPresentation::Preview;
+        let collapsed_preview = preview
+            && !self
+                .details
+                .as_ref()
+                .is_some_and(|details| details.is_open());
         let narrow_details = self.details.is_some()
             && item_content(&self.item).is_some()
             && geometry.size.width > px(0.0)
@@ -206,13 +253,14 @@ impl ItemCard {
         let more_action = self.render_more_action(menu_enabled && !narrow_details, cx);
         let details_toggle = self.render_details_toggle(
             !self.compact && geometry.size.width >= px(360.0),
+            notes_focus,
             window,
             cx,
         );
 
         if self.compact {
             let completion = draft_picker.or_else(|| {
-                (!narrow_details)
+                (!narrow_details || preview)
                     .then(|| self.completion_checkbox(cx))
                     .flatten()
             });
@@ -248,15 +296,17 @@ impl ItemCard {
                 }))
                 .child(div().min_w_0().flex_1().truncate().child(title))
                 .when(!narrow_details, |row| {
-                    row.children(event_availability_indicator(
-                        &self.item,
-                        &self.element_id,
-                        cx,
-                    ))
+                    let availability =
+                        event_availability_indicator(&self.item, &self.element_id, cx);
+                    row.children(
+                        availability.map(|control| self.preview_controls(control, window, cx)),
+                    )
                 })
-                .children(details_toggle)
+                .children(details_toggle.map(|control| self.preview_controls(control, window, cx)))
                 .when(self.projected_availability_store.is_some(), |row| {
-                    row.children(more_action)
+                    row.children(
+                        more_action.map(|control| self.preview_controls(control, window, cx)),
+                    )
                 });
             return div().relative().size_full().child(row).into_any_element();
         }
@@ -292,7 +342,7 @@ impl ItemCard {
                                 .label(RESTORE_ACTION_LABEL)
                                 .tooltip("Restore this action to active work")
                                 .text_color(cx.theme().colors.text_muted)
-                                .block_mouse_except_scroll()
+                                .when(!preview, |button| button.block_mouse_except_scroll())
                                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, window, cx| {
                                     cx.stop_propagation();
@@ -319,7 +369,7 @@ impl ItemCard {
                                 .icon(AppIcon::Play)
                                 .tooltip("Add to the queue")
                                 .text_color(cx.theme().colors.text_muted)
-                                .block_mouse_except_scroll()
+                                .when(!preview, |button| button.block_mouse_except_scroll())
                                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, _window, cx| {
                                     cx.stop_propagation();
@@ -349,7 +399,7 @@ impl ItemCard {
                                 } else {
                                     cx.theme().colors.text_muted
                                 })
-                                .block_mouse_except_scroll()
+                                .when(!preview, |button| button.block_mouse_except_scroll())
                                 .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, _window, cx| {
                                     cx.stop_propagation();
@@ -375,7 +425,7 @@ impl ItemCard {
                 .collect();
 
         let mut meta: Vec<CardMeta> = Vec::new();
-        if let Some(rule) = self.item.recurrence() {
+        if !collapsed_preview && let Some(rule) = self.item.recurrence() {
             meta.push(CardMeta::new(rule.describe()).icon(AppIcon::Repeat));
         }
         meta.extend(self.meta.iter().cloned());
@@ -400,7 +450,7 @@ impl ItemCard {
                 }))
         });
 
-        let content_source = if self.title_only {
+        let content_source = if self.title_only || collapsed_preview {
             None
         } else {
             item_content(&self.item)
@@ -429,18 +479,32 @@ impl ItemCard {
                 window,
                 cx,
             )
+            .map(|notes| match notes_focus {
+                Some(focus) => div()
+                    .id((self.element_id.clone(), "notes-focus-scope"))
+                    .w_full()
+                    .flex_none()
+                    .track_focus(focus)
+                    .child(notes)
+                    .into_any_element(),
+                None => notes,
+            })
         });
 
         trailing.extend(details_toggle);
         trailing.extend(more_action);
         let trailing_controls = (!trailing.is_empty()).then(|| {
-            div().row().flex_none().gap(px(2.)).children(
-                trailing
-                    .into_iter()
-                    .map(|control| div().flex_none().child(control)),
+            self.preview_controls(
+                div().row().flex_none().gap(px(2.)).children(
+                    trailing
+                        .into_iter()
+                        .map(|control| div().flex_none().child(control)),
+                ),
+                window,
+                cx,
             )
         });
-        let top_aligned = self.list_position.is_none() && self.border;
+        let top_aligned = !preview && self.list_position.is_none() && self.border;
         let header = div()
             .row()
             .w_full()
@@ -455,7 +519,7 @@ impl ItemCard {
             } else {
                 self.title_scale.header_gap()
             })
-            .when(!narrow_details || has_draft_picker, |header| {
+            .when(!narrow_details || has_draft_picker || preview, |header| {
                 header.child(
                     div()
                         .row()

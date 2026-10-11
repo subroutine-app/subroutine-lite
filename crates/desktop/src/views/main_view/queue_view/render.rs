@@ -623,7 +623,6 @@ impl Render for QueueView {
             .size_full()
             .column()
             .overflow_y_scroll()
-            .bg(cx.theme().colors.canvas)
             .on_drag_move(cx.listener(
                 |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
                     let dragging = drop::has_actions(&event.drag(cx).data, cx);

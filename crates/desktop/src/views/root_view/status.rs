@@ -169,7 +169,6 @@ impl RootView {
             .id(id)
             .absolute()
             .inset_0()
-            .bg(cx.theme().colors.canvas)
             .text_color(cx.theme().colors.text)
             .child(
                 div()

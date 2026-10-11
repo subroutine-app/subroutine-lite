@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use gpui::{App, Pixels, Window, px};
+use gpui::{App, FocusHandle, Pixels, Window, px};
 use gpui_kit::motion::Transition;
 use uuid::Uuid;
 
@@ -122,7 +122,16 @@ impl ItemCardDetails {
         self.0.borrow().progress()
     }
 
-    pub(super) fn toggle(&self) {
+    pub(super) fn toggle(
+        &self,
+        row_focus: &FocusHandle,
+        notes_focus: Option<&FocusHandle>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.expanded() && notes_focus.is_some_and(|focus| focus.contains_focused(window, cx)) {
+            row_focus.focus(window, cx);
+        }
         let mut state = self.0.borrow_mut();
         state.expanded = !state.expanded;
         let target = if state.expanded { 1.0 } else { 0.0 };

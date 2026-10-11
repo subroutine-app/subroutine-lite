@@ -3,32 +3,29 @@ use std::time::Duration;
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use gpui::{
     App, Context, Div, ElementId, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Window, div, prelude::FluentBuilder as _, px,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_kit::foundation::{Sizable as _, StyledExt as _};
 use gpui_kit_semantics::{NodeSpec, Role, Semantic as _};
 use gpui_kit_theme::ActiveTheme as _;
-use subroutine_core::{Action, AnyItem, Event, ItemType, SchedulePoint};
+use subroutine_core::{AnyItem, SchedulePoint};
 
 use crate::{
     AppIcon,
     app::ToggleSearch,
+    branding,
     components::{Button, ButtonVariants as _, ItemCard, ItemCardStates},
-    icons::Icon,
     item_manager::ItemManager,
     selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
     settings::{GlobalSettings, Settings},
     stores::{AppDatabaseStore, DataChanged},
 };
 
-use super::main_view::{
-    EventMoment, TemporalSnapshot, event_notice_card, queue_system::QueueSnapshot,
-};
+use super::main_view::{EventMoment, TemporalSnapshot, queue_system::QueueSnapshot};
 use super::{StartItemCreator, TOP_EDGE_INSET};
 
-const HOME_CARD_HEIGHT: gpui::Pixels = px(112.);
-const HOME_CARD_PREFERRED_WIDTH: gpui::Pixels = px(300.);
+const HOME_PREVIEW_HEIGHT: gpui::Pixels = px(64.);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HomeViewEvent {
@@ -80,52 +77,28 @@ pub struct HomeView {
     workspace_generation: u64,
     action: Option<AnyItem>,
     event: Option<EventMoment>,
-    draft: Option<AnyItem>,
 }
 
 impl HomeView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = AppDatabaseStore::global(cx);
-        cx.observe_in(&store, window, |view, store, window, cx| {
-            view.sync_workspace(store.read(cx).workspace_generation(), window, cx);
+        cx.observe(&store, |view, store, cx| {
+            view.sync_workspace(store.read(cx).workspace_generation(), cx);
         })
         .detach();
-        cx.subscribe_in(
-            &store,
-            window,
-            |view, store, _: &DataChanged, window, cx| {
-                let settings = Settings::global(cx);
-                view.refresh(
-                    HomeData::read(store.read(cx), &settings, Utc::now()),
-                    window,
-                    cx,
-                );
-            },
-        )
-        .detach();
-
-        cx.observe(&ItemManager::global(cx), |view, manager, cx| {
-            if let Some(draft) = view.draft.as_ref() {
-                match manager.read(cx).draft_item(draft.id()) {
-                    Some(item) if item.item_type() != draft.item_type() => {
-                        view.draft = Some(item.clone());
-                    }
-                    None => view.draft = None,
-                    _ => {}
-                }
-            }
-            cx.notify();
+        cx.subscribe(&store, |view, store, _: &DataChanged, cx| {
+            let settings = Settings::global(cx);
+            view.refresh(HomeData::read(store.read(cx), &settings, Utc::now()), cx);
         })
         .detach();
 
-        cx.observe_global_in::<GlobalSettings>(window, |view, window, cx| {
+        cx.observe(&ItemManager::global(cx), |_, _, cx| cx.notify())
+            .detach();
+
+        cx.observe_global::<GlobalSettings>(|view, cx| {
             let store = AppDatabaseStore::global(cx);
             let settings = Settings::global(cx);
-            view.refresh(
-                HomeData::read(store.read(cx), &settings, Utc::now()),
-                window,
-                cx,
-            );
+            view.refresh(HomeData::read(store.read(cx), &settings, Utc::now()), cx);
         })
         .detach();
 
@@ -133,14 +106,10 @@ impl HomeView {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 if view
-                    .update_in(cx, |view, window, cx| {
+                    .update_in(cx, |view, _, cx| {
                         let store = AppDatabaseStore::global(cx);
                         let settings = Settings::global(cx);
-                        view.refresh(
-                            HomeData::read(store.read(cx), &settings, Utc::now()),
-                            window,
-                            cx,
-                        );
+                        view.refresh(HomeData::read(store.read(cx), &settings, Utc::now()), cx);
                     })
                     .is_err()
                 {
@@ -159,28 +128,20 @@ impl HomeView {
             workspace_generation: data.workspace_generation,
             action: data.action,
             event: data.event,
-            draft: None,
         }
     }
 
-    fn sync_workspace(&mut self, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
+    fn sync_workspace(&mut self, generation: u64, cx: &mut Context<Self>) {
         if self.workspace_generation == generation {
             return;
-        }
-        if let Some(draft) = self.draft.take() {
-            ItemManager::global(cx).update(cx, |manager, cx| {
-                if manager.is_draft(draft.id()) {
-                    manager.discard_edit(window, cx);
-                }
-            });
         }
         self.workspace_generation = generation;
         self.details = ItemCardStates::default();
         cx.notify();
     }
 
-    fn refresh(&mut self, data: HomeData, window: &mut Window, cx: &mut Context<Self>) {
-        self.sync_workspace(data.workspace_generation, window, cx);
+    fn refresh(&mut self, data: HomeData, cx: &mut Context<Self>) {
+        self.sync_workspace(data.workspace_generation, cx);
         self.action = data.action;
         self.event = data.event;
         self.retain_details();
@@ -192,70 +153,143 @@ impl HomeView {
             self.action
                 .iter()
                 .map(AnyItem::id)
-                .chain(self.event.iter().map(EventMoment::notice_id))
-                .chain(self.draft.iter().map(AnyItem::id)),
+                .chain(self.event.iter().map(EventMoment::notice_id)),
         );
     }
 
-    fn item_card(
+    fn item_preview(
+        &self,
         element_id: impl Into<ElementId>,
-        item: AnyItem,
-        meta: String,
-        order: SelectionOrder,
+        item: &AnyItem,
+        meta: Option<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ItemCard {
-        ItemCard::new_with_id(element_id, &item, Some(meta.into()), window, cx)
+        ItemCard::new_with_id(element_id, item, meta, window, cx)
+            .preview()
             .schedule_navigation()
-            .selectable(order)
             .large_title(true)
             .w_full()
             .flex_none()
-            .border(false)
             .draggable(true, None)
             .block_mouse_except_scroll()
     }
 
-    fn event_notice(
+    fn action_preview(
         &self,
-        moment: &EventMoment,
+        item: &AnyItem,
+        order: SelectionOrder,
+        now: DateTime<Local>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> ItemCard {
-        let view = cx.entity().downgrade();
-        event_notice_card(
-            ("home-event-notice", moment.notice_id().as_u64_pair().1),
-            moment,
-            window,
-            cx,
-        )
-        .large_title(true)
-        .w_full()
-        .flex_none()
-        .border(false)
-        .draggable(true, None)
-        .on_click(move |_, _, cx| {
-            view.update(cx, |_view, cx| {
-                cx.emit(HomeViewEvent::OpenFocusEvents);
-            })
-            .ok();
-        })
+    ) -> Div {
+        let meta = item.start().map(|start| match start {
+            SchedulePoint::Date(date) => {
+                format!("{} · Any time", relative_date(date, now.date_naive()))
+            }
+            SchedulePoint::DateTime(start) => {
+                let start = start.with_timezone(&Local);
+                format!(
+                    "{} · {}",
+                    relative_date(start.date_naive(), now.date_naive()),
+                    format_clock_time(start),
+                )
+            }
+        });
+        let card = self
+            .item_preview(
+                ("home-action", item.id_u64()),
+                item,
+                meta.map(Into::into),
+                window,
+                cx,
+            )
+            .selectable(order)
+            .with_focus_handle(self.action_focus.clone())
+            .details(self.details.get(item.id()))
+            .h(self.details.height(item.id(), HOME_PREVIEW_HEIGHT));
+
+        div()
+            .column()
+            .gap_1()
+            .child(home_caption("NEXT IN QUEUE", cx).px(px(10.)))
+            .child(card)
     }
 
-    fn begin_draft(&mut self, item: AnyItem, window: &mut Window, cx: &mut Context<Self>) {
-        let manager = ItemManager::global(cx);
-        manager.update(cx, |manager, cx| {
-            manager.commit_open_edit(window, cx);
-        });
-        if manager.read(cx).is_editing() {
-            return;
-        }
-        self.focus_handle.focus(window, cx);
-        manager.update(cx, |manager, cx| {
-            manager.begin_edit(&item, true, window, cx);
-        });
-        self.draft = Some(item);
-        cx.notify();
+    fn event_preview(
+        &self,
+        moment: &EventMoment,
+        order: SelectionOrder,
+        now: DateTime<Local>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let item = AnyItem::Event(moment.card_event().clone());
+        let card = self
+            .item_preview(
+                ("home-event", moment.notice_id().as_u64_pair().1),
+                &item,
+                None,
+                window,
+                cx,
+            )
+            .details(self.details.get(moment.notice_id()))
+            .h(self.details.height(moment.notice_id(), HOME_PREVIEW_HEIGHT));
+        let (label, timing, card) = match moment {
+            EventMoment::InProgress { remaining, .. } => {
+                let view = cx.entity().downgrade();
+                let card = card.editable(false).on_click(move |_, _, cx| {
+                    view.update(cx, |_, cx| cx.emit(HomeViewEvent::OpenFocusEvents))
+                        .ok();
+                });
+                (
+                    "NOW".to_owned(),
+                    format!("Ends in {}", preview_duration(*remaining)),
+                    card,
+                )
+            }
+            EventMoment::Upcoming { until, .. } => {
+                let start = moment.event().start.with_timezone(&Local);
+                let time = format_clock_time(start);
+                let label = if start.date_naive() == now.date_naive() {
+                    time
+                } else {
+                    format!(
+                        "{} · {time}",
+                        relative_date(start.date_naive(), now.date_naive())
+                    )
+                };
+                (
+                    label,
+                    format!("In {}", preview_duration(*until)),
+                    card.selectable(order),
+                )
+            }
+        };
+        let paint = moment.paint(cx.theme());
+        let current = matches!(moment, EventMoment::InProgress { .. });
+
+        div()
+            .column()
+            .gap_1()
+            .child(
+                div()
+                    .row()
+                    .flex_wrap()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px(px(10.))
+                    .child(
+                        home_caption(label, cx)
+                            .row()
+                            .items_center()
+                            .gap_2()
+                            .when(current, |label| label.child(paint.marker(cx.theme()))),
+                    )
+                    .child(home_caption(timing, cx)),
+            )
+            .child(card)
     }
 }
 
@@ -271,47 +305,21 @@ impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.retain_details();
         self.details.animate(window, cx);
-        let action = self
-            .draft
-            .as_ref()
-            .filter(|item| item.item_type() == ItemType::Action)
-            .or(self.action.as_ref())
-            .cloned();
-        let event_draft = self
-            .draft
-            .as_ref()
-            .filter(|item| item.item_type() == ItemType::Event)
-            .cloned();
-        let action_height = action.as_ref().map_or(HOME_CARD_HEIGHT, |item| {
-            self.details.height(item.id(), HOME_CARD_HEIGHT)
-        });
-        let event_height = event_draft
-            .as_ref()
-            .map(AnyItem::id)
-            .or_else(|| self.event.as_ref().map(EventMoment::notice_id))
-            .map_or(HOME_CARD_HEIGHT, |id| {
-                self.details.height(id, HOME_CARD_HEIGHT)
-            });
         let now = Local::now();
-        let root = div()
-            .id("home-view")
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .overflow_y_scroll()
-            .semantic_in(cx, NodeSpec::new("home-view", Role::Region).text("Home"));
-
-        let order = SelectionOrder::new(
-            SelectionScope::Home,
-            action
-                .iter()
-                .map(AnyItem::id)
-                .chain(self.event.iter().map(|moment| moment.card_event().id)),
-        );
+        let event_first = matches!(self.event, Some(EventMoment::InProgress { .. }));
+        let action_id = self.action.as_ref().map(AnyItem::id);
+        let event_id = self.event.as_ref().map(|moment| moment.card_event().id);
+        let ids = if event_first {
+            [event_id, action_id]
+        } else {
+            [action_id, event_id]
+        };
+        let order = SelectionOrder::new(SelectionScope::Home, ids.into_iter().flatten());
         SelectionManager::report_order(&order, cx);
         if let Some(request) =
             SelectionManager::take_completion_focus(SelectionScope::Home, window, cx)
         {
-            let replacement = action.as_ref().filter(|item| {
+            let replacement = self.action.as_ref().filter(|item| {
                 let manager = ItemManager::global(cx);
                 let manager = manager.read(cx);
                 matches!(item, AnyItem::Action(action) if !action.is_completed())
@@ -325,251 +333,127 @@ impl Render for HomeView {
                 self.focus_handle.focus(window, cx);
             }
         }
-        let action_card = action.map(|item| {
-            let meta = format_item_meta(&item, now);
-            let details = self.details.get(item.id());
-            Self::item_card(
-                ("home-action", item.id_u64()),
-                item,
-                meta,
-                order.clone(),
-                window,
-                cx,
-            )
-            .with_focus_handle(self.action_focus.clone())
-            .details(details)
-            .h(action_height)
-            .into_any_element()
-        });
 
-        let event_badge = self
+        let action = self
+            .action
+            .as_ref()
+            .map(|item| self.action_preview(item, order.clone(), now, window, cx));
+        let event = self
             .event
             .as_ref()
-            .filter(|_| event_draft.is_none())
-            .and_then(|moment| {
-                event_context_label(moment)
-                    .map(|label| moment.paint(cx.theme()).badge(label, cx.theme()))
-            });
-        let event_card = if let Some(item) = event_draft {
-            let meta = format_item_meta(&item, now);
-            Some(
-                Self::item_card(
-                    ("home-event", item.id_u64()),
-                    item,
-                    meta,
-                    order.clone(),
-                    window,
-                    cx,
-                )
-                .h(event_height)
-                .into_any_element(),
-            )
+            .map(|moment| self.event_preview(moment, order, now, window, cx));
+        let previews = if event_first {
+            [event, action]
         } else {
-            self.event.clone().map(|moment| {
-                let card = match &moment {
-                    EventMoment::InProgress { .. } => self.event_notice(&moment, window, cx),
-                    EventMoment::Upcoming { .. } => {
-                        let item = AnyItem::Event(moment.card_event().clone());
-                        let occurrence = AnyItem::Event(moment.event().clone());
-                        let meta = format_item_meta(&occurrence, now);
-                        Self::item_card(
-                            ("home-event", moment.notice_id().as_u64_pair().1),
-                            item,
-                            meta,
-                            order.clone(),
-                            window,
-                            cx,
-                        )
-                    }
-                };
-                card.details(self.details.get(moment.notice_id()))
-                    .h(event_height)
-                    .into_any_element()
-            })
+            [action, event]
         };
+        let previews = previews
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, preview)| {
+                preview.when(index > 0, |preview| {
+                    preview
+                        .pt_5()
+                        .border_t_1()
+                        .border_color(cx.theme().colors.hairline.opacity(0.5))
+                })
+            })
+            .collect::<Vec<_>>();
 
-        let cards = div()
-            .row()
-            .flex_wrap()
-            .w_full()
-            .items_start()
-            .gap_6()
+        div()
+            .id("home-view")
+            .track_focus(&self.focus_handle)
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .semantic_in(cx, NodeSpec::new("home-view", Role::Region).text("Home"))
             .child(
                 div()
-                    .column()
-                    .flex_1()
-                    .flex_basis(HOME_CARD_PREFERRED_WIDTH)
-                    .min_w_0()
-                    .gap_3()
+                    .id("home-scroll")
+                    .relative()
+                    .size_full()
+                    .overflow_y_scroll()
                     .child(
                         div()
-                            .h_6()
-                            .flex_none()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(cx.theme().colors.text_muted)
-                            .row()
+                            .flex()
+                            .min_h_full()
+                            .w_full()
                             .items_center()
-                            .gap_2()
-                            .child(div().flex_none().child("Next action"))
-                            .child(home_section_rule(cx))
-                            .when(action_card.is_none(), |header| {
-                                header.child(home_section_add_button(
-                                    "home-new-action",
-                                    "New action",
-                                    cx.listener(|view, _, window, cx| {
-                                        view.begin_draft(
-                                            AnyItem::Action(Action::new("").with_queued(true)),
-                                            window,
-                                            cx,
-                                        );
+                            .justify_center()
+                            .px_8()
+                            .pt(px(112.))
+                            .pb(px(176.))
+                            .child(
+                                div()
+                                    .column()
+                                    .w_full()
+                                    .min_w_0()
+                                    .max_w(px(560.))
+                                    .gap_10()
+                                    .child(home_clock(now, cx).px(px(10.)))
+                                    .when(!previews.is_empty(), |content| {
+                                        content.child(
+                                            div()
+                                                .id("home-previews")
+                                                .column()
+                                                .w_full()
+                                                .flex_none()
+                                                .gap_4()
+                                                .children(previews),
+                                        )
                                     }),
-                                    cx,
-                                ))
-                            }),
-                    )
-                    .children(action_card),
+                            ),
+                    ),
             )
             .child(
                 div()
-                    .column()
-                    .flex_1()
-                    .flex_basis(HOME_CARD_PREFERRED_WIDTH)
-                    .min_w_0()
-                    .gap_3()
-                    .child(
-                        div()
-                            .h_6()
-                            .flex_none()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(cx.theme().colors.text_muted)
-                            .row()
-                            .items_center()
-                            .gap_2()
-                            .child(div().flex_none().child("Next event"))
-                            .children(event_badge)
-                            .child(home_section_rule(cx))
-                            .when(event_card.is_none(), |header| {
-                                header.child(home_section_add_button(
-                                    "home-new-event",
-                                    "New event",
-                                    cx.listener(|view, _, window, cx| {
-                                        view.begin_draft(
-                                            AnyItem::Event(Event::new(
-                                                "",
-                                                Utc::now(),
-                                                chrono::Duration::minutes(60),
-                                            )),
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                                    cx,
-                                ))
-                            }),
-                    )
-                    .children(event_card),
-            );
-
-        root.child(
-            div()
-                .relative()
-                .flex()
-                .min_h_full()
-                .w_full()
-                .items_center()
-                .justify_center()
-                .px_8()
-                .pt(px(128.))
-                .pb(px(192.))
-                .child(home_clock(now, cx).absolute().top(TOP_EDGE_INSET).left_8())
-                .child(
-                    div()
-                        .absolute()
-                        .top(TOP_EDGE_INSET)
-                        .right_8()
-                        .row()
-                        .gap_2()
-                        .child(home_search_button().compact().size_10().rounded_full())
-                        .child(home_new_item_button().compact().size_10().rounded_full()),
-                )
-                .child(
-                    div()
-                        .column()
-                        .w_full()
-                        .max_w(px(720.))
-                        .gap_8()
-                        .child(
-                            div()
-                                .id("home-heading")
-                                .text_center()
-                                .text_size(px(42.))
-                                .line_height(px(48.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Welcome back")
-                                .semantic_in(
-                                    cx,
-                                    NodeSpec::new("home-heading", Role::Heading)
-                                        .level(1)
-                                        .text("Welcome back"),
-                                ),
-                        )
-                        .child(div().id("home-cards").w_full().flex_none().child(cards)),
-                ),
-        )
+                    .absolute()
+                    .top(TOP_EDGE_INSET)
+                    .right_8()
+                    .row()
+                    .gap_2()
+                    .child(home_search_button().compact().size_10().rounded_full())
+                    .child(home_new_item_button().compact().size_10().rounded_full()),
+            )
     }
 }
 
-fn home_section_rule(cx: &App) -> Div {
+fn home_caption(label: impl Into<SharedString>, cx: &App) -> Div {
     div()
-        .flex_1()
-        .min_w_0()
-        .h(px(1.))
-        .bg(cx.theme().colors.hairline.opacity(0.5))
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(cx.theme().colors.text_muted)
+        .child(label.into())
 }
 
 fn home_clock(now: DateTime<Local>, cx: &App) -> Div {
+    let date = now.format("%A, %B %-d").to_string();
+    let time = format_clock_time(now);
     div()
         .column()
+        .font_family(branding::FONT_FAMILY)
         .gap_1()
         .child(
             div()
                 .text_sm()
-                .font_weight(FontWeight::MEDIUM)
                 .text_color(cx.theme().colors.text_muted)
-                .child(now.format("%A, %B %-d").to_string()),
+                .child(date.clone()),
         )
         .child(
             div()
-                .text_size(px(32.))
-                .line_height(px(36.))
+                .id("home-heading")
+                .text_size(px(36.))
+                .line_height(px(44.))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(now.format("%-I:%M %p").to_string()),
+                .child(time.clone())
+                .semantic_in(
+                    cx,
+                    NodeSpec::new("home-heading", Role::Heading)
+                        .level(1)
+                        .text(format!("{date}, {time}")),
+                ),
         )
-}
-
-fn home_section_add_button(
-    id: &'static str,
-    label: &'static str,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-    cx: &App,
-) -> impl IntoElement {
-    div()
-        .flex_none()
-        .size_6()
-        .child(
-            Button::new(id)
-                .ghost()
-                .compact()
-                .size_6()
-                .rounded_full()
-                .text_color(cx.theme().colors.text_muted)
-                .icon(Icon::new(AppIcon::Plus).size_4())
-                .tooltip(label)
-                .on_click(on_click),
-        )
-        .semantic_in(cx, NodeSpec::new(id, Role::Button).text(label))
 }
 
 fn home_new_item_button() -> Button {
@@ -594,45 +478,13 @@ fn home_search_button() -> Button {
         })
 }
 
-fn event_context_label(moment: &EventMoment) -> Option<&'static str> {
-    match moment {
-        EventMoment::InProgress { .. } => Some("In progress"),
-        EventMoment::Upcoming {
-            within_threshold: true,
-            ..
-        } => Some("Starts soon"),
-        EventMoment::Upcoming {
-            within_threshold: false,
-            ..
-        } => None,
-    }
-}
-
-fn format_item_meta(item: &AnyItem, now: DateTime<Local>) -> String {
-    if let AnyItem::Event(event) = item {
-        let start = event.start.with_timezone(&Local);
-        let end = match event.end_time() {
-            Ok(end) => end.with_timezone(&Local),
-            Err(_) => return String::new(),
-        };
-        if start <= now && now < end {
-            return format!("Now · ends {}", format_clock_time(end));
-        }
-    }
-
-    match item.start() {
-        Some(SchedulePoint::Date(date)) => {
-            format!("{} · Any time", relative_date(date, now.date_naive()))
-        }
-        Some(SchedulePoint::DateTime(start)) => {
-            let start = start.with_timezone(&Local);
-            format!(
-                "{} · {}",
-                relative_date(start.date_naive(), now.date_naive()),
-                format_clock_time(start)
-            )
-        }
-        None => "Unscheduled".to_owned(),
+fn preview_duration(duration: chrono::Duration) -> String {
+    let minutes = duration.num_minutes().max(0);
+    match (minutes / 60, minutes % 60) {
+        (0, ..=0) => "<1 min".to_owned(),
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} hr"),
+        (hours, minutes) => format!("{hours} hr {minutes} min"),
     }
 }
 
@@ -647,5 +499,5 @@ fn relative_date(date: NaiveDate, today: NaiveDate) -> String {
 }
 
 fn format_clock_time(time: DateTime<Local>) -> String {
-    time.format("%-I:%M%P").to_string().replace(":00", "")
+    time.format("%-I:%M %P").to_string()
 }

@@ -81,6 +81,7 @@ impl FocusView {
 
     fn drop_zone(&self, cx: &mut Context<Self>) -> DropZone<DragData<DraggedItems>> {
         DropZone::new("focus-drop")
+            .transparent_background()
             .size_full()
             .active(self.drop_active)
             .rounded_none()

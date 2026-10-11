@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[4]
 CONFIG = Path(__file__).with_name("about.toml")
 REPORT = "THIRD-PARTY-LICENSES.html"
 TOOL_VERSION = "cargo-about 0.9.2"
-BASE_LICENSES = {"LICENSE": "LICENSE", "assets/icons/LICENSES": "ICON-LICENSES"}
+BASE_LICENSES = {
+    "LICENSE": "LICENSE",
+    "assets/icons/LICENSES": "ICON-LICENSES",
+    "crates/desktop/resources/fonts/sora/OFL.txt": "SORA-OFL.txt",
+}
 LEGAL_NAME = re.compile(
     r"(?:^|[._-])(licen[cs]es?|copying|copyright|notices?|authors|ofl)(?:$|[._-])", re.I,
 )

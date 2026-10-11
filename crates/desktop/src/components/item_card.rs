@@ -117,10 +117,19 @@ impl ItemCardPosition {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CardPresentation {
+    Raised,
+    Preview,
+}
+
+const PREVIEW_HOVER_GROUP: &str = "item-card-preview";
+
 #[derive(IntoElement)]
 pub struct ItemCard {
     base: Stateful<Div>,
     item: AnyItem,
+    presentation: CardPresentation,
     compact: bool,
     title_only: bool,
     details: Option<ItemCardDetails>,
@@ -210,6 +219,7 @@ impl ItemCard {
         Self {
             base: div().id(element_id.clone()),
             item: item.clone(),
+            presentation: CardPresentation::Raised,
             compact: false,
             title_only: false,
             details: None,
@@ -282,6 +292,13 @@ impl ItemCard {
         if compact {
             self.content_offset = point(px(2.), px(0.))
         }
+        self
+    }
+
+    /// Use a flat row with hover/focus-revealed secondary controls, showing notes and
+    /// automatic recurrence metadata only while details are open.
+    pub fn preview(mut self) -> Self {
+        self.presentation = CardPresentation::Preview;
         self
     }
 

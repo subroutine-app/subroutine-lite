@@ -32,10 +32,11 @@ fn hover_bounds(
 impl RootView {
     pub(super) fn navigation_drawer_width(&self, window: &Window, cx: &App) -> Pixels {
         let layout = self.layout_state.read(cx);
+        let width = layout.left_open_width();
         if layout.is_compact() {
-            px(280.).min((window.viewport_size().width - px(48.)).max(px(0.)))
+            width.min((window.viewport_size().width - px(48.)).max(px(0.)))
         } else {
-            layout.left_open_width()
+            width
         }
     }
 
@@ -58,8 +59,7 @@ impl RootView {
     ) {
         self.navigation_pointer = pointer;
         let layout = self.layout_state.read(cx);
-        if layout.is_compact()
-            || layout.is_resizing()
+        if layout.is_resizing()
             || self.navigation_panel_open(cx)
             || self.current_overlay.is_some()
             || self.context_menu.entity().read(cx).is_open()

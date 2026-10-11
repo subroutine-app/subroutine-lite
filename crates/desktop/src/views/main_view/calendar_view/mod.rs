@@ -374,6 +374,25 @@ impl CalendarView {
         })
         .detach();
 
+        let focus_handle = cx.focus_handle();
+        cx.on_focus_out(&focus_handle, window, |view, _, window, cx| {
+            if view.item_drag_active
+                || cx.has_active_drag()
+                || view.inspector_focus.contains_focused(window, cx)
+                || crate::components::menu::context_menu_has_focus(window, cx)
+            {
+                return;
+            }
+            view.deselect_dates(cx);
+        })
+        .detach();
+        cx.observe_window_activation(window, |view, window, cx| {
+            if !window.is_window_active() {
+                view.deselect_dates(cx);
+            }
+        })
+        .detach();
+
         let month_select = cx.new(|cx| MonthSelectState::new(window, cx));
         let inspector_focus = cx.focus_handle();
         cx.on_focus_out(&inspector_focus, window, |view, _, window, cx| {
@@ -449,7 +468,7 @@ impl CalendarView {
         .detach();
 
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             items: Vec::new(),
             draft_items: Vec::new(),
             markers: Vec::new(),
@@ -651,6 +670,7 @@ impl CalendarView {
         if self.inspector_date.is_some() {
             self.close_day_inspector(window, cx);
         }
+        self.focus_handle.focus(window, cx);
         self.date_range_drag = Some(DateRangeDrag::new(date, position));
         self.suppress_date_click = false;
     }
@@ -1278,6 +1298,32 @@ impl CalendarView {
         self.selected_date_range.take().is_some()
     }
 
+    fn deselect_dates(&mut self, cx: &mut Context<Self>) {
+        self.date_range_drag = None;
+        self.set_edge_scroll_speed(None, cx);
+        if self.clear_date_selection() {
+            cx.notify();
+        }
+    }
+
+    fn deselect_dates_on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.item_drag_active
+            && !cx.has_active_drag()
+            && self.date_at_position(event.position).is_none()
+            && !self
+                .inspector_bounds
+                .is_some_and(|bounds| bounds.contains(&event.position))
+            && !crate::components::menu::context_menu_contains_position(event.position, cx)
+        {
+            self.deselect_dates(cx);
+        }
+    }
+
     fn move_date_selection(&mut self, days: i64, extend_selection: bool, cx: &mut Context<Self>) {
         if self.month_selector_open || self.inspector_date.is_some() {
             cx.propagate();
@@ -1480,6 +1526,7 @@ impl CalendarView {
 
     pub fn drop_zone(&self) -> DropZone<DragData<DraggedItems>> {
         DropZone::new("calendar-drop")
+            .transparent_background()
             .size_full()
             .active(self.drop_target.is_some())
             .rounded_none()
@@ -2040,6 +2087,7 @@ impl Render for CalendarView {
             .flex()
             .flex_1()
             .overflow_hidden()
+            .on_mouse_down_out(cx.listener(Self::deselect_dates_on_mouse_down))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseUpEvent, _window, cx| {
@@ -2112,9 +2160,10 @@ impl Render for CalendarView {
 
         self.tab_root(div().relative().column(), cx)
             .group("calendar-view")
-            .capture_any_mouse_down(cx.listener(|view, _: &MouseDownEvent, _window, _cx| {
+            .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, window, cx| {
                 view.inspector_item_press = None;
                 view.inspector_item_opened = None;
+                view.deselect_dates_on_mouse_down(event, window, cx);
             }))
             .on_drag_move::<DragData<DraggedItems>>(cx.listener(
                 |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {

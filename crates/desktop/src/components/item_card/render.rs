@@ -24,9 +24,9 @@ use crate::{
 };
 
 use super::{
-    DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale, ToggleItemDetails,
-    availability::projected_event_availability_target, card_background,
-    content::CardContentGeometry, create_drag_data, draft_type::open_type_menu,
+    CardPresentation, DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale,
+    PREVIEW_HOVER_GROUP, ToggleItemDetails, availability::projected_event_availability_target,
+    card_background, content::CardContentGeometry, create_drag_data, draft_type::open_type_menu,
     menu::card_context_menu, neutral_card_colors, notes::item_content,
 };
 
@@ -134,9 +134,12 @@ fn item_card_skin(color: Hsla) -> impl IntoElement {
 
 impl RenderOnce for ItemCard {
     fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let preview = self.presentation == CardPresentation::Preview;
         let subtle = self.title_scale == ItemCardTitleScale::Small;
         let mut colors = neutral_card_colors(cx.theme());
-        let bg = if subtle {
+        let bg = if preview {
+            gpui::transparent_black()
+        } else if subtle {
             card_background(cx).alpha(0.45)
         } else {
             card_background(cx)
@@ -144,6 +147,9 @@ impl RenderOnce for ItemCard {
         if subtle {
             colors.fg = cx.theme().colors.text_muted;
             colors.hover = bg.blend(cx.theme().colors.hover);
+        }
+        if preview {
+            colors.hover = cx.theme().colors.hover;
         }
 
         let (is_editing, is_draft) = {
@@ -256,6 +262,14 @@ impl RenderOnce for ItemCard {
         let bounds_for_keyboard_menu = Rc::clone(&measured_bounds);
 
         let has_notes = item_content(&self.item).is_some();
+        let notes_focus = (preview && has_notes).then(|| {
+            window
+                .use_keyed_state((self.element_id.clone(), "notes-focus"), cx, |_, cx| {
+                    cx.focus_handle().tab_stop(false)
+                })
+                .read(cx)
+                .clone()
+        });
         if let Some(details) = &self.details {
             if !has_notes && details.reset() {
                 let owner = window.current_view();
@@ -283,7 +297,8 @@ impl RenderOnce for ItemCard {
         }
         let has_content = !self.title_only && has_notes;
         let skin_color = colors.fg.alpha(ITEM_SKIN_ALPHA);
-        let skin = (!subtle && !self.compact && !has_content).then(|| item_card_skin(skin_color));
+        let skin = (!preview && !subtle && !self.compact && !has_content)
+            .then(|| item_card_skin(skin_color));
         let measured_geometry = has_notes.then(|| {
             window.use_keyed_state((self.element_id.clone(), "notes-geometry"), cx, |_, _| {
                 CardContentGeometry::default()
@@ -293,7 +308,14 @@ impl RenderOnce for ItemCard {
             .as_ref()
             .map_or_default(|geometry| *geometry.read(cx));
         let owner = window.current_view();
-        let content = self.render_content(colors, geometry, menu_enabled, window, cx);
+        let content = self.render_content(
+            colors,
+            geometry,
+            menu_enabled,
+            notes_focus.as_ref(),
+            window,
+            cx,
+        );
         let content = if let Some(geometry) = measured_geometry {
             div()
                 .w_full()
@@ -314,15 +336,23 @@ impl RenderOnce for ItemCard {
             content
         };
 
+        let row_focus = self.focus_handle.clone();
         let mut card = self
             .base
             .border(ITEM_CARD_BORDER)
-            .when(self.border, |this| {
+            .when(preview, |card| {
+                card.group(PREVIEW_HOVER_GROUP)
+                    .border_color(gpui::transparent_black())
+                    .shadow_none()
+            })
+            .when(self.border && !preview, |this| {
                 this.when_some(colors.border, |this, color| this.border_color(color))
             })
-            .when(!subtle || is_marked, |card| card.bg(bg))
+            .when(preview || !subtle || is_marked, |card| card.bg(bg))
             .opacity(draft_opacity)
-            .hover(|s| s.bg(colors.hover))
+            .when(!preview || !is_multi_selected, |card| {
+                card.hover(|style| style.bg(colors.hover))
+            })
             .when(is_marked, |this| this.border_color(cx.theme().colors.focus))
             .when(is_multi_selected, |this| {
                 let tint = cx.theme().colors.focus.alpha(0.10);
@@ -344,7 +374,7 @@ impl RenderOnce for ItemCard {
                     .pb(ITEM_CARD_BORDER - borders.bottom)
             })
             .overflow_hidden()
-            .when(!subtle && standalone, |this| this.shadow_sm())
+            .when(!preview && !subtle && standalone, |this| this.shadow_sm())
             .track_focus(&self.focus_handle.clone().tab_stop(self.tab_stop))
             .when(self.list_position.is_none(), |card| {
                 card.focus_ring(cx.theme())
@@ -377,8 +407,8 @@ impl RenderOnce for ItemCard {
                 })
             })
             .when_some(keyboard_details, |card, details| {
-                card.on_action(move |_: &ToggleItemDetails, _, cx| {
-                    details.toggle();
+                card.on_action(move |_: &ToggleItemDetails, window, cx| {
+                    details.toggle(&row_focus, notes_focus.as_ref(), window, cx);
                     cx.notify(owner);
                 })
             })

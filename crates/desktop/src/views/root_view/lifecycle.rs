@@ -118,6 +118,7 @@ impl RootView {
             saved_items_view,
             source_kinds: Vec::new(),
             route: WorkspaceRoute::Home,
+            window_material: Default::default(),
 
             library_drawer_route: WorkspaceRoute::Unqueued,
             library_drawer_open: false,
@@ -198,6 +199,7 @@ impl RootView {
                 view.navigation_pointer = None;
                 view.dismiss_navigation_drawer(cx);
             }
+            cx.notify();
         })
         .detach();
         let auth_changes = AuthSession::global(cx).subscribe();
