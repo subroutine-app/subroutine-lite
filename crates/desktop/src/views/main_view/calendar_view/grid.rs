@@ -647,7 +647,7 @@ impl CalendarView {
                         let entries: Vec<_> = entries.into_iter().map(|(item, _)| item).collect();
                         let (summaries, hidden_count) = calendar_summaries(&entries, day_width);
                         let theme = cx.theme();
-                        let mut bg_color = theme.colors.canvas;
+                        let mut bg_color = theme.colors.canvas.alpha(0.0);
                         let tint = month_tints[&date.with_day(1).unwrap()];
                         if tint > 0.0 {
                             bg_color = theme.colors.raised.mix(bg_color, 0.25 * tint);

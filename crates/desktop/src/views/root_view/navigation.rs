@@ -188,11 +188,16 @@ impl RootView {
     }
 
     pub(super) fn open_navigation_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.navigation_open(cx) || self.current_overlay.is_some() {
+        let compact = self.layout_state.read(cx).is_compact();
+        if self.current_overlay.is_some()
+            || self.navigation_panel_open(cx)
+            || self.navigation_drawer == NavigationDrawer::Compact
+            || (!compact && self.navigation_drawer == NavigationDrawer::Hover)
+        {
             return;
         }
         self.navigation_dismiss_task = None;
-        if !self.layout_state.read(cx).is_compact() {
+        if !compact {
             self.navigation_drawer = NavigationDrawer::Hover;
             cx.notify();
             return;

@@ -25,6 +25,12 @@ with-env { SUBROUTINE_LITE_OFFLINE_ONLY: 'true' } { cargo run -r -p desktop }
 
 Uses the local workspace, not your account cache. Leaves saved credentials alone; running normally can resume sync.
 
+## Frosted background
+
+**Settings → Appearance → Frosted background** enables native behind-window blur on macOS and acrylic on Windows 10 version 1809 (build 17763) or newer. The wash lightens when the window loses focus and returns smoothly when activated.
+
+Windows uses a solid background when Transparency effects are off, High Contrast or Energy Saver is on, the session is remote, or the required APIs are unavailable. Changes to transparency, contrast, and energy-saving preferences apply without restarting. macOS respects Reduce Transparency; other platforms remain opaque.
+
 ## Bundles
 
 Build on the target OS. Release packaging needs this for license notices:

@@ -51,93 +51,94 @@ impl RootView {
         let compact = self.layout_state.read(cx).is_compact();
         let slide =
             window.keyed_transition("navigation-drawer-slide", cx, transition::QUICK, || 0.0);
+        let backdrop =
+            window.keyed_transition("navigation-drawer-backdrop", cx, transition::QUICK, || 0.0);
         if self.navigation_panel_open(cx) {
             slide.snap(0.0, cx);
+            backdrop.snap(0.0, cx);
             return (None, px(0.));
         }
         let open = self.navigation_drawer != NavigationDrawer::Closed;
         slide.set(if open { 1.0 } else { 0.0 }, cx);
+        backdrop.set(
+            if self.navigation_drawer == NavigationDrawer::Compact {
+                1.0
+            } else {
+                0.0
+            },
+            cx,
+        );
         let progress = slide.animate(window, cx);
+        let backdrop_progress = backdrop.animate(window, cx);
         if !open && progress <= f32::EPSILON {
             return (None, px(0.));
         }
         let width = self.navigation_drawer_width(window, cx);
+        let top = WORKSPACE_PANEL_GAP
+            + if cfg!(target_os = "macos") {
+                px(0.)
+            } else {
+                TOP_EDGE_INSET
+            };
+        let height = (window.viewport_size().height - top - WORKSPACE_PANEL_GAP).max(px(0.));
+        let top_inset = (TOP_EDGE_INSET - top - WORKSPACE_PANEL_BORDER_WIDTH).max(px(0.));
+        let frame_width = (width - WORKSPACE_PANEL_GAP).max(px(0.));
         let drawer = div()
             .absolute()
             .inset_0()
             .overflow_hidden()
-            .when(compact, |drawer| {
-                drawer
-                    .child(
+            .when(
+                self.navigation_drawer == NavigationDrawer::Compact
+                    || backdrop_progress > f32::EPSILON,
+                |drawer| {
+                    drawer.child(
                         div()
                             .id("navigation.backdrop")
                             .absolute()
                             .inset_0()
                             .occlude()
-                            .bg(gpui::black().alpha(0.24 * progress))
+                            .bg(gpui::black().alpha(0.24 * backdrop_progress))
                             .on_any_mouse_down(cx.listener(|view, _, window, cx| {
                                 crate::selection::SelectionManager::claim_press(cx);
                                 view.close_navigation_drawer(window, cx);
                                 cx.stop_propagation();
                             })),
                     )
+                },
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(top)
+                    .left(width * (progress - 1.0) + WORKSPACE_PANEL_GAP)
+                    .w(frame_width)
+                    .h(height)
                     .child(
                         div()
-                            .id("navigation.drawer")
-                            .absolute()
-                            .top_0()
-                            .left(width * (progress - 1.0))
-                            .w(width)
-                            .h_full()
+                            .id("navigation.hover-drawer")
+                            .w(frame_width)
+                            .h(height)
                             .occlude()
                             .overflow_hidden()
-                            .child(self.render_navigation_panel(cx)),
+                            .rounded(px(cx.theme().radius(Radius::Dialog)))
+                            .border(WORKSPACE_PANEL_BORDER_WIDTH)
+                            .border_color(cx.theme().colors.hairline)
+                            .child(self.render_sidebar(top_inset, cx))
+                            .bg_frost()
+                            .glass_surface(Surface::Overlay)
+                            .glass_radius(Radius::Dialog)
+                            .glass(|glass| {
+                                glass.tint(crate::views::frosted_overlay_tint(cx.theme()))
+                            }),
                     )
-            })
-            .when(!compact, |drawer| {
-                let top = WORKSPACE_PANEL_GAP
-                    + if cfg!(target_os = "macos") {
-                        px(0.)
-                    } else {
-                        TOP_EDGE_INSET
-                    };
-                let height =
-                    (window.viewport_size().height - top - WORKSPACE_PANEL_GAP).max(px(0.));
-                let top_inset = (TOP_EDGE_INSET - top - WORKSPACE_PANEL_BORDER_WIDTH).max(px(0.));
-                drawer.child(
-                    div()
-                        .absolute()
-                        .top(top)
-                        .left(width * (progress - 1.0) + WORKSPACE_PANEL_GAP)
-                        .w(width - WORKSPACE_PANEL_GAP)
-                        .h(height)
-                        .child(
-                            div()
-                                .id("navigation.hover-drawer")
-                                .w(width - WORKSPACE_PANEL_GAP)
-                                .h(height)
-                                .occlude()
-                                .overflow_hidden()
-                                .rounded(px(cx.theme().radius(Radius::Dialog)))
-                                .border(WORKSPACE_PANEL_BORDER_WIDTH)
-                                .border_color(cx.theme().colors.hairline)
-                                .child(self.render_sidebar(top_inset, cx))
-                                .bg_frost()
-                                .glass_surface(Surface::Overlay)
-                                .glass_radius(Radius::Dialog)
-                                .glass(|glass| {
-                                    glass.tint(crate::views::frosted_overlay_tint(cx.theme()))
-                                }),
-                        )
-                        .when(open, |panel| {
-                            panel.child(left_resize_handle(
-                                &self.layout_state,
-                                "navigation-drawer-handle",
-                                width - WORKSPACE_PANEL_GAP,
-                            ))
-                        }),
-                )
-            });
+                    .when(open && !compact, |panel| {
+                        panel.child(left_resize_handle(
+                            &self.layout_state,
+                            "navigation-drawer-handle",
+                            frame_width,
+                        ))
+                    }),
+            );
         (
             Some(drawer.into_any_element()),
             if compact { px(0.) } else { width * progress },

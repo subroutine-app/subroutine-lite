@@ -22,6 +22,7 @@ use crate::{
         PreviousTab, RoutinesView, SavedItemsView, ScheduledItemDestination, SearchView,
         SelectedMainView, SettingsView, SourceKind,
     },
+    window_material::WindowMaterial,
 };
 use chrono::NaiveDate;
 use commands::ManualSync;
@@ -169,6 +170,7 @@ pub struct RootView {
     saved_items_view: Entity<SavedItemsView>,
     source_kinds: Vec<SourceKind>,
     route: WorkspaceRoute,
+    window_material: WindowMaterial,
 
     library_drawer_route: WorkspaceRoute,
     library_drawer_open: bool,
@@ -196,12 +198,24 @@ impl Focusable for RootView {
     }
 }
 
+impl RootView {
+    fn update_window_material(&mut self, window: &mut Window, cx: &App) {
+        let material = WindowMaterial::for_window(cx);
+        if material != self.window_material {
+            material.apply(window);
+            self.window_material = material;
+        }
+    }
+}
+
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.update_window_material(window, cx);
         if let Some(status) = self.render_status(cx) {
             let root = div()
                 .absolute()
                 .inset_0()
+                .bg(self.window_material.animated_tint(window, cx))
                 .track_focus(&self.focus_handle)
                 .map(|root| self.bind_actions(root, cx))
                 .child(status)
@@ -244,7 +258,7 @@ impl Render for RootView {
             )
             .absolute()
             .inset_0()
-            .bg(cx.theme().colors.canvas)
+            .bg(self.window_material.animated_tint(window, cx))
             .text_color(cx.theme().colors.text)
             .on_drag_move::<DragData<DraggedItems>>(cx.listener(
                 |view, _event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {

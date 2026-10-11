@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use gpui::{
     App, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Styled,
     StyledImage as _, div, img, px,
@@ -6,6 +8,17 @@ use gpui_kit_semantics::{NodeSpec, Role, Semantic as _};
 use gpui_kit_theme::{ActiveTheme as _, Appearance};
 
 pub(crate) const APP_ID: &str = "com.subroutine.SubroutineLite";
+pub(crate) const FONT_FAMILY: &str = "Sora";
+
+pub(crate) fn init(cx: &mut App) {
+    let fonts = vec![
+        Cow::Borrowed(include_bytes!("../resources/fonts/sora/Sora-Regular.ttf").as_slice()),
+        Cow::Borrowed(include_bytes!("../resources/fonts/sora/Sora-SemiBold.ttf").as_slice()),
+    ];
+    if let Err(error) = cx.text_system().add_fonts(fonts) {
+        tracing::warn!(%error, "could not register the bundled Sora brand font");
+    }
+}
 
 fn logotype_path(appearance: Appearance) -> &'static str {
     match appearance {

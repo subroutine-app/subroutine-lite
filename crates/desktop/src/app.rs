@@ -60,6 +60,8 @@ pub fn init(cx: &mut App) {
     cx.activate(true);
 
     gpui_kit::install(cx);
+    crate::branding::init(cx);
+    crate::window_material::init(cx);
     themes::init(cx);
     components::init(cx);
     selection::init(cx);

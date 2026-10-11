@@ -70,6 +70,8 @@ pub(super) struct PersistedSettings {
     timeline_toolbar_position: String,
     #[serde(default)]
     pub(super) appearance: Option<String>,
+    #[serde(default = "default_enabled")]
+    frosted_background: bool,
     #[serde(default)]
     reduce_motion: bool,
     #[serde(default)]
@@ -130,6 +132,7 @@ impl PersistedSettings {
             timeline_batch_mode: settings.timeline_batch_mode,
             timeline_toolbar_position: settings.timeline_toolbar_position.id().into(),
             appearance: Some(settings.appearance.id().into()),
+            frosted_background: settings.frosted_background,
             reduce_motion: settings.reduce_motion,
             calendar_weekend_shading: settings.calendar_appearance.weekend_shading,
             calendar_current_month_shading: settings.calendar_appearance.current_month_shading,
@@ -230,6 +233,7 @@ impl PersistedSettings {
                 .ok_or_else(|| format!("unknown appearance preference {appearance}"))?,
             None => AppearancePreference::System,
         };
+        settings.frosted_background = self.frosted_background;
         settings.reduce_motion = self.reduce_motion;
         settings.calendar_appearance = CalendarAppearanceSettings {
             weekend_shading: self.calendar_weekend_shading,
@@ -282,5 +286,34 @@ pub(super) fn decode(
             .map(|settings| (settings, false))
             .map_err(|error| format!("decode {}: {error}", path.display())),
         version => Err(format!("unsupported desktop settings version {version}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frosted_background_persists_off_and_defaults_on_for_existing_settings() {
+        let settings = Settings {
+            frosted_background: false,
+            ..Settings::default()
+        };
+        let mut encoded =
+            serde_json::to_value(PersistedSettings::from_settings(&settings)).unwrap();
+        let path = Path::new("desktop-settings.json");
+        let mut restored = Settings::default();
+
+        let (persisted, _) = decode(encoded.clone(), path).unwrap();
+        persisted.apply_to(&mut restored).unwrap();
+        assert!(!restored.frosted_background);
+
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("frosted_background");
+        let (persisted, _) = decode(encoded, path).unwrap();
+        persisted.apply_to(&mut restored).unwrap();
+        assert!(restored.frosted_background);
     }
 }

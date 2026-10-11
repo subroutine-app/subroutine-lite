@@ -487,6 +487,7 @@ impl TimelineView {
 
     pub fn drop_zone(&self) -> DropZone<DragData<DraggedItems>> {
         DropZone::new("timeline-drop")
+            .transparent_background()
             .size_full()
             .active(self.drop_active)
             .rounded_none()

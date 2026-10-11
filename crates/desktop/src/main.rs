@@ -29,6 +29,7 @@ mod stores;
 mod themes;
 mod utils;
 mod views;
+mod window_material;
 mod window_state;
 
 pub use icons::AppIcon;
