@@ -3,7 +3,15 @@ use std::{env, fs, path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-changed=resources/windows/Subroutine.rc");
     println!("cargo:rerun-if-changed=resources/windows/Subroutine.ico");
-    println!("cargo:rerun-if-env-changed=RC");
+    for name in [
+        "RC",
+        "INCLUDE",
+        "WindowsSdkDir",
+        "WindowsSDKVersion",
+        "VCToolsVersion",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -23,14 +31,24 @@ fn main() {
     )
     .expect("write Windows version resource header");
     let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
-    let compiler =
-        env::var_os("RC").unwrap_or_else(|| if msvc { "rc.exe" } else { "windres" }.into());
+    // SDK tools need their include paths even when rc.exe is already on PATH.
+    let tool = if msvc {
+        find_msvc_tools::find_tool(&env::var("TARGET").unwrap(), "rc.exe")
+    } else {
+        None
+    };
+    let compiler = env::var_os("RC")
+        .or_else(|| tool.as_ref().map(|tool| tool.path().as_os_str().to_owned()))
+        .unwrap_or_else(|| if msvc { "rc.exe" } else { "windres" }.into());
     let resource = out.join(if msvc {
         "Subroutine.res"
     } else {
         "Subroutine.o"
     });
     let mut command = Command::new(&compiler);
+    if let Some(tool) = tool {
+        command.envs(tool.env().into_iter().cloned());
+    }
     command.current_dir(&resources);
     if msvc {
         command
@@ -51,7 +69,7 @@ fn main() {
     });
     assert!(
         status.success(),
-        "Subroutine Lite Windows resource compilation failed"
+        "Subroutine Lite Windows resource compilation failed; install Visual Studio C++ tools and the Windows SDK, or use a Windows SDK developer shell"
     );
     println!(
         "cargo:rustc-link-arg-bin=subroutine-lite={}",

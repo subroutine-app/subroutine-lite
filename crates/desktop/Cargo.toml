@@ -9,6 +9,9 @@ publish = false
 name = "subroutine-lite"
 path = "src/main.rs"
 
+[build-dependencies]
+find-msvc-tools = "0.1.14"
+
 [dependencies]
 anyhow = { workspace = true }
 gpui = {

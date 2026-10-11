@@ -7,7 +7,7 @@ cargo run -r -p desktop
 cargo run -r -p desktop -- --print-config  # endpoints + storage paths
 ```
 
-You'll need Xcode on macOS, or a Visual Studio C++/Windows SDK developer shell on Windows. Debian/Ubuntu deps:
+You'll need Xcode on macOS, or Visual Studio C++ tools and the Windows SDK on Windows. The Windows resource compiler and its include paths are detected automatically. Debian/Ubuntu deps:
 
 ```sh
 sudo apt-get install -y libasound2-dev libfontconfig-dev libxkbcommon-dev \
