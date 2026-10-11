@@ -23,7 +23,7 @@ const CREATE_ROW_HEIGHT: Pixels = px(44.);
 
 pub(super) fn row_top_inset(index: usize) -> Pixels {
     if index == 0 {
-        crate::views::TOP_EDGE_INSET
+        crate::views::TOP_EDGE_INSET + super::headers::CONTROLS_HEIGHT
     } else {
         px(0.)
     }

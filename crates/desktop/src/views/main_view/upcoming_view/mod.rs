@@ -24,7 +24,7 @@ mod rows;
 mod scroll;
 mod sections;
 use agenda::*;
-use headers::DayHeaders;
+use headers::{CONTROLS_HEIGHT, DayHeaders};
 use scroll::RowAnchor;
 use sections::{UpcomingSection, UpcomingSections};
 
@@ -1184,9 +1184,27 @@ impl Render for UpcomingView {
                             .when(height < full_height, |row| row.overflow_hidden())
                             .child(
                                 div()
+                                    .column()
                                     .h(full_height)
-                                    .pt(inset)
-                                    .child(view.render_row(ix, window, cx)),
+                                    .when(source == 0, |row| {
+                                        row.pt(crate::views::TOP_EDGE_INSET).child(
+                                            div()
+                                                .row()
+                                                .w_full()
+                                                .h(CONTROLS_HEIGHT)
+                                                .flex_none()
+                                                .px_4()
+                                                .items_center()
+                                                .justify_end()
+                                                .child(view.section_controls(cx)),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .h(full_height - inset)
+                                            .flex_none()
+                                            .child(view.render_row(ix, window, cx)),
+                                    ),
                             )
                     })
                     .collect()

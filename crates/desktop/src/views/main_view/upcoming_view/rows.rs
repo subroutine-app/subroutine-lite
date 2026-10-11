@@ -25,9 +25,7 @@ use crate::{
 use super::{
     UpcomingDropTarget, UpcomingSection, UpcomingView,
     agenda::{AgendaMarker, UpcomingRow},
-    headers::{
-        CONTROLS_HEIGHT, CONTROLS_WIDTH, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT,
-    },
+    headers::{CONTROLS_WIDTH, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT},
 };
 
 impl UpcomingView {
@@ -382,7 +380,7 @@ impl UpcomingView {
             )
     }
 
-    fn section_controls(&self, cx: &Context<Self>) -> impl IntoElement {
+    pub(super) fn section_controls(&self, cx: &Context<Self>) -> impl IntoElement {
         div()
             .id("upcoming-section-controls")
             .w(CONTROLS_WIDTH)
@@ -517,24 +515,7 @@ impl UpcomingView {
                     .children(marker_rows),
             );
 
-        div()
-            .column()
-            .size_full()
-            .when(header.controls, |view| {
-                view.child(
-                    div()
-                        .row()
-                        .w_full()
-                        .h(CONTROLS_HEIGHT)
-                        .flex_none()
-                        .px_4()
-                        .items_center()
-                        .justify_end()
-                        .child(self.section_controls(cx)),
-                )
-            })
-            .child(day_row)
-            .into_any_element()
+        div().column().size_full().child(day_row).into_any_element()
     }
 }
 

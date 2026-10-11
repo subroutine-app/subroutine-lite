@@ -25,7 +25,7 @@ pub(super) struct DayHeaders {
 
 pub(super) struct DayHeader {
     pub label: String,
-    pub controls: bool,
+
     pub date_width: Pixels,
     pub marker_widths: Vec<Pixels>,
     pub marker_rows: Vec<Range<usize>>,
@@ -73,7 +73,7 @@ impl DayHeaders {
             } else {
                 (date_width.min(side_width), side_width)
             };
-            let controls = *date == today;
+
             let marker_widths: Vec<_> = markers
                 .iter()
                 .map(|entry| {
@@ -87,7 +87,7 @@ impl DayHeaders {
                 *date,
                 DayHeader {
                     label,
-                    controls,
+
                     date_width,
                     marker_widths,
                     marker_rows,
@@ -107,15 +107,8 @@ impl DayHeaders {
             .get(&date)
             .map_or(0, |day| day.marker_rows.len())
             .max(1);
-        let controls_height = if self.days.get(&date).is_some_and(|day| day.controls) {
-            CONTROLS_HEIGHT
-        } else {
-            px(0.)
-        };
-        MARKER_HEIGHT * rows as f32
-            + MARKER_GAP * (rows - 1) as f32
-            + HEADER_PADDING * 2.
-            + controls_height
+
+        MARKER_HEIGHT * rows as f32 + MARKER_GAP * (rows - 1) as f32 + HEADER_PADDING * 2.
     }
 }
 

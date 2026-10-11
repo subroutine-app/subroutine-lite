@@ -336,6 +336,12 @@ impl RenderOnce for ItemCard {
             content
         };
 
+        let selection_tint = cx.theme().colors.focus.alpha(0.10);
+        let hover_bg = if is_multi_selected {
+            colors.hover.blend(selection_tint)
+        } else {
+            colors.hover
+        };
         let row_focus = self.focus_handle.clone();
         let mut card = self
             .base
@@ -350,15 +356,9 @@ impl RenderOnce for ItemCard {
             })
             .when(preview || !subtle || is_marked, |card| card.bg(bg))
             .opacity(draft_opacity)
-            .when(!preview || !is_multi_selected, |card| {
-                card.hover(|style| style.bg(colors.hover))
-            })
+            .hover(|style| style.bg(hover_bg))
             .when(is_marked, |this| this.border_color(cx.theme().colors.focus))
-            .when(is_multi_selected, |this| {
-                let tint = cx.theme().colors.focus.alpha(0.10);
-                this.bg(bg.blend(tint))
-                    .hover(|style| style.bg(colors.hover.blend(tint)))
-            })
+            .when(is_multi_selected, |this| this.bg(bg.blend(selection_tint)))
             .when_else(
                 self.compact,
                 |this| this.rounded_lg(),

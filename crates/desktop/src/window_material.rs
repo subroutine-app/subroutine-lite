@@ -4,8 +4,9 @@ use gpui_kit_theme::{ActiveTheme as _, Theme};
 
 use crate::components::transition::{EASE_OUT_CUBIC, WindowTransitionExt as _};
 
-const FOCUS_WASH: MotionSpec = MotionSpec::new(300, EASE_OUT_CUBIC);
+const FOCUS_WASH: MotionSpec = MotionSpec::new(200, EASE_OUT_CUBIC);
 const INACTIVE_WASH_FACTOR: f32 = 0.6;
+const WASH_BOOST: f32 = 0.08;
 
 #[cfg(target_os = "windows")]
 mod windows;
@@ -83,11 +84,12 @@ impl WindowMaterial {
                 })
             })
             .unwrap_or(1.0);
-        canvas.alpha(if active {
+        let opacity = if active {
             opacity
         } else {
             opacity * INACTIVE_WASH_FACTOR
-        })
+        };
+        canvas.alpha((opacity + WASH_BOOST).min(1.0))
     }
 
     pub(crate) fn apply(self, window: &mut Window) {
@@ -107,17 +109,27 @@ mod tests {
 
     #[test]
     fn window_tint_restores_contrast_when_active_and_stays_opaque_without_frost() {
-        for json in [
+        let themes = [
             include_str!("../../../assets/themes/subroutine-dark.json"),
             include_str!("../../../assets/themes/subroutine-light.json"),
-        ] {
+        ]
+        .map(|json| {
             let tokens = TokenDocument::parse(json).unwrap();
-            let theme = Theme::from_tokens(&tokens, Density::Comfortable);
+            Theme::from_tokens(&tokens, Density::Comfortable)
+        });
+        for active in [true, false] {
+            assert_eq!(
+                WindowMaterial::Frosted.tint(&themes[0], active).a,
+                WindowMaterial::Frosted.tint(&themes[1], active).a,
+            );
+        }
+        for theme in themes {
             let tint = WindowMaterial::Frosted.tint(&theme, true);
             let inactive = WindowMaterial::Frosted.tint(&theme, false);
             assert!(0.0 < inactive.a && inactive.a < tint.a && tint.a < 1.0);
             assert_eq!(WindowMaterial::Opaque.tint(&theme, true).a, 1.0);
             assert_eq!(WindowMaterial::Opaque.tint(&theme, false).a, 1.0);
+
             for backdrop in [gpui::black(), gpui::white()] {
                 let resting = backdrop.blend(tint);
                 assert!(theme.contrast(theme.colors.text_muted, resting) >= 4.5);
