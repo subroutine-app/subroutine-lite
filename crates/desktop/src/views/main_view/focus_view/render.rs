@@ -1,7 +1,7 @@
 use gpui::{
-    Context, DragMoveEvent, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, Context, DragMoveEvent, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Render, Size, StatefulInteractiveElement, Styled,
+    Window, container_query, div, prelude::FluentBuilder as _, px,
 };
 use gpui_kit::{
     controls::button::IconButton,
@@ -11,7 +11,7 @@ use gpui_kit::{
 use gpui_kit_assets::Icon as KitIcon;
 
 use crate::{
-    components::{DragData, DraggedItems, DropZone, ext::ElementExt as _, menu::MenuBuilder},
+    components::{DragData, DraggedItems, DropZone, menu::MenuBuilder},
     item_manager::ItemManager,
     selection::{CompleteSelected, SelectionManager, SelectionOrder, SelectionScope},
     settings::{FocusCarouselOrientation, Settings},
@@ -147,55 +147,26 @@ impl FocusView {
                 }),
             )
     }
-}
 
-impl Render for FocusView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_workspace(
-            AppDatabaseStore::global(cx).read(cx).workspace_generation(),
-            cx,
-        );
-        self.reconcile_events(window, cx);
-        let order = SelectionOrder::new(
-            SelectionScope::Focus,
-            if self.mode == FocusMode::Action && self.queue_blocker.is_none() {
-                self.navigable_ids(cx)
-            } else {
-                Vec::new()
-            },
-        );
-        SelectionManager::report_order(&order, cx);
-        self.apply_completion_focus(&order, window, cx);
-        if self.mode == FocusMode::Action && self.restore_focus {
-            self.restore_focus = false;
-            if self.focus_handle.contains_focused(window, cx) {
-                let expected = self.active_id;
-                let handle = expected
-                    .and_then(|id| self.item_focus_handles.get(&id).cloned())
-                    .unwrap_or_else(|| self.focus_handle.clone());
-                cx.on_next_frame(window, move |view, window, cx| {
-                    if view.mode == FocusMode::Action && view.active_id == expected {
-                        handle.focus(window, cx);
-                    }
-                });
-            }
+    fn render_content(
+        &mut self,
+        viewport: Size<Pixels>,
+        order: SelectionOrder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.viewport_size = viewport;
+        if viewport.width <= px(0.) || viewport.height <= px(0.) {
+            return div().size_full().into_any_element();
         }
-
         let settings = Settings::global(cx);
-        let threshold = settings.focus_timing_threshold();
-        let horizon = settings.focus_horizon();
-        let temporal =
-            TemporalSnapshot::new(&self.events, &self.signals, self.now, threshold, horizon);
-        self.card_states.retain(
-            self.items.iter().map(subroutine_core::AnyItem::id).chain(
-                self.event_moments
-                    .iter()
-                    .map(super::temporal::EventMoment::notice_id),
-            ),
+        let temporal = TemporalSnapshot::new(
+            &self.events,
+            &self.signals,
+            self.now,
+            settings.focus_timing_threshold(),
+            settings.focus_horizon(),
         );
-        self.card_states.animate(window, cx);
-        self.notice_states.animate(window, cx);
-        let mode_switch = self.render_mode_switch(window, cx);
         let (event_notice, signal_notice, notice_height) =
             self.render_notices(temporal, window, cx);
         let has_notices = event_notice.is_some() || signal_notice.is_some();
@@ -219,14 +190,10 @@ impl Render for FocusView {
         let notice_space = if has_notices {
             notice_height + NOTICE_GAP
         } else {
-            gpui::px(0.)
+            px(0.)
         };
-        let content = self.render_carousel(order, window, cx);
-        let content_height = self
-            .viewport_size
-            .height
-            .max(notice_space + MIN_CAROUSEL_ROOM);
-        let scrolls = content_height > self.viewport_size.height;
+        let content_height = viewport.height.max(notice_space + MIN_CAROUSEL_ROOM);
+        let scrolls = content_height > viewport.height;
         let content = div()
             .w_full()
             .when_else(
@@ -236,8 +203,14 @@ impl Render for FocusView {
             )
             .column()
             .children(notices)
-            .child(div().w_full().flex_1().min_h_0().child(content));
-        let content = if scrolls {
+            .child(
+                div()
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_carousel(order, window, cx)),
+            );
+        if scrolls {
             ScrollArea::new("focus-content-scroll")
                 .vertical()
                 .label("Focus content")
@@ -245,7 +218,62 @@ impl Render for FocusView {
                 .into_any_element()
         } else {
             content.into_any_element()
-        };
+        }
+    }
+}
+
+impl Render for FocusView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_workspace(
+            AppDatabaseStore::global(cx).read(cx).workspace_generation(),
+            cx,
+        );
+        self.resolve_mode(window, cx);
+        self.reconcile_events(window, cx);
+        let drafting = self.has_draft(cx);
+        let order = SelectionOrder::new(
+            SelectionScope::Focus,
+            if self.mode == FocusMode::Action && self.queue_blocker.is_none() && !drafting {
+                self.navigable_ids(cx)
+            } else {
+                Vec::new()
+            },
+        );
+        SelectionManager::report_order(&order, cx);
+        self.apply_completion_focus(&order, window, cx);
+        if self.mode == FocusMode::Action && self.restore_focus && !drafting {
+            self.restore_focus = false;
+            if self.focus_handle.contains_focused(window, cx) {
+                let expected = self.active_id;
+                let handle = expected
+                    .and_then(|id| self.item_focus_handles.get(&id).cloned())
+                    .unwrap_or_else(|| self.focus_handle.clone());
+                cx.on_next_frame(window, move |view, window, cx| {
+                    if view.mode == FocusMode::Action
+                        && view.active_id == expected
+                        && !view.has_draft(cx)
+                    {
+                        handle.focus(window, cx);
+                    }
+                });
+            }
+        }
+
+        self.card_states.retain(
+            self.items
+                .iter()
+                .map(subroutine_core::AnyItem::id)
+                .chain(
+                    self.event_moments
+                        .iter()
+                        .map(super::temporal::EventMoment::notice_id),
+                )
+                .chain(self.inline_card_id),
+        );
+        self.card_states.animate(window, cx);
+        self.notice_states.animate(window, cx);
+        let mode_switch = self.render_mode_switch(window, cx);
+
         let settings_open = self.settings_open;
         let toolbar = div()
             .id("focus-toolbar")
@@ -270,19 +298,14 @@ impl Render for FocusView {
             )
             .child(mode_switch);
         let view = cx.entity();
-        let content = div()
-            .w_full()
-            .flex_1()
-            .min_h_0()
-            .on_prepaint(move |bounds, _, cx| {
-                view.update(cx, |view, cx| {
-                    if view.viewport_size != bounds.size {
-                        view.viewport_size = bounds.size;
-                        cx.notify();
-                    }
-                });
-            })
-            .child(content);
+        let content =
+            div()
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .child(container_query(move |size, window, cx| {
+                    view.update(cx, |view, cx| view.render_content(size, order, window, cx))
+                }));
         let content_plane = div()
             .absolute()
             .top(TOP_EDGE_INSET)
@@ -293,7 +316,7 @@ impl Render for FocusView {
             .column()
             .child(content)
             .child(toolbar);
-        let settings_panel = settings_open.then(|| self.render_settings(window, cx));
+        let view = cx.entity();
 
         self.tab_root(self.drop_zone(cx), cx)
             .relative()
@@ -315,8 +338,8 @@ impl Render for FocusView {
                     cx.notify();
                 }),
             )
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
-                if event.is_held || ItemManager::global(cx).read(cx).is_editing() {
+            .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                if drafting || event.is_held || ItemManager::global(cx).read(cx).is_editing() {
                     return;
                 }
                 let key = event.keystroke.key.as_str();
@@ -355,16 +378,22 @@ impl Render for FocusView {
                             view.close_settings(window, cx);
                         })),
                 )
-                .when_some(settings_panel, |this, panel| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .bottom_4()
-                            .left_4()
-                            .shadow_lg()
-                            .child(panel),
-                    )
-                })
+                .child(
+                    container_query(move |_, window, cx| {
+                        view.update(cx, |view, cx| {
+                            div().size_full().child(
+                                div()
+                                    .absolute()
+                                    .bottom_4()
+                                    .left_4()
+                                    .shadow_lg()
+                                    .child(view.render_settings(window, cx)),
+                            )
+                        })
+                    })
+                    .absolute()
+                    .inset_0(),
+                )
             })
     }
 }

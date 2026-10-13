@@ -12,7 +12,7 @@ pub(super) const HEADER_PADDING: Pixels = px(5.);
 pub(super) const HEADER_GAP: Pixels = px(8.);
 pub(super) const MARKER_HEIGHT: Pixels = px(28.);
 pub(super) const MARKER_GAP: Pixels = px(4.);
-pub(super) const CONTROLS_WIDTH: Pixels = px(58.);
+pub(super) const CONTROLS_WIDTH: Pixels = MARKER_HEIGHT;
 pub(super) const CONTROLS_HEIGHT: Pixels = px(38.);
 const DATE_WIDTH_STEP: f32 = 16.;
 

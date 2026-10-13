@@ -239,6 +239,7 @@ impl TimelineView {
     }
 
     pub fn scroll_to(&mut self, datetime: DateTime<Local>, cx: &mut Context<Self>) {
+        self.pending_fit = None;
         self.scroll_update = Some(datetime);
         self.scroll_target = Some(datetime);
         cx.notify();
@@ -250,6 +251,7 @@ impl TimelineView {
     }
 
     pub(super) fn scroll_by_px(&mut self, px: Pixels, cx: &mut Context<Self>) {
+        self.pending_fit = None;
         self.scroll_update = None;
         self.scroll_target = None;
         self.scroll_cancelled = true;
@@ -334,6 +336,7 @@ impl TimelineView {
         offset: Pixels,
         instant: bool,
     ) {
+        self.pending_fit = None;
         if self.center_relative().y == px(0.) {
             return;
         }
@@ -439,6 +442,7 @@ impl TimelineView {
     }
 
     pub(super) fn zoom_reset(&mut self, cx: &mut Context<Self>) {
+        self.pending_fit = None;
         if self.is_zoomed() {
             self.adjust_scroll_for_zoom(PIXEL_SCALE, px(0.), false);
             self.zoom_target = Some(PIXEL_SCALE);
@@ -510,11 +514,8 @@ impl TimelineView {
         range: crate::dates::InclusiveDateRange,
         cx: &mut Context<Self>,
     ) {
-        self.pending_fit = Some(calendar_date_range_span(range));
-        self.zoom_anchor = None;
-        self.zoom_anchor_offset = px(0.);
-        self.zoom_anchor_since = None;
-        cx.notify();
+        let (start, end) = calendar_date_range_span(range);
+        self.zoom_to_span(start, end, cx);
     }
 
     fn zoom_to_target(
@@ -538,9 +539,18 @@ impl TimelineView {
         end: DateTime<Local>,
         cx: &mut Context<Self>,
     ) {
-        let height = self.bounds.map(|b| b.size.height).unwrap_or(px(600.));
-        let target = span_fit_pixel_duration(end - start, height);
+        self.pending_fit = Some((start, end));
+        self.zoom_anchor = None;
+        self.zoom_anchor_offset = px(0.);
+        self.zoom_anchor_since = None;
+        cx.notify();
+    }
 
+    pub(super) fn apply_pending_fit(&mut self, viewport_height: Pixels, cx: &mut Context<Self>) {
+        let Some((start, end)) = self.pending_fit.take() else {
+            return;
+        };
+        let target = span_fit_pixel_duration(end - start, viewport_height);
         self.zoom_to_target(start + (end - start) / 2, target, cx);
     }
 

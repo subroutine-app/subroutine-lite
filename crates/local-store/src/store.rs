@@ -12,7 +12,7 @@ use std::{
     thread,
 };
 use subroutine_core::{
-    AllData, ApiErrorBody, ClientMutation, DataDelta, MutationReceipt, OptimisticPatch,
+    AllData, ApiErrorBody, ClientMutation, DataDelta, Marker, MutationReceipt, OptimisticPatch,
 };
 use uuid::Uuid;
 
@@ -113,6 +113,10 @@ impl LocalStore {
 
     pub fn apply_local_patch(&self, patch: OptimisticPatch) -> Result<Projection> {
         self.call(|reply| Command::ApplyLocalPatch(Box::new(patch), reply))
+    }
+
+    pub fn complete_holiday_setup(&self, markers: Vec<Marker>) -> Result<Projection> {
+        self.call(|reply| Command::CompleteHolidaySetup(markers, reply))
     }
 
     pub fn enqueue(&self, mutation: ClientMutation) -> Result<Projection> {

@@ -22,17 +22,16 @@ use crate::{
     components::{
         CardMeta, DragData, DraggedItems, DropZone, DynamicList, DynamicListCardStates,
         DynamicListDelegate, DynamicListState, EmptyState, ItemCard, MarqueeSelection, MarqueeView,
-        SIDEBAR_GUTTER, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, SidebarAddButton, SidebarPanel,
-        marquee,
+        SIDEBAR_GUTTER, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, SidebarDraft, SidebarPanel, marquee,
     },
-    item_manager::{DiscardDraft, ItemManager},
+    item_manager::{DraftView, ItemManager},
     presentation::UxColor,
     selection::{
         DismissExt as _, SelectionManager, SelectionOrder, SelectionScope, focus_item,
         focus_item_extending,
     },
     settings::Settings,
-    stores::{AppDatabaseStore, DataChanged},
+    stores::{AppDatabaseStore, DataChanged, WorkspaceContent},
     views::main_view::format_item_duration,
 };
 
@@ -68,6 +67,13 @@ impl ActionLibraryKind {
         match self {
             Self::Unqueued => SelectionScope::Unqueued,
             Self::Unscheduled => SelectionScope::Unscheduled,
+        }
+    }
+
+    fn draft_view(self) -> DraftView {
+        match self {
+            Self::Unqueued => DraftView::Unqueued,
+            Self::Unscheduled => DraftView::Unscheduled,
         }
     }
 
@@ -126,7 +132,7 @@ fn date_meta(date: NaiveDate, today: NaiveDate) -> (String, UxColor) {
 struct ActionLibraryDelegate {
     kind: ActionLibraryKind,
     actions: Vec<Action>,
-    drafts: Vec<Action>,
+
     query: String,
     items: Vec<Action>,
     cards: DynamicListCardStates,
@@ -140,7 +146,7 @@ impl ActionLibraryDelegate {
         let mut this = Self {
             kind,
             actions: Vec::new(),
-            drafts: Vec::new(),
+
             query: String::new(),
             items: Vec::new(),
             cards: DynamicListCardStates::default(),
@@ -157,28 +163,16 @@ impl ActionLibraryDelegate {
             .cards
             .set_generation(store.read(cx).workspace_generation())
         {
-            self.drafts.clear();
             self.focus_handles.clear();
         }
         self.actions = self.kind.actions(&store, cx);
-        self.drafts
-            .retain(|draft| store.read(cx).get_item(draft.id).is_none());
-        self.rebuild(cx);
-    }
 
-    fn push_draft(&mut self, action: Action, cx: &mut App) {
-        self.drafts.push(action);
-        self.rebuild(cx);
-    }
-
-    fn discard_draft(&mut self, id: Uuid, cx: &mut App) {
-        self.drafts.retain(|draft| draft.id != id);
         self.rebuild(cx);
     }
 
     fn rebuild(&mut self, cx: &mut App) {
         let mut items = self.actions.clone();
-        items.extend(self.drafts.iter().cloned());
+
         let tokens = self
             .query
             .split_whitespace()
@@ -439,14 +433,6 @@ impl ActionLibraryView {
 
         let item_manager = ItemManager::global(cx);
         cx.observe(&item_manager, |_, _, cx| cx.notify()).detach();
-        cx.subscribe(&item_manager, |view, _, event: &DiscardDraft, cx| {
-            let id = event.0;
-            view.list.update(cx, |list, cx| {
-                list.update_items(cx, |delegate, cx| delegate.discard_draft(id, cx));
-            });
-            cx.notify();
-        })
-        .detach();
 
         Self {
             kind,
@@ -478,19 +464,21 @@ impl ActionLibraryView {
     }
 
     fn add_draft_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let action = Action::new("").with_queued(self.kind == ActionLibraryKind::Unscheduled);
-        let id = action.id;
-        let any_item = AnyItem::Action(action.clone());
-
-        self.list.update(cx, |list, cx| {
-            list.update_items(cx, |delegate, cx| delegate.push_draft(action, cx));
-            if let Some(ix) = list.delegate().index_of(id) {
-                list.scroll_item_into_view(ix, cx);
-            }
-        });
-
-        ItemManager::global(cx).update(cx, |handler, cx| {
-            handler.begin_fixed_type_draft(&any_item, window, cx);
+        if AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready {
+            return;
+        }
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+        if manager.read(cx).is_editing() {
+            return;
+        }
+        SelectionManager::clear_global(cx);
+        self.focus_handle.focus(window, cx);
+        let item = AnyItem::Action(
+            Action::new("").with_queued(self.kind == ActionLibraryKind::Unscheduled),
+        );
+        manager.update(cx, |manager, cx| {
+            manager.begin_view_draft(&item, self.kind.draft_view(), None, window, cx);
         });
         cx.notify();
     }
@@ -646,16 +634,19 @@ impl Render for ActionLibraryView {
 
         let body = SidebarPanel::new(format!("{}-backdrop", self.kind.id()))
             .footer(
-                SidebarAddButton::new(format!("new-{}-item", self.kind.id()), "New action")
-                    .tooltip(format!("Add an action to the {} list", self.kind.id()))
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_event, window, cx| {
-                            entity.update(cx, |view, cx| {
-                                view.add_draft_action(window, cx);
-                            });
-                        }
-                    }),
+                SidebarDraft::new(
+                    format!("new-{}-item", self.kind.id()),
+                    "New action",
+                    self.kind.draft_view(),
+                )
+                .on_click({
+                    let entity = entity.clone();
+                    move |_event, window, cx| {
+                        entity.update(cx, |view, cx| {
+                            view.add_draft_action(window, cx);
+                        });
+                    }
+                }),
             )
             .on_double_click({
                 let entity = entity.clone();

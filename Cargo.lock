@@ -1715,6 +1715,8 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "subroutine-auth",
+ "subroutine-holidays",
+ "sys-locale",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4992,6 +4994,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf_codegen"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49aa7f9d80421bca176ca8dbfebe668cc7a2684708594ec9f3c0db0805d5d6e1"
+dependencies = [
+ "phf_generator",
+ "phf_shared 0.13.1",
+]
+
+[[package]]
 name = "phf_generator"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6898,6 +6910,19 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "subroutine-holidays"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "core",
+ "phf 0.13.1",
+ "phf_codegen",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

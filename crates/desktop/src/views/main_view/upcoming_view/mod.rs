@@ -12,7 +12,7 @@ use chronoutil::RelativeDuration;
 use gpui::{
     App, AsyncApp, Bounds, Context, DragMoveEvent, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy,
-    Styled, Task, Window, div, point, prelude::FluentBuilder as _, px,
+    Size, Styled, Task, Window, container_query, div, point, prelude::FluentBuilder as _, px,
 };
 use gpui_kit::foundation::StyledExt as _;
 use subroutine_core::{Action, AnyItem, ItemType, Marker, SchedulePoint, Signal};
@@ -38,7 +38,7 @@ use crate::{
         SelectionManager, SelectionOrder, SelectionScope, focus_item, focus_item_extending,
     },
     settings::Settings,
-    stores::AppDatabaseStore,
+    stores::{AppDatabaseStore, WorkspaceContent},
     views::{
         GoToNow, LIST_VIEW_MAX_WIDTH, LIST_VIEW_MIN_WIDTH, RefreshPipeline, StartItemCreatorOnDate,
         StartQueuedActionCreator,
@@ -190,7 +190,6 @@ pub struct UpcomingView {
     signals: Vec<Signal>,
     agenda: Agenda,
     headers: DayHeaders,
-    header_width: Pixels,
     marker_edit: Option<(Uuid, NaiveDate)>,
     sections: UpcomingSections,
     hovered_section: Option<UpcomingSection>,
@@ -215,6 +214,7 @@ impl UpcomingView {
         let store = AppDatabaseStore::global(cx);
         cx.observe(&store, |view, store, cx| {
             view.sync_workspace(store.read(cx).workspace_generation(), cx);
+            cx.notify();
         })
         .detach();
         let item_manager = ItemManager::global(cx);
@@ -229,7 +229,7 @@ impl UpcomingView {
                 && draft.item_type() != item.item_type()
             {
                 let id = item.id();
-                let section = UpcomingSection::for_item(item, Local::now().date_naive());
+                let section = item.start_date().map(UpcomingSection::Day);
                 *draft = item.clone();
                 view.reveal = section.map(|section| {
                     view.sections.reveal(section);
@@ -306,7 +306,6 @@ impl UpcomingView {
             signals: Vec::new(),
             agenda: Agenda::default(),
             headers: DayHeaders::default(),
-            header_width: LIST_VIEW_MIN_WIDTH,
             marker_edit: None,
             sections: UpcomingSections::default(),
             hovered_section: None,
@@ -374,6 +373,12 @@ impl UpcomingView {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
+        if !matches!(
+            AppDatabaseStore::global(cx).read(cx).workspace_content(),
+            WorkspaceContent::Ready
+        ) {
+            return;
+        }
         self.focus_handle.focus(window, cx);
         crate::components::menu::open_context_menu(
             upcoming_context_menu(date),
@@ -389,6 +394,12 @@ impl UpcomingView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !matches!(
+            AppDatabaseStore::global(cx).read(cx).workspace_content(),
+            WorkspaceContent::Ready
+        ) {
+            return;
+        }
         let manager = ItemManager::global(cx);
         manager.update(cx, |manager, cx| {
             manager.commit_open_edit(window, cx);
@@ -401,7 +412,14 @@ impl UpcomingView {
                 .with_queued(true)
                 .with_start(Some(SchedulePoint::Date(date))),
         );
+        let replaces_slot = self.agenda.rows.iter().any(|row| {
+            matches!(row, UpcomingRow::Create { date: slot_date, kind: CreateKind::Slot } if *slot_date == date)
+        });
         self.edit_draft(item, None, window, cx);
+        if replaces_slot {
+            // Replacing a visible slot must not recenter the agenda.
+            self.reveal = None;
+        }
     }
 
     fn edit_draft(
@@ -411,7 +429,7 @@ impl UpcomingView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(section) = UpcomingSection::for_item(&item, Local::now().date_naive()) else {
+        let Some(section) = item.start_date().map(UpcomingSection::Day) else {
             return;
         };
         let id = item.id();
@@ -460,14 +478,9 @@ impl UpcomingView {
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.agenda_stale = false;
         self.today = Local::now().date_naive();
-        let items: Vec<_> = self
-            .items
-            .iter()
-            .chain(self.draft_items.iter())
-            .cloned()
-            .collect();
         self.agenda = Agenda::build_revealing(
-            &items,
+            &self.items,
+            &self.draft_items,
             &self.markers,
             &self.signals,
             self.today,
@@ -678,8 +691,11 @@ impl UpcomingView {
             focus_item(SelectionScope::Upcoming, next, &handle, window, cx);
         }
         if let Some(row) = self.layout.positions.get(&next) {
-            self.scroll_handle
-                .scroll_to_item(*row, self.item_scroll_strategy(*row));
+            self.reveal = Some(UpcomingReveal::Item {
+                id: next,
+                section: self.agenda.rows[self.layout.rows[*row]].section(),
+            });
+            window.refresh();
         }
     }
 
@@ -754,7 +770,7 @@ impl UpcomingView {
         }
         match row {
             UpcomingRow::Missed => None,
-            UpcomingRow::Day { date, .. } | UpcomingRow::Create { date } => {
+            UpcomingRow::Day { date, .. } | UpcomingRow::Create { date, .. } => {
                 Some(UpcomingDropTarget::Day(*date))
             }
             UpcomingRow::Item { item, .. } => {
@@ -1086,11 +1102,33 @@ impl MarqueeView for UpcomingView {
 }
 
 impl Render for UpcomingView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_workspace(
             AppDatabaseStore::global(cx).read(cx).workspace_generation(),
             cx,
         );
+        let view = cx.entity();
+        let scroll = self.scroll_handle.clone();
+        div()
+            .relative()
+            .size_full()
+            .on_prepaint(move |bounds, _, _| scroll.set_bounds(bounds))
+            .child(container_query(move |size, window, cx| {
+                view.update(cx, |view, cx| view.render_sized(size, window, cx))
+            }))
+    }
+}
+
+impl UpcomingView {
+    fn render_sized(
+        &mut self,
+        viewport: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if viewport.width <= px(0.) || viewport.height <= px(0.) {
+            return div().size_full().into_any_element();
+        }
         let dragging = self.marquee.is_active() || self.dragged_items.is_some();
         let rebuild = self.agenda_stale || self.today != Local::now().date_naive();
         let anchor =
@@ -1107,12 +1145,11 @@ impl Render for UpcomingView {
         if rebuild {
             self.rebuild(cx);
         }
-        let empty = AppDatabaseStore::global(cx).read(cx).is_ready()
-            && self.agenda.rows.iter().all(|row| match row {
-                UpcomingRow::Item { .. } => false,
-                UpcomingRow::Day { markers, .. } => markers.is_empty(),
-                UpcomingRow::Create { .. } | UpcomingRow::Missed => true,
-            });
+        let unavailable = match AppDatabaseStore::global(cx).read(cx).workspace_content() {
+            WorkspaceContent::Loading => Some("Loading upcoming…"),
+            WorkspaceContent::Unavailable => Some("Upcoming unavailable"),
+            WorkspaceContent::Ready => None,
+        };
 
         if !dragging {
             self.sections.animate(window, cx);
@@ -1121,13 +1158,17 @@ impl Render for UpcomingView {
             &self.agenda,
             &self.sections,
             self.today,
-            self.header_width,
+            viewport
+                .width
+                .clamp(LIST_VIEW_MIN_WIDTH, LIST_VIEW_MAX_WIDTH),
             window,
         );
         self.update_layout();
         SelectionManager::report_order(&self.order, cx);
-        let completion =
-            SelectionManager::take_completion_focus(SelectionScope::Upcoming, window, cx);
+        let completion = unavailable
+            .is_none()
+            .then(|| SelectionManager::take_completion_focus(SelectionScope::Upcoming, window, cx))
+            .flatten();
         let anchor = anchor
             .filter(|_| {
                 completion.is_none()
@@ -1150,7 +1191,7 @@ impl Render for UpcomingView {
                 }
                 target
             }
-            None => self.reveal_row(),
+            None => unavailable.is_none().then(|| self.reveal_row()).flatten(),
         };
 
         let list = v_virtual_list(
@@ -1217,53 +1258,19 @@ impl Render for UpcomingView {
             |list, (row, strategy)| list.scroll_to_item(row, strategy),
         );
 
-        let view = cx.entity();
-        let header_width = self.header_width;
         let body = div()
             .id("upcoming-body")
             .relative()
             .size_full()
-            .on_prepaint(move |bounds, window, _| {
-                let width = bounds
-                    .size
-                    .width
-                    .clamp(LIST_VIEW_MIN_WIDTH, LIST_VIEW_MAX_WIDTH);
-                if width != header_width {
-                    window.on_next_frame(move |_, cx| {
-                        view.update(cx, |view, cx| {
-                            view.header_width = width;
-                            cx.notify();
-                        });
-                    });
-                }
-            })
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.clear_drop_target(cx)),
             )
-            .child(list)
-            .child(self.hover_observer(cx))
-            .when(empty, |this| {
-                let headings_height = self
-                    .layout
-                    .sizes
-                    .iter()
-                    .map(|row| row.height)
-                    .sum::<Pixels>();
-                this.child(
-                    div()
-                        .id("upcoming-empty")
-                        .absolute()
-                        .top(headings_height)
-                        .bottom_0()
-                        .left_0()
-                        .right_0()
-                        .overflow_hidden()
-                        .child(EmptyState::new(
-                            Icon::new(AppIcon::ListChecks),
-                            "Nothing scheduled",
-                        )),
-                )
+            .when(unavailable.is_none(), |body| {
+                body.child(list).child(self.hover_observer(cx))
+            })
+            .when_some(unavailable, |body, message| {
+                body.child(EmptyState::new(Icon::new(AppIcon::ListChecks), message))
             });
         let body = marquee(body, self, cx);
 
@@ -1276,8 +1283,10 @@ impl Render for UpcomingView {
                 }),
             )
             .on_drag_move::<DragData<DraggedItems>>(cx.listener(
-                |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
-                    view.handle_drag_move(event, cx);
+                move |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
+                    if unavailable.is_none() {
+                        view.handle_drag_move(event, cx);
+                    }
                 },
             ))
             .on_mouse_up(
@@ -1285,5 +1294,6 @@ impl Render for UpcomingView {
                 cx.listener(|view, _, _, cx| view.clear_drop_target(cx)),
             )
             .child(body)
+            .into_any_element()
     }
 }

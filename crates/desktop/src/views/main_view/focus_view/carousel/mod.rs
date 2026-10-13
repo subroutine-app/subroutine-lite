@@ -1,34 +1,29 @@
 mod controls;
 mod geometry;
+mod slot;
 
 use std::collections::HashSet;
 
 use gpui::{
-    AnyElement, Context, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px, relative,
-    size,
+    AnyElement, Context, Div, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
+    Size, Stateful, StatefulInteractiveElement, Styled, Window, container_query, div,
+    prelude::FluentBuilder as _, px, relative, size,
 };
 use gpui_kit::{
     foundation::StyledExt as _,
     layout::{FadeEdges, ScrollFade},
-    overlay::Tooltip,
+    motion::Transition,
 };
-use gpui_kit_semantics::{NodeSpec, Role, Semantic as _};
 
 use subroutine_core::AnyItem;
 use uuid::Uuid;
 
 use crate::{
-    AppIcon,
-    components::{
-        EmptyState, ItemCard,
-        ext::ElementExt as _,
-        transition::{self, WindowTransitionExt as _},
-    },
-    icons::Icon,
-    item_manager::ItemManager,
+    components::{ItemCard, transition},
+    item_manager::{DraftView, ItemManager},
     selection::SelectionOrder,
     settings::{FocusCarouselOrientation, Settings},
+    stores::AppDatabaseStore,
 };
 
 use super::{
@@ -37,9 +32,66 @@ use super::{
 };
 use controls::CarouselNavigation;
 use geometry::{
-    CAROUSEL_GAP_PX, CarouselGeometry, MIN_CAROUSEL_SCALE, carousel_base_size, carousel_geometry,
-    entrance_distance, vertical_centers,
+    CAROUSEL_GAP_PX, CarouselGeometry, MIN_CAROUSEL_SCALE, carousel_base_size,
+    carousel_footer_height, carousel_geometry, entrance_distance, vertical_centers,
 };
+
+use slot::CarouselSlot;
+
+struct CarouselContent {
+    objects: AnyElement,
+    navigation: CarouselNavigation,
+    position: Option<CarouselPosition>,
+}
+
+pub(super) struct CarouselMotion {
+    distance: Transition<f32>,
+    opacity: Transition<f32>,
+}
+
+struct CarouselItems {
+    ids: Vec<Uuid>,
+    active_index: usize,
+    completing_ids: HashSet<Uuid>,
+    editing_id: Option<Uuid>,
+    displayed: Vec<usize>,
+}
+
+#[derive(Default)]
+struct CarouselPosition {
+    is_completing: bool,
+    progress: f32,
+    label: String,
+}
+
+fn carousel_object(
+    id: impl Into<ElementId>,
+    geometry: CarouselGeometry,
+    orientation: FocusCarouselOrientation,
+    opacity: f32,
+    card: AnyElement,
+) -> Stateful<Div> {
+    let object = div()
+        .id(id)
+        .absolute()
+        .row()
+        .items_center()
+        .justify_center()
+        .w(px(geometry.width))
+        .h(px(geometry.height))
+        .ml(px(-geometry.width / 2.))
+        .mt(px(-geometry.height / 2.))
+        .opacity(geometry.opacity * opacity)
+        .child(card);
+    match orientation {
+        FocusCarouselOrientation::Horizontal => {
+            object.left(relative(geometry.center)).top(relative(0.5))
+        }
+        FocusCarouselOrientation::Vertical => {
+            object.left(relative(0.5)).top(relative(geometry.center))
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct CarouselPose {
@@ -56,11 +108,6 @@ impl FocusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let carousel_overscroll = self.carousel_overscroll.advance(cx);
-        if self.carousel_overscroll.needs_frame(cx) {
-            window.request_animation_frame();
-        }
-
         let action_mode = self.mode == FocusMode::Action;
         let ids: Vec<_> = if action_mode {
             self.items.iter().map(AnyItem::id).collect()
@@ -70,23 +117,73 @@ impl FocusView {
                 .map(EventMoment::notice_id)
                 .collect()
         };
-        let Some(active_index) = self
+        self.carousel_motion.retain(|id, _| ids.contains(id));
+        let active_index = self
             .carousel_active_id()
             .and_then(|active| ids.iter().position(|id| *id == active))
-            .or_else(|| (action_mode && !ids.is_empty()).then_some(0))
-        else {
-            return self.render_empty(cx);
+            .or_else(|| (action_mode && !ids.is_empty()).then_some(0));
+        let orientation = Settings::global(cx).focus_carousel_orientation;
+
+        let draft = ItemManager::global(cx)
+            .read(cx)
+            .view_draft(DraftView::Focus)
+            .cloned();
+        let slot = CarouselSlot::resolve(
+            draft,
+            AppDatabaseStore::global(cx).read(cx).workspace_content(),
+            self.mode,
+            self.queue_blocker.is_some(),
+            active_index.is_some(),
+        );
+        if let Some(slot) = slot {
+            let view = cx.entity();
+            let objects = container_query(move |size, window, cx| {
+                view.update(cx, |view, cx| {
+                    let (width, height) = carousel_base_size(
+                        f32::from(size.width),
+                        f32::from(size.height),
+                        orientation,
+                    );
+                    let extent = match orientation {
+                        FocusCarouselOrientation::Horizontal => size.width,
+                        FocusCarouselOrientation::Vertical => size.height,
+                    };
+                    let geometry =
+                        carousel_geometry(0.0, width, height, orientation, extent.into());
+                    let footer = carousel_footer_height(width, height, action_mode);
+                    div()
+                        .relative()
+                        .size_full()
+                        .child(view.render_carousel_slot(
+                            slot,
+                            geometry,
+                            footer,
+                            orientation,
+                            window,
+                            cx,
+                        ))
+                })
+            })
+            .into_any_element();
+            return self.render_carousel_frame(
+                CarouselContent {
+                    objects,
+                    navigation: CarouselNavigation {
+                        has_previous: false,
+                        has_next: false,
+                    },
+                    position: None,
+                },
+                orientation,
+                window,
+                cx,
+            );
+        }
+        let Some(active_index) = active_index else {
+            unreachable!("a carousel without an active card renders a slot");
         };
-        let settings = Settings::global(cx);
-        let orientation = settings.focus_carousel_orientation;
 
         let active_id = ids[active_index];
-        let focus_handles = if action_mode {
-            &self.item_focus_handles
-        } else {
-            &self.event_focus_handles
-        };
-
         let (completing_ids, editing_id): (HashSet<Uuid>, Option<Uuid>) = if action_mode {
             let manager = ItemManager::global(cx);
             let manager = manager.read(cx);
@@ -112,22 +209,6 @@ impl FocusView {
             ((active_index + 1)..ids.len()).find(|index| !completing_ids.contains(&ids[*index]));
         let is_completing = completing_ids.contains(&active_id);
 
-        let viewport_width = f32::from(self.carousel_size.width);
-        let viewport_height = f32::from(self.carousel_size.height);
-        let (base_width, base_height) =
-            carousel_base_size(viewport_width, viewport_height, orientation);
-        let narrow_card = base_width < 360.0;
-        let footer_height = if action_mode {
-            0.0
-        } else {
-            let height: f32 = if narrow_card { 80.0 } else { 56.0 };
-            height.min((base_height - 1.0).max(0.0))
-        };
-        let primary_extent = match orientation {
-            FocusCarouselOrientation::Horizontal => viewport_width,
-            FocusCarouselOrientation::Vertical => viewport_height,
-        };
-
         let displayed: Vec<usize> = (0..ids.len())
             .filter(|index| !completing_ids.contains(&ids[*index]))
             .collect();
@@ -140,6 +221,77 @@ impl FocusView {
         } else {
             (active_position as f32 + 1.0) / displayed.len() as f32
         };
+        let position = CarouselPosition {
+            is_completing,
+            progress,
+            label: format!("{} / {}", active_position + 1, displayed.len()),
+        };
+        let items = CarouselItems {
+            ids,
+            active_index,
+            completing_ids,
+            editing_id,
+            displayed,
+        };
+        let view = cx.entity();
+        let objects = container_query(move |size, window, cx| {
+            view.update(cx, |view, cx| {
+                view.render_carousel_items(items, size, orientation, order, window, cx)
+            })
+        })
+        .into_any_element();
+        self.render_carousel_frame(
+            CarouselContent {
+                objects,
+                navigation: CarouselNavigation {
+                    has_previous: previous.is_some(),
+                    has_next: next.is_some(),
+                },
+                position: Some(position),
+            },
+            orientation,
+            window,
+            cx,
+        )
+    }
+
+    fn render_carousel_items(
+        &mut self,
+        items: CarouselItems,
+        viewport: Size<Pixels>,
+        orientation: FocusCarouselOrientation,
+        order: SelectionOrder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let CarouselItems {
+            ids,
+            active_index,
+            completing_ids,
+            editing_id,
+            displayed,
+        } = items;
+        let active_id = ids[active_index];
+        let action_mode = self.mode == FocusMode::Action;
+        let focus_handles = if action_mode {
+            &self.item_focus_handles
+        } else {
+            &self.event_focus_handles
+        };
+        let viewport_width = f32::from(viewport.width);
+        let viewport_height = f32::from(viewport.height);
+        let (base_width, base_height) =
+            carousel_base_size(viewport_width, viewport_height, orientation);
+        let narrow_card = base_width < 360.0;
+        let footer_height = carousel_footer_height(base_width, base_height, action_mode);
+        let primary_extent = match orientation {
+            FocusCarouselOrientation::Horizontal => viewport_width,
+            FocusCarouselOrientation::Vertical => viewport_height,
+        };
+        let active_position = displayed
+            .iter()
+            .position(|index| *index == active_index)
+            .unwrap_or_default() as isize;
         let visual_center = active_position as f32;
 
         let primary_base = match orientation {
@@ -186,30 +338,30 @@ impl FocusView {
                     .unwrap_or_default() as isize;
                 (position - active_position) as f32
             };
-            let entering = action_mode && self.entering_ids.contains(&id);
-            let distance = window.keyed_transition(
-                ("focus-carousel-distance", id.as_u64_pair().1),
-                cx,
-                transition::SCROLL,
-                || {
-                    if entering {
-                        entrance_distance(target_distance)
-                    } else {
-                        target_distance
-                    }
-                },
-            );
-            distance.set(target_distance, cx);
-            let distance = distance.animate(window, cx);
-
-            let opacity = window.keyed_transition(
-                ("focus-carousel-opacity", id.as_u64_pair().1),
-                cx,
-                transition::SCROLL,
-                || if entering { 0.0 } else { 1.0 },
-            );
-            opacity.set(if completing { 0.0 } else { 1.0 }, cx);
-            let opacity = opacity.animate(window, cx);
+            let inline = self.inline_card_id == Some(id);
+            let entering = action_mode && self.entering_ids.contains(&id) && !inline;
+            let motion = self
+                .carousel_motion
+                .entry(id)
+                .or_insert_with(|| CarouselMotion {
+                    distance: Transition::new(
+                        if entering {
+                            entrance_distance(target_distance)
+                        } else {
+                            target_distance
+                        },
+                        transition::SCROLL,
+                    ),
+                    opacity: Transition::new(if entering { 0.0 } else { 1.0 }, transition::SCROLL),
+                });
+            if inline {
+                motion.distance.snap(target_distance);
+                motion.opacity.snap(1.0);
+            }
+            motion.distance.set(target_distance);
+            motion.opacity.set(if completing { 0.0 } else { 1.0 });
+            let distance = motion.distance.animate(window, cx);
+            let opacity = motion.opacity.animate(window, cx);
 
             let mut geometry = carousel_geometry(
                 distance,
@@ -352,28 +504,13 @@ impl FocusView {
                     .into_any_element()
             };
 
-            let object = div()
-                .id(("focus-carousel-object", id.as_u64_pair().1))
-                .absolute()
-                .row()
-                .items_center()
-                .justify_center()
-                .w(px(geometry.width))
-                .h(px(geometry.height))
-                .opacity(geometry.opacity * exit_opacity)
-                .child(card);
-            let object = match orientation {
-                FocusCarouselOrientation::Horizontal => object
-                    .left(relative(geometry.center))
-                    .top(relative(0.5))
-                    .ml(px(-geometry.width / 2.))
-                    .mt(px(-geometry.height / 2.)),
-                FocusCarouselOrientation::Vertical => object
-                    .left(relative(0.5))
-                    .top(relative(geometry.center))
-                    .ml(px(-geometry.width / 2.))
-                    .mt(px(-geometry.height / 2.)),
-            };
+            let object = carousel_object(
+                ("focus-carousel-object", id.as_u64_pair().1),
+                geometry,
+                orientation,
+                exit_opacity,
+                card,
+            );
             let object = if is_active || completing {
                 object
             } else {
@@ -388,19 +525,49 @@ impl FocusView {
             objects.push(object.into_any_element());
         }
 
+        if self.inline_card_id == Some(active_id) {
+            self.inline_card_id = None;
+        }
+        div()
+            .relative()
+            .size_full()
+            .children(objects)
+            .into_any_element()
+    }
+
+    fn render_carousel_frame(
+        &mut self,
+        content: CarouselContent,
+        orientation: FocusCarouselOrientation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let CarouselContent {
+            objects,
+            navigation,
+            position,
+        } = content;
+        let carousel_overscroll = if position.is_some() {
+            let offset = self.carousel_overscroll.advance(cx);
+            if self.carousel_overscroll.needs_frame(cx) {
+                window.request_animation_frame();
+            }
+            offset
+        } else {
+            px(0.)
+        };
         let fade_edges = match orientation {
             FocusCarouselOrientation::Horizontal => FadeEdges {
-                left: previous.is_some(),
-                right: next.is_some(),
+                left: navigation.has_previous,
+                right: navigation.has_next,
                 ..FadeEdges::default()
             },
             FocusCarouselOrientation::Vertical => FadeEdges {
-                top: previous.is_some(),
-                bottom: next.is_some(),
+                top: navigation.has_previous,
+                bottom: navigation.has_next,
                 ..FadeEdges::default()
             },
         };
-        let view = cx.entity();
         let carousel = div()
             .id("focus-carousel")
             .relative()
@@ -409,15 +576,6 @@ impl FocusView {
             .on_scroll_wheel(
                 cx.listener(|view, event, window, cx| view.handle_wheel(event, window, cx)),
             )
-            .on_prepaint(move |bounds, _, cx| {
-                let measured = bounds.size;
-                view.update(cx, |view, cx| {
-                    if view.carousel_size != measured {
-                        view.carousel_size = measured;
-                        cx.notify();
-                    }
-                });
-            })
             .child(
                 div()
                     .relative()
@@ -429,19 +587,9 @@ impl FocusView {
                     .when(orientation == FocusCarouselOrientation::Vertical, |this| {
                         this.top(carousel_overscroll)
                     })
-                    .children(objects),
+                    .child(objects),
             );
-        let controls = self.render_controls(
-            orientation,
-            CarouselNavigation {
-                has_previous: previous.is_some(),
-                has_next: next.is_some(),
-            },
-            is_completing,
-            progress,
-            format!("{} / {}", active_position + 1, displayed.len()),
-            cx,
-        );
+        let controls = self.render_controls(orientation, navigation, position, cx);
         let controls = match orientation {
             FocusCarouselOrientation::Horizontal => div()
                 .flex_none()
@@ -485,47 +633,6 @@ impl FocusView {
                     ),
             )
             .child(controls)
-            .into_any_element()
-    }
-
-    fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (id, icon, title, caption) = if !self.loaded {
-            ("focus-loading", AppIcon::Clock, "Loading…", None)
-        } else {
-            match self.mode {
-                FocusMode::Action if self.queue_blocker.is_some() => (
-                    "focus-action-blocked",
-                    AppIcon::CalendarClock,
-                    "Queue paused for an event",
-                    Some("Actions will return when the event no longer blocks the queue.".into()),
-                ),
-                FocusMode::Action => (
-                    "focus-action-empty",
-                    AppIcon::Check,
-                    "No actions ready",
-                    Some("No queued actions are due now.".into()),
-                ),
-                FocusMode::Event => {
-                    let horizon =
-                        temporal::format_horizon(Settings::global(cx).focus_horizon_hours());
-                    (
-                        "focus-event-empty",
-                        AppIcon::CalendarClock,
-                        "No upcoming events",
-                        Some(format!("No events in the next {horizon}.")),
-                    )
-                }
-            }
-        };
-        let status = caption.unwrap_or_else(|| title.to_owned());
-        let tooltip = status.clone();
-
-        div()
-            .id(id)
-            .size_full()
-            .child(EmptyState::new(Icon::new(icon), title))
-            .tooltip(move |_, cx| Tooltip::new(id, tooltip.clone()).view(cx))
-            .semantic_in(cx, NodeSpec::new(id, Role::Status).text(status))
             .into_any_element()
     }
 }

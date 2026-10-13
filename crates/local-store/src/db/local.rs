@@ -1,5 +1,5 @@
 use rusqlite::TransactionBehavior;
-use subroutine_core::{Event, OptimisticPatch, ResourceKey, ResourceValue};
+use subroutine_core::{Event, Marker, OptimisticPatch, ResourceKey, ResourceValue};
 use uuid::Uuid;
 
 use super::{
@@ -10,6 +10,31 @@ use super::{
 use crate::{LocalStoreError, Projection, Result, WorkspaceIdentity};
 
 impl Database {
+    pub(crate) fn complete_holiday_setup(&mut self, markers: Vec<Marker>) -> Result<Projection> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (local, pending): (bool, bool) = tx.query_row(
+            "SELECT workspace_kind = 'local', holiday_setup = 'pending'
+             FROM workspace WHERE singleton = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if !local {
+            return Err(LocalStoreError::InvalidMutation(
+                "holiday setup requires a local-only workspace".into(),
+            ));
+        }
+        if pending {
+            upsert_rows(&tx, "marker", &markers, |row| row.id)?;
+            tx.execute(
+                "UPDATE workspace SET holiday_setup = 'complete' WHERE singleton = 1",
+                [],
+            )?;
+        }
+        commit_projection(tx)
+    }
+
     pub(crate) fn set_event_busy_override(
         &mut self,
         event_id: Uuid,

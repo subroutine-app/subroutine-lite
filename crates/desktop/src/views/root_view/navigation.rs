@@ -2,7 +2,7 @@ use super::{NavigationDestination, RootView, navigation_drawer::NavigationDrawer
 use crate::{
     item_manager::ItemManager,
     selection::{SelectionManager, SelectionScope},
-    settings::Settings,
+    settings::{PrimaryView, Settings},
     stores::AppDatabaseStore,
     views::{SavedItemsFilter, SelectedMainView, SourceKind},
 };
@@ -421,6 +421,34 @@ impl RootView {
         cx.notify();
     }
 
+    pub(super) fn remember_primary_view(view: PrimaryView, cx: &mut Context<Self>) {
+        if Settings::global(cx).desktop_layout.primary_view() != view {
+            Settings::update(cx, |settings| {
+                settings.desktop_layout.select_primary_view(view);
+            });
+        }
+    }
+
+    pub(super) fn choose_navigation(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if id != self.active_navigation_id(cx) {
+            let manager = ItemManager::global(cx);
+            manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+            if manager.read(cx).is_editing() {
+                return;
+            }
+        }
+        self.select_navigation(id, window, cx);
+        if let Some(view) = PrimaryView::from_id(id) {
+            Self::remember_primary_view(view, cx);
+        }
+    }
+
+    // Also used by drag-hover; only choose_navigation remembers a primary destination.
     pub(super) fn select_navigation(
         &mut self,
         id: &str,
@@ -449,7 +477,7 @@ impl RootView {
             self.pending_full_source_route = None;
             self.route = WorkspaceRoute::Main;
             self.main_view
-                .update(cx, |main, cx| main.select_view(view, window, cx));
+                .update(cx, |main, cx| main.preview_view(view, window, cx));
             cx.notify();
             return;
         }
@@ -481,10 +509,10 @@ impl RootView {
         );
         match destination {
             NavigationDestination::Home => {
-                self.select_navigation(WorkspaceRoute::Home.id(), window, cx);
+                self.choose_navigation(WorkspaceRoute::Home.id(), window, cx);
             }
             NavigationDestination::Main(view) => {
-                self.select_navigation(view.id(), window, cx);
+                self.choose_navigation(view.id(), window, cx);
             }
             destination => self.open_source_full_view(destination.route(), window, cx),
         }
@@ -516,6 +544,54 @@ impl RootView {
                     focus.focus(window, cx);
                 }
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_cycle_keeps_sidebar_order_and_wraps() {
+        let expected = [
+            NavigationDestination::Home,
+            NavigationDestination::Main(SelectedMainView::Upcoming),
+            NavigationDestination::Main(SelectedMainView::Queue),
+            NavigationDestination::Main(SelectedMainView::Timeline),
+            NavigationDestination::Main(SelectedMainView::Calendar),
+            NavigationDestination::Main(SelectedMainView::Focus),
+            NavigationDestination::Unqueued,
+            NavigationDestination::Unscheduled,
+            NavigationDestination::Routines,
+            NavigationDestination::SavedItems,
+            NavigationDestination::Search,
+        ];
+        for (index, destination) in expected.into_iter().enumerate() {
+            assert_eq!(
+                destination.step(ViewDirection::Next),
+                expected[(index + 1) % expected.len()]
+            );
+            assert_eq!(
+                destination.step(ViewDirection::Previous),
+                expected[(index + expected.len() - 1) % expected.len()]
+            );
+        }
+    }
+
+    #[test]
+    fn only_home_and_main_destinations_are_remembered() {
+        for destination in NavigationDestination::ALL {
+            let expected = match destination {
+                NavigationDestination::Home => Some(PrimaryView::Home),
+                NavigationDestination::Main(view) => Some(PrimaryView::Main(view)),
+                NavigationDestination::Search
+                | NavigationDestination::Unqueued
+                | NavigationDestination::Unscheduled
+                | NavigationDestination::Routines
+                | NavigationDestination::SavedItems => None,
+            };
+            assert_eq!(PrimaryView::from_id(destination.id()), expected);
         }
     }
 }

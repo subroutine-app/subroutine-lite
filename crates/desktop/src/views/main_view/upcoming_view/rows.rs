@@ -24,9 +24,13 @@ use crate::{
 
 use super::{
     UpcomingDropTarget, UpcomingSection, UpcomingView,
-    agenda::{AgendaMarker, UpcomingRow},
+    agenda::{AgendaMarker, CreateKind, UpcomingRow},
     headers::{CONTROLS_WIDTH, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT},
 };
+
+fn card_row(id: impl Into<ElementId>, height: Pixels) -> Stateful<Div> {
+    div().id(id).relative().w_full().h(height).px_4()
+}
 
 impl UpcomingView {
     pub(super) fn render_row(
@@ -58,7 +62,9 @@ impl UpcomingView {
                 window,
                 cx,
             ),
-            UpcomingRow::Create { date } => self.render_create(date, interactive, window, cx),
+            UpcomingRow::Create { date, kind } => {
+                self.render_create(date, kind, interactive, window, cx)
+            }
         }
     }
 
@@ -118,12 +124,7 @@ impl UpcomingView {
         );
         let focus = cx.theme().colors.focus;
 
-        div()
-            .id(("upcoming-item-drop", id.as_u64_pair().1))
-            .relative()
-            .w_full()
-            .h(card_height)
-            .px_4()
+        card_row(("upcoming-item-drop", id.as_u64_pair().1), card_height)
             .when_some(date.filter(|_| interactive), |this, date| {
                 this.on_drag_move::<DragData<DraggedItems>>(cx.listener(
                     move |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
@@ -279,12 +280,9 @@ impl UpcomingView {
                 ElementId::from(("upcoming-day", date.num_days_from_ce() as u64))
             }
         };
-        div()
-            .id(id)
-            .row()
-            .size_full()
-            .px_4()
-            .when(self.sections.can_expand(section), |row| {
+        div().id(id).relative().row().size_full().px_4().when(
+            self.sections.can_expand(section),
+            |row| {
                 row.cursor_pointer()
                     .focusable()
                     .tab_stop(true)
@@ -296,7 +294,8 @@ impl UpcomingView {
                         cx.stop_propagation();
                         view.toggle_section(section, window, cx);
                     }))
-            })
+            },
+        )
     }
 
     fn section_label(
@@ -381,6 +380,21 @@ impl UpcomingView {
     }
 
     pub(super) fn section_controls(&self, cx: &Context<Self>) -> impl IntoElement {
+        let mut sections = self
+            .agenda
+            .rows
+            .iter()
+            .filter(|row| row.is_heading())
+            .map(UpcomingRow::section)
+            .filter(|section| self.sections.can_expand(*section));
+        let enabled = sections.clone().next().is_some();
+        let expanded = !sections.any(|section| self.sections.is_expanded(section));
+        let (icon, tooltip) = if expanded {
+            (AppIcon::ListChevronsUpDown, "Expand all lists")
+        } else {
+            (AppIcon::ListChevronsDownUp, "Collapse all lists")
+        };
+
         div()
             .id("upcoming-section-controls")
             .w(CONTROLS_WIDTH)
@@ -389,27 +403,8 @@ impl UpcomingView {
             .row()
             .flex_none()
             .items_center()
-            .gap(px(2.))
-            .children([true, false].into_iter().map(|expanded| {
-                let (id, icon, tooltip) = if expanded {
-                    (
-                        "upcoming-expand-all",
-                        AppIcon::ListChevronsUpDown,
-                        "Expand all lists",
-                    )
-                } else {
-                    (
-                        "upcoming-collapse-all",
-                        AppIcon::ListChevronsDownUp,
-                        "Collapse all lists",
-                    )
-                };
-                let enabled = self.agenda.rows.iter().any(|row| {
-                    row.is_heading()
-                        && self.sections.can_expand(row.section())
-                        && self.sections.is_expanded(row.section()) != expanded
-                });
-                Button::new(id)
+            .child(
+                Button::new("upcoming-toggle-all")
                     .ghost()
                     .size(MARKER_HEIGHT)
                     .icon(Icon::new(icon).size_4())
@@ -424,8 +419,8 @@ impl UpcomingView {
                             cx.stop_propagation();
                             view.set_all_expanded(expanded, window, cx);
                         }))
-                    })
-            }))
+                    }),
+            )
     }
 
     fn render_day(
@@ -703,6 +698,7 @@ impl UpcomingView {
     fn render_create(
         &mut self,
         date: NaiveDate,
+        kind: CreateKind,
         interactive: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -711,12 +707,32 @@ impl UpcomingView {
         let active = self.drop_target == Some(target);
         let row_id = ElementId::from(("upcoming-create-row", date.num_days_from_ce() as u64));
         let accepts = move |dragged: &DraggedItems| interactive && !dragged.items.is_empty();
+        let button = if kind == CreateKind::Slot {
+            ItemCard::create_slot(
+                ("upcoming-create", date.num_days_from_ce() as u32),
+                format!("New action for {}", date.format("%A, %B %-d, %Y")),
+                cx,
+            )
+            .tooltip("New action")
+            .disabled(!interactive)
+            .tab_stop(interactive)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                SelectionManager::claim_press(cx);
+            })
+            .when(interactive, |button| {
+                button.on_click(cx.listener(move |view, _, window, cx| {
+                    cx.stop_propagation();
+                    view.add_draft(date, window, cx);
+                }))
+            })
+            .into_any_element()
+        } else {
+            self.add_button(date, interactive, window, cx)
+                .into_any_element()
+        };
 
-        div()
-            .id(row_id)
+        card_row(row_id, kind.height())
             .row()
-            .size_full()
-            .px_4()
             .items_center()
             .justify_center()
             .when(active, |this| this.bg(cx.theme().colors.selected))
@@ -744,10 +760,7 @@ impl UpcomingView {
                     view.open_context_menu(date, event, window, cx);
                 }),
             )
-            .when(
-                self.sections.is_expanded(UpcomingSection::Day(date)),
-                |row| row.child(self.add_button(date, interactive, window, cx)),
-            )
+            .child(button)
             .into_any_element()
     }
 }

@@ -15,9 +15,8 @@ use super::{SavedItemDropTarget, SavedItemKind, SavedItemsFilter, SavedItemsView
 use crate::{
     AppIcon,
     components::{
-        CardMeta, DragData, DraggedItems, EmptyState, ItemCard, ItemCardStates, Label,
-        SIDEBAR_GUTTER, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, menu::MenuBuilder,
-        virtual_list::ScrollFocus,
+        DragData, DraggedItems, EmptyState, ItemCardStates, Label, SIDEBAR_GUTTER,
+        SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, menu::MenuBuilder, virtual_list::ScrollFocus,
     },
     icons::Icon,
     item_manager::ItemManager,
@@ -114,48 +113,6 @@ pub(crate) fn saved_items_context_menu(templates: Vec<AnyItem>) -> MenuBuilder {
                 SelectionManager::clear_global(cx)
             })
         })
-}
-
-pub(super) fn render_draft(
-    draft: &SavedItem,
-    details: &ItemCardStates,
-    window: &mut Window,
-    cx: &mut App,
-) -> impl IntoElement {
-    let item = AnyItem::from(draft.clone());
-    let height = details.height(draft.id(), ITEM_HEIGHT);
-    let duration = match draft {
-        SavedItem::Action(template) => template.duration,
-        SavedItem::Event(template) => Some(template.duration),
-    };
-    let now = Utc::now();
-    let meta = duration
-        .and_then(|duration| duration_str((now + duration) - now))
-        .map(|text| CardMeta::new(text).icon(AppIcon::Clock));
-
-    div()
-        .id(("saved-item-draft", draft.id().as_u64_pair().1))
-        .h(height + SIDEBAR_ITEM_GAP)
-        .flex_none()
-        .px(SIDEBAR_GUTTER)
-        .pb(SIDEBAR_ITEM_GAP)
-        .child(
-            ItemCard::new_with_id(
-                ("saved-item-card", draft.id().as_u64_pair().1),
-                &item,
-                None,
-                window,
-                cx,
-            )
-            .details(details.get(draft.id()))
-            .meta(meta.into_iter().collect())
-            .border(false)
-            .draggable(false, None)
-            .block_mouse_except_scroll()
-            .w_full()
-            .h(height)
-            .flex_none(),
-        )
 }
 
 pub struct SavedItemsList {

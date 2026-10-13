@@ -2,16 +2,17 @@ use std::collections::BTreeMap;
 
 use chrono::{Datelike, NaiveDate};
 use gpui::{
-    App, Bounds, ClickEvent, Context, DragMoveEvent, ElementId, FontWeight, InteractiveElement,
+    AnyElement, App, ClickEvent, Context, DragMoveEvent, ElementId, FontWeight, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
-    ParentElement, Pixels, StatefulInteractiveElement, Styled, Window, canvas, div, fill, point,
-    prelude::FluentBuilder, px, relative, size,
+    ParentElement, Pixels, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
+    px, relative, size,
 };
 use gpui_kit::foundation::StyledExt as _;
 use gpui_kit_theme::ActiveTheme;
 use subroutine_core::{AnyItem, SchedulePoint};
 
 use crate::{
+    AppIcon,
     color::ColorExt,
     components::{
         Button, ButtonVariants, DragData, Draggable, DraggedItems, Label, create_drag_data,
@@ -19,97 +20,29 @@ use crate::{
         transition::{self, WindowTransitionExt as _},
     },
     dates::InclusiveDateRange,
+    icons::Icon,
+    item_manager::{DraftView, ItemManager},
     presentation::UxColor,
+    selection::SelectionManager,
+    stores::{AppDatabaseStore, WorkspaceContent},
 };
 
 use super::super::{format_item_time, is_calendar_item_on};
-use super::{CalendarView, date_context_menu, date_range_context_menu};
+use super::{
+    CalendarView, GridCreation, MAX_WEEK_HEIGHT, MIN_WEEK_HEIGHT,
+    borders::GridBorders,
+    date_context_menu, date_range_context_menu,
+    markers::{MARKER_PITCH, MarkerLayout, marker_preview},
+};
 
 pub(super) const EDGE_HORIZON: Pixels = px(200.);
 const MIN_SUMMARY_WIDTH: Pixels = px(80.);
 const MIN_FULL_SUMMARY_WIDTH: Pixels = px(120.);
-const MONTH_BOUNDARY_WIDTH: Pixels = px(1.5);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MonthBoundarySegment {
-    Horizontal { row: usize, column: usize },
-    Vertical { row: usize, column: usize },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct HorizontalBoundaryRun {
-    row: usize,
-    start_column: usize,
-    end_column: usize,
-}
+const CREATE_ROW_HEIGHT: Pixels = px(24.);
 
 fn same_month(date: NaiveDate, other: NaiveDate) -> bool {
     (date.year(), date.month()) == (other.year(), other.month())
-}
-
-fn month_boundary_segments(start_date: NaiveDate, num_weeks: usize) -> Vec<MonthBoundarySegment> {
-    let straddles_month = |date, other| !same_month(date, other);
-    let mut segments = Vec::new();
-
-    for row in 0..num_weeks {
-        let week_start = start_date + chrono::Duration::weeks(row as i64);
-        for column in 0..7 {
-            let date = week_start + chrono::Duration::days(column as i64);
-
-            if row == 0 && straddles_month(date, date - chrono::Duration::days(7)) {
-                segments.push(MonthBoundarySegment::Horizontal { row, column });
-            }
-            if column < 6 && straddles_month(date, date + chrono::Duration::days(1)) {
-                segments.push(MonthBoundarySegment::Vertical {
-                    row,
-                    column: column + 1,
-                });
-            }
-            if straddles_month(date, date + chrono::Duration::days(7)) {
-                segments.push(MonthBoundarySegment::Horizontal {
-                    row: row + 1,
-                    column,
-                });
-            }
-        }
-    }
-
-    segments
-}
-
-fn month_boundary_segment_dates(
-    start_date: NaiveDate,
-    segment: MonthBoundarySegment,
-) -> (NaiveDate, NaiveDate) {
-    match segment {
-        MonthBoundarySegment::Horizontal { row, column } => {
-            let below = start_date
-                + chrono::Duration::weeks(row as i64)
-                + chrono::Duration::days(column as i64);
-            (below - chrono::Duration::days(7), below)
-        }
-        MonthBoundarySegment::Vertical { row, column } => {
-            let right = start_date
-                + chrono::Duration::weeks(row as i64)
-                + chrono::Duration::days(column as i64);
-            (right - chrono::Duration::days(1), right)
-        }
-    }
-}
-
-fn month_boundary_groups(
-    start_date: NaiveDate,
-    num_weeks: usize,
-) -> BTreeMap<NaiveDate, Vec<MonthBoundarySegment>> {
-    let mut groups = BTreeMap::<_, Vec<_>>::new();
-    for segment in month_boundary_segments(start_date, num_weeks) {
-        let (_, after) = month_boundary_segment_dates(start_date, segment);
-        groups
-            .entry(after.with_day(1).unwrap())
-            .or_default()
-            .push(segment);
-    }
-    groups
 }
 
 fn boundary_borders_month(boundary: NaiveDate, month: NaiveDate) -> bool {
@@ -176,75 +109,9 @@ fn month_background_tints(
     tints
 }
 
-fn month_boundary_is_obscured(
-    start_date: NaiveDate,
-    segment: MonthBoundarySegment,
-    selected_range: Option<InclusiveDateRange>,
-    drop_target: Option<NaiveDate>,
-) -> bool {
-    let (first, second) = month_boundary_segment_dates(start_date, segment);
-    selected_range.is_some_and(|range| range.contains(first) || range.contains(second))
-        || drop_target.is_some_and(|date| date == first || date == second)
-}
-
-fn horizontal_boundary_runs(
-    segments: &[MonthBoundarySegment],
-    num_weeks: usize,
-) -> Vec<HorizontalBoundaryRun> {
-    let mut runs = Vec::new();
-
-    for row in 0..=num_weeks {
-        let mut start_column = None;
-        for column in 0..=7 {
-            let continues =
-                column < 7 && segments.contains(&MonthBoundarySegment::Horizontal { row, column });
-            match (start_column, continues) {
-                (None, true) => start_column = Some(column),
-                (Some(start), false) => {
-                    runs.push(HorizontalBoundaryRun {
-                        row,
-                        start_column: start,
-                        end_column: column,
-                    });
-                    start_column = None;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    runs
-}
-
-fn horizontal_boundary_touches_vertex(
-    segments: &[MonthBoundarySegment],
-    row: usize,
-    column: usize,
-) -> bool {
-    (column < 7 && segments.contains(&MonthBoundarySegment::Horizontal { row, column }))
-        || (column > 0
-            && segments.contains(&MonthBoundarySegment::Horizontal {
-                row,
-                column: column - 1,
-            }))
-}
-
-fn vertical_boundary_touches_vertex(
-    segments: &[MonthBoundarySegment],
-    row: usize,
-    column: usize,
-) -> bool {
-    segments.contains(&MonthBoundarySegment::Vertical { row, column })
-        || (row > 0
-            && segments.contains(&MonthBoundarySegment::Vertical {
-                row: row - 1,
-                column,
-            }))
-}
-
 fn calendar_salience(item: &AnyItem) -> Option<u8> {
     match item {
-        AnyItem::Marker(_) => Some(110),
+        AnyItem::Marker(_) => None,
         AnyItem::Event(_) => Some(100),
         AnyItem::Action(action) => {
             if matches!(action.start, Some(SchedulePoint::Date(_))) {
@@ -286,15 +153,20 @@ fn calendar_dragged_items(
     })
 }
 
-fn calendar_summaries(entries: &[AnyItem], day_width: Pixels) -> (Vec<AnyItem>, usize) {
+fn calendar_summaries(
+    entries: &[AnyItem],
+    day_width: Pixels,
+    rows: usize,
+) -> (Vec<AnyItem>, usize) {
     if day_width < MIN_SUMMARY_WIDTH {
         return (Vec::new(), entries.len());
     }
-    let limit = if day_width < MIN_FULL_SUMMARY_WIDTH {
+    let limit: usize = if day_width < MIN_FULL_SUMMARY_WIDTH {
         1
     } else {
         2
     };
+    let limit = limit.min(rows.saturating_sub(usize::from(entries.len() > rows)));
     let mut candidates: Vec<_> = entries
         .iter()
         .filter_map(|item| calendar_salience(item).map(|salience| (salience, item)))
@@ -317,6 +189,65 @@ fn calendar_summaries(entries: &[AnyItem], day_width: Pixels) -> (Vec<AnyItem>, 
     (summaries, hidden_count)
 }
 
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use subroutine_core::Action;
+
+    #[test]
+    fn creation_uses_the_full_selection_without_moving_its_endpoints() {
+        let first = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let last = first + chrono::Duration::days(4);
+        let hovered = first + chrono::Duration::days(2);
+        for range in [
+            InclusiveDateRange::new(first, last),
+            InclusiveDateRange::new(last, first),
+        ] {
+            let marker = GridCreation::new(hovered, Some(range)).marker();
+            assert_eq!(marker.date, first);
+            assert_eq!(marker.end_date, Some(last));
+            for offset in 0..range.day_count() {
+                assert!(marker.covers(first + chrono::Duration::days(i64::from(offset))));
+            }
+            assert!(!marker.covers(first.pred_opt().unwrap()));
+            assert!(!marker.covers(last.succ_opt().unwrap()));
+        }
+        for selection in [
+            None,
+            Some(InclusiveDateRange::single(hovered)),
+            Some(InclusiveDateRange::single(first)),
+        ] {
+            let marker = GridCreation::new(hovered, selection).marker();
+            assert_eq!(marker.date, hovered);
+            assert_eq!(marker.end_date, None);
+            assert!(marker.covers(hovered));
+            assert!(!marker.covers(hovered.succ_opt().unwrap()));
+        }
+    }
+
+    #[test]
+    fn busy_dates_leave_room_for_creation_and_report_hidden_items() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let items: Vec<_> = (0..4)
+            .map(|index| {
+                AnyItem::Action(
+                    Action::new(format!("Action {index}"))
+                        .with_start(Some(SchedulePoint::Date(date))),
+                )
+            })
+            .collect();
+        for (rows, expected) in [(1, 0), (2, 1), (3, 2)] {
+            let (summaries, hidden) = calendar_summaries(&items, px(160.), rows);
+            assert_eq!(summaries.len(), expected);
+            assert_eq!(summaries.len() + hidden, items.len());
+            assert!(summaries.len() + usize::from(hidden > 0) <= rows);
+        }
+        let (summaries, hidden) = calendar_summaries(&items[..1], px(160.), 1);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(hidden, 0);
+    }
+}
+
 fn render_calendar_summary(
     item: AnyItem,
     date: NaiveDate,
@@ -324,16 +255,11 @@ fn render_calendar_summary(
     cx: &App,
 ) -> impl IntoElement {
     let item_type = item.item_type();
-    let is_marker = matches!(&item, AnyItem::Marker(_));
     let neutral = cx.theme().colors.text_muted;
-    let when = if is_marker {
-        String::new()
-    } else {
-        match item.start() {
-            Some(SchedulePoint::Date(_)) => "Any time".to_string(),
-            Some(start) => format_item_time(start.into()),
-            None => String::new(),
-        }
+    let when = match item.start() {
+        Some(SchedulePoint::Date(_)) => "Any time".to_string(),
+        Some(start) => format_item_time(start.into()),
+        None => String::new(),
     };
     let has_time_label = !when.is_empty() && day_width >= MIN_FULL_SUMMARY_WIDTH;
     let id: ElementId =
@@ -368,17 +294,11 @@ fn render_calendar_summary(
             })
         })
         .when(day_width >= px(60.), |this| {
-            this.when_else(
-                is_marker,
-                |this| this.child(div().w(px(2.)).h_3().flex_none().rounded_full().bg(neutral)),
-                |this| {
-                    this.child(
-                        item_icon(item_type)
-                            .size_3()
-                            .flex_none()
-                            .text_color(neutral),
-                    )
-                },
+            this.child(
+                item_icon(item_type)
+                    .size_3()
+                    .flex_none()
+                    .text_color(neutral),
             )
         })
         .when(has_time_label, |this| {
@@ -461,6 +381,55 @@ fn render_calendar_disclosure(
 }
 
 impl CalendarView {
+    fn render_grid_create(
+        &self,
+        date: NaiveDate,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let row = div()
+            .w_full()
+            .h(CREATE_ROW_HEIGHT)
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center();
+
+        row.children(visible.then(|| self.render_grid_create_button(date, cx)))
+            .into_any_element()
+    }
+
+    fn render_grid_create_button(&self, date: NaiveDate, cx: &Context<Self>) -> Button {
+        let colors = &cx.theme().colors;
+        let hover_background = colors.control_hover.alpha(0.8);
+        let hover_foreground = colors.text;
+        let creation = GridCreation::new(date, self.selected_date_range);
+        Button::new(("calendar-create-item", date.num_days_from_ce() as u32))
+            .ghost()
+            .compact()
+            .size(CREATE_ROW_HEIGHT)
+            .rounded_full()
+            .bg(colors.control.alpha(0.55))
+            .text_color(colors.text_muted.alpha(0.7))
+            .hover(move |style| style.bg(hover_background).text_color(hover_foreground))
+            .icon(Icon::new(AppIcon::Plus).size_4())
+            .role(gpui::Role::Button)
+            .aria_label(creation.label())
+            .tooltip("New marker")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                SelectionManager::claim_press(cx);
+                cx.stop_propagation();
+            })
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_pressure(|_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                if event.click_count() == 1 {
+                    view.begin_grid_draft(date, window, cx);
+                }
+            }))
+    }
+
     pub fn render_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.apply_scroll_transition(window, cx);
         self.apply_edge_scroll(window, cx);
@@ -470,6 +439,45 @@ impl CalendarView {
         let day_width = self.day_width();
         let narrow = day_width < px(60.);
         let horizon = bounds.size.height / 2. + EDGE_HORIZON;
+        let base_height = (day_width * 1.3).clamp(MIN_WEEK_HEIGHT, MAX_WEEK_HEIGHT);
+        let candidate_row = (self.top_offset_weeks(self.scroll_offset)
+            - self.visible_top() / base_height)
+            .floor() as i64;
+        let candidate_start = self.week_at_row(candidate_row).first_day();
+        let candidate_weeks = ((horizon * 2. / base_height).ceil() as usize + 2).min(100);
+        let candidate_end = candidate_start + chrono::Duration::weeks(candidate_weeks as i64);
+        let manager = ItemManager::global(cx);
+        let draft = match manager.read(cx).view_draft(DraftView::Calendar) {
+            Some(AnyItem::Marker(marker)) => Some(marker.clone()),
+            _ => None,
+        };
+        let marker_entries = self
+            .stored_markers()
+            .cloned()
+            .map(|marker| (marker, false))
+            .chain(
+                self.projected_markers(candidate_start, candidate_end)
+                    .into_iter()
+                    .map(|marker| (marker, true)),
+            )
+            .chain(draft.into_iter().map(|marker| (marker, false)))
+            .map(|(marker, projected)| (marker_preview(marker, cx), projected))
+            .collect::<Vec<_>>();
+        let markers = MarkerLayout::new(marker_entries, &mut self.marker_lanes);
+        let content_top = window.line_height() + px(10.) + px(cx.theme().effects.focus_ring_width);
+        let lanes = markers.lanes_between(candidate_start, candidate_end);
+        let marker_min_height = if lanes == 0 {
+            px(0.)
+        } else {
+            content_top
+                + MARKER_PITCH * lanes as f32
+                + px(22.)
+                + CREATE_ROW_HEIGHT
+                + px(cx.theme().effects.focus_ring_width + 4.)
+        };
+        let previous_height = self.week_height;
+        self.set_marker_min_week_height(marker_min_height, cx);
+        self.reveal_grid_marker_edit(content_top, self.week_height != previous_height, cx);
         let scroll_position = self.scroll_offset * -1.;
         let start = scroll_position - horizon;
         let end = scroll_position + horizon;
@@ -477,27 +485,21 @@ impl CalendarView {
         let first_row = (start / interval).floor() as i64;
         let first_row_top = interval * first_row as f32 - start;
         let start_week = self.week_at_row(first_row);
-        let num_weeks = ((end - start) / interval).ceil() as usize;
-        let num_weeks = num_weeks.min(100);
+        let last_row = (end / interval).ceil() as i64;
+        let num_weeks = (last_row - first_row).clamp(0, 100) as usize;
 
         let today = self.current_date;
 
         let range_start = start_week.first_day();
         let range_end = range_start + chrono::Duration::weeks(num_weeks as i64);
-        let projected = self.projected_markers(range_start, range_end);
+        let marker_order = markers.order(range_start, range_end, cx);
+
         let projected_items = self.projected_items(range_start, range_end);
         let projected_signals = self.projected_signals(range_start, range_end);
         let selected_range = self.selected_date_range;
-        let selected_drag_entries =
-            selected_range
-                .filter(|range| range.day_count() > 1)
-                .map(|range| {
-                    self.markers_in_range(range)
-                        .into_iter()
-                        .map(|(marker, projected)| (AnyItem::Marker(marker), projected))
-                        .chain(self.items_in_range(range))
-                        .collect::<Vec<_>>()
-                });
+        let selected_drag_entries = selected_range
+            .filter(|range| range.day_count() > 1)
+            .map(|range| self.items_in_range(range));
         let calendar_appearance = crate::settings::Settings::global(cx).calendar_appearance;
         let month_tints = month_background_tints(
             range_start,
@@ -507,36 +509,33 @@ impl CalendarView {
             window,
             cx,
         );
-        let month_boundaries: Vec<_> = month_boundary_groups(range_start, num_weeks)
-            .into_iter()
-            .filter_map(|(boundary, segments)| {
-                let opacity = month_boundary_opacity(boundary, self.month_in_view, window, cx);
-                if opacity <= 0.0 {
-                    return None;
-                }
-                let segments: Vec<_> = segments
-                    .into_iter()
-                    .filter(|segment| {
-                        !month_boundary_is_obscured(
-                            range_start,
-                            *segment,
-                            selected_range,
-                            self.drop_target,
-                        )
-                    })
-                    .collect();
-                let horizontal = horizontal_boundary_runs(&segments, num_weeks);
-                Some((segments, horizontal, opacity))
-            })
-            .collect();
-        let theme = cx.theme();
-        let month_boundary_color = theme
-            .colors
-            .hairline_strong
-            .mix(theme.colors.hairline, 0.25);
+        let borders = GridBorders::new(
+            range_start,
+            num_weeks,
+            selected_range,
+            self.drop_target,
+            |boundary| month_boundary_opacity(boundary, self.month_in_view, window, cx),
+        );
         let entity = cx.entity();
         let range_drag_engaged = self.date_range_drag.is_some_and(|drag| drag.engaged);
-        let has_horizontal_gutters = self.has_horizontal_gutters;
+
+        let can_create = self.loaded
+            && AppDatabaseStore::global(cx).read(cx).workspace_content() == WorkspaceContent::Ready
+            && !manager.read(cx).is_editing()
+            && !self.item_drag_active
+            && !cx.has_active_drag()
+            && self.date_range_drag.is_none()
+            && !self.marquee.is_active()
+            && self.inspector_date.is_none()
+            && !self.month_selector_open;
+        let preview_height = interval
+            - window.line_height()
+            - px(11.)
+            - px(cx.theme().effects.focus_ring_width * 2.)
+            - CREATE_ROW_HEIGHT;
+
+        let empty_create_inset =
+            (interval * 0.45 - content_top - CREATE_ROW_HEIGHT / 2.).max(px(0.));
 
         div()
             .absolute()
@@ -581,30 +580,15 @@ impl CalendarView {
                         let selected = selected_range.is_some_and(|range| range.contains(date));
                         let drop_active = self.drop_target == Some(date);
                         let id: ElementId = format!("calendar-{}", date.format("%Y-%m-%d")).into();
+                        let marker_height = MARKER_PITCH * markers.lanes_on(date) as f32;
+                        let preview_rows =
+                            ((preview_height - marker_height) / px(22.)).floor().max(0.) as usize;
                         let entries: Vec<(AnyItem, bool)> = self
-                            .markers
+                            .items
                             .iter()
-                            .chain(self.draft_markers.iter())
-                            .filter(|marker| marker.covers(date))
+                            .filter(|item| is_calendar_item_on(item, date))
                             .cloned()
-                            .map(|marker| (AnyItem::Marker(marker), false))
-                            .chain(
-                                projected
-                                    .iter()
-                                    .filter(|marker| marker.covers(date))
-                                    .cloned()
-                                    .map(|marker| (AnyItem::Marker(marker), true)),
-                            )
-                            .chain(
-                                self.items
-                                    .iter()
-                                    .filter(|item| {
-                                        !matches!(item, AnyItem::Marker(_))
-                                            && is_calendar_item_on(item, date)
-                                    })
-                                    .cloned()
-                                    .map(|item| (item, false)),
-                            )
+                            .map(|item| (item, false))
                             .chain(
                                 projected_items
                                     .iter()
@@ -645,7 +629,15 @@ impl CalendarView {
                         let dragged =
                             calendar_dragged_items(dragged_entries, date, preferred_primary);
                         let entries: Vec<_> = entries.into_iter().map(|(item, _)| item).collect();
-                        let (summaries, hidden_count) = calendar_summaries(&entries, day_width);
+                        let (summaries, hidden_count) =
+                            calendar_summaries(&entries, day_width, preview_rows);
+
+                        let show_create = can_create
+                            && self.hovered_date == Some(date)
+                            && selected_range
+                                .filter(|range| range.day_count() > 1)
+                                .is_none_or(|range| range.contains(date));
+                        let create_row = self.render_grid_create(date, show_create, cx);
                         let theme = cx.theme();
                         let mut bg_color = theme.colors.canvas.alpha(0.0);
                         let tint = month_tints[&date.with_day(1).unwrap()];
@@ -666,27 +658,24 @@ impl CalendarView {
                             .flex_none()
                             .min_w_0()
                             .bg(bg_color)
-                            .border(px(0.5))
-                            .when(i == 0 && !has_horizontal_gutters, |this| {
-                                this.border_l(px(0.))
-                            })
-                            .when(i == 6 && !has_horizontal_gutters, |this| {
-                                this.border_r(px(0.))
-                            })
-                            .border_color(if drop_active || selected {
-                                cx.theme().colors.focus
-                            } else {
-                                cx.theme().colors.hairline
-                            })
+                            .p(px(0.5))
                             .overflow_hidden()
                             .cursor_pointer()
+                            .on_hover(cx.listener(move |view, hovered, _, cx| {
+                                let next = if *hovered {
+                                    Some(date)
+                                } else if view.hovered_date == Some(date) {
+                                    None
+                                } else {
+                                    return;
+                                };
+                                if view.hovered_date != next {
+                                    view.hovered_date = next;
+                                    cx.notify();
+                                }
+                            }))
                             .gap_1()
-                            .when(selected, |this| {
-                                this.child(
-                                    div().absolute().inset_0().bg(cx.theme().colors.selected),
-                                )
-                            })
-                            .when(drop_active, |this| {
+                            .when(selected || drop_active, |this| {
                                 this.child(
                                     div().absolute().inset_0().bg(cx.theme().colors.selected),
                                 )
@@ -808,7 +797,44 @@ impl CalendarView {
                                     .w_full()
                                     .min_w_0()
                                     .justify_end()
-                                    .child(date_label),
+                                    .child(
+                                        Button::new((
+                                            "calendar-open-day",
+                                            date.num_days_from_ce() as u32,
+                                        ))
+                                        .ghost()
+                                        .compact()
+                                        .h_auto()
+                                        .p_0()
+                                        .min_w_0()
+                                        .max_w_full()
+                                        .rounded_full()
+                                        .child(date_label)
+                                        .role(gpui::Role::Button)
+                                        .aria_label(format!(
+                                            "Open {}",
+                                            date.format("%A, %B %-d, %Y")
+                                        ))
+                                        .tooltip("Open day · Events and actions")
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            SelectionManager::claim_press(cx);
+                                            cx.stop_propagation();
+                                        })
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(move |view, _, _, cx| {
+                                                view.finish_date_range_drag(date, cx);
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .on_mouse_pressure(|_, _, cx| cx.stop_propagation())
+                                        .on_click(
+                                            cx.listener(move |view, _, window, cx| {
+                                                cx.stop_propagation();
+                                                view.open_day_inspector(date, window, cx);
+                                            }),
+                                        ),
+                                    ),
                             )
                             .child(
                                 div()
@@ -821,180 +847,128 @@ impl CalendarView {
                                     .when(narrow, |this| this.px_0p5())
                                     .py(px(theme.effects.focus_ring_width))
                                     .w_full()
-                                    .when(has_entries, |this| {
-                                        this.child(
-                                            Button::new((
-                                                "calendar-entries",
-                                                date.num_days_from_ce() as u32,
-                                            ))
-                                            .ghost()
-                                            .relative()
+                                    .child(div().h(marker_height).flex_none())
+                                    .child(
+                                        div()
                                             .column()
-                                            .h_auto()
                                             .w_full()
                                             .min_w_0()
-                                            .items_stretch()
-                                            .justify_start()
-                                            .gap_0p5()
-                                            .p_0()
-                                            .rounded_sm()
-                                            .tooltip(format!(
-                                                "{} · {} items · Open day",
-                                                date.format("%A, %B %-d"),
-                                                entries.len(),
-                                            ))
-                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                                cx.stop_propagation();
-                                            })
-                                            .on_mouse_up(MouseButton::Left, |_, _, cx| {
-                                                cx.stop_propagation();
-                                            })
-                                            .on_click(cx.listener(move |view, _, window, cx| {
-                                                cx.stop_propagation();
-                                                if view.inspector_date.is_some() {
-                                                    view.close_day_inspector(window, cx);
-                                                }
-                                                view.open_day_inspector(date, window, cx);
-                                            }))
-                                            .when_else(
-                                                day_width < MIN_SUMMARY_WIDTH,
-                                                |this| {
-                                                    this.child(render_calendar_activity(
-                                                        entries.len(),
-                                                        date,
-                                                        cx,
+                                            .min_h_0()
+                                            .flex_shrink_1()
+                                            .overflow_hidden()
+                                            .when(has_entries, |this| {
+                                                this.child(
+                                                    Button::new((
+                                                        "calendar-entries",
+                                                        date.num_days_from_ce() as u32,
                                                     ))
-                                                },
-                                                |this| {
-                                                    this.children(summaries.into_iter().map(
-                                                        |item| {
-                                                            render_calendar_summary(
-                                                                item, date, day_width, cx,
-                                                            )
+                                                    .ghost()
+                                                    .relative()
+                                                    .column()
+                                                    .h_auto()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .items_stretch()
+                                                    .justify_start()
+                                                    .gap_0p5()
+                                                    .p_0()
+                                                    .rounded_sm()
+                                                    .tooltip(format!(
+                                                        "{} · {} items · Open day",
+                                                        date.format("%A, %B %-d"),
+                                                        entries.len(),
+                                                    ))
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .on_mouse_up(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |view, _, window, cx| {
+                                                            cx.stop_propagation();
+                                                            if view.inspector_date.is_some() {
+                                                                view.close_day_inspector(
+                                                                    window, cx,
+                                                                );
+                                                            }
+                                                            view.open_day_inspector(
+                                                                date, window, cx,
+                                                            );
                                                         },
                                                     ))
-                                                    .when(hidden_count > 0, |this| {
-                                                        this.child(render_calendar_disclosure(
-                                                            hidden_count,
-                                                            date,
-                                                            day_width,
-                                                            cx,
-                                                        ))
-                                                    })
-                                                },
-                                            )
-                                            .when_some(dragged, |this, dragged| {
-                                                let preview_width = (bounds.size.width / 7.)
-                                                    .max(px(120.))
-                                                    .min(px(220.));
-                                                let drag_data = create_drag_data(
-                                                    dragged,
-                                                    size(preview_width, px(32.)),
-                                                    cx,
-                                                );
-                                                this.child(
-                                                    Draggable::new(
-                                                        (
-                                                            "calendar-entries-draggable",
-                                                            date.num_days_from_ce() as u32,
-                                                        ),
-                                                        drag_data,
+                                                    .when_else(
+                                                        day_width < MIN_SUMMARY_WIDTH,
+                                                        |this| {
+                                                            this.child(render_calendar_activity(
+                                                                entries.len(),
+                                                                date,
+                                                                cx,
+                                                            ))
+                                                        },
+                                                        |this| {
+                                                            this.children(
+                                                                summaries.into_iter().map(|item| {
+                                                                    render_calendar_summary(
+                                                                        item, date, day_width, cx,
+                                                                    )
+                                                                }),
+                                                            )
+                                                            .when(hidden_count > 0, |this| {
+                                                                this.child(
+                                                                    render_calendar_disclosure(
+                                                                        hidden_count,
+                                                                        date,
+                                                                        day_width,
+                                                                        cx,
+                                                                    ),
+                                                                )
+                                                            })
+                                                        },
                                                     )
-                                                    .absolute()
-                                                    .size_full(),
+                                                    .when_some(dragged, |this, dragged| {
+                                                        let preview_width = (bounds.size.width
+                                                            / 7.)
+                                                            .max(px(120.))
+                                                            .min(px(220.));
+                                                        let drag_data = create_drag_data(
+                                                            dragged,
+                                                            size(preview_width, px(32.)),
+                                                            cx,
+                                                        );
+                                                        this.child(
+                                                            Draggable::new(
+                                                                (
+                                                                    "calendar-entries-draggable",
+                                                                    date.num_days_from_ce() as u32,
+                                                                ),
+                                                                drag_data,
+                                                            )
+                                                            .absolute()
+                                                            .size_full(),
+                                                        )
+                                                    }),
                                                 )
                                             }),
-                                        )
-                                    }),
+                                    )
+                                    .when(!has_entries && marker_height == px(0.), |content| {
+                                        content.child(div().h(empty_create_inset).flex_none())
+                                    })
+                                    .child(create_row),
                             )
                     }))
             }))
-            .children(month_boundaries.into_iter().map(
-                |(month_boundaries, horizontal_boundaries, opacity)| {
-                    let month_boundary_color = month_boundary_color.opacity(opacity);
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, _, window, _| {
-                            let day_width = bounds.size.width / 7.;
-                            let half_width = MONTH_BOUNDARY_WIDTH / 2.;
-
-                            for run in &horizontal_boundaries {
-                                let left_extension = if vertical_boundary_touches_vertex(
-                                    &month_boundaries,
-                                    run.row,
-                                    run.start_column,
-                                ) {
-                                    half_width
-                                } else {
-                                    Default::default()
-                                };
-                                let right_extension = if vertical_boundary_touches_vertex(
-                                    &month_boundaries,
-                                    run.row,
-                                    run.end_column,
-                                ) {
-                                    half_width
-                                } else {
-                                    Default::default()
-                                };
-                                let x = bounds.origin.x + day_width * run.start_column as f32;
-                                let y = bounds.origin.y + first_row_top + interval * run.row as f32;
-                                let width = day_width * (run.end_column - run.start_column) as f32
-                                    + left_extension
-                                    + right_extension;
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(x - left_extension, y - half_width),
-                                        size(width, MONTH_BOUNDARY_WIDTH),
-                                    ),
-                                    month_boundary_color,
-                                ));
-                            }
-
-                            for segment in &month_boundaries {
-                                let MonthBoundarySegment::Vertical { row, column } = *segment
-                                else {
-                                    continue;
-                                };
-                                let top_inset = if horizontal_boundary_touches_vertex(
-                                    &month_boundaries,
-                                    row,
-                                    column,
-                                ) {
-                                    half_width
-                                } else {
-                                    Default::default()
-                                };
-                                let bottom_inset = if horizontal_boundary_touches_vertex(
-                                    &month_boundaries,
-                                    row + 1,
-                                    column,
-                                ) {
-                                    half_width
-                                } else {
-                                    Default::default()
-                                };
-                                let x = bounds.origin.x + day_width * column as f32;
-                                let y = bounds.origin.y
-                                    + first_row_top
-                                    + interval * row as f32
-                                    + top_inset;
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(x - half_width, y),
-                                        size(
-                                            MONTH_BOUNDARY_WIDTH,
-                                            interval - top_inset - bottom_inset,
-                                        ),
-                                    ),
-                                    month_boundary_color,
-                                ));
-                            }
-                        },
-                    )
-                    .absolute()
-                    .inset_0()
-                },
-            ))
+            .child(borders.render(first_row_top, interval, cx))
+            .children((0..num_weeks).flat_map(|row| {
+                let week = range_start + chrono::Duration::weeks(row as i64);
+                let top = first_row_top + interval * row as f32 + content_top;
+                markers
+                    .week(week)
+                    .into_iter()
+                    .map(|span| {
+                        self.render_marker_span(span, &marker_order, top, day_width, window, cx)
+                    })
+                    .collect::<Vec<_>>()
+            }))
     }
 }

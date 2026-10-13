@@ -240,6 +240,12 @@ impl ItemCard {
         }
         let draft_picker = self.draft_type_picker(cx);
         let has_draft_picker = draft_picker.is_some();
+        let editor_width = self.editor_width.filter(|_| {
+            self.editable
+                && ItemManager::global(cx)
+                    .read(cx)
+                    .is_being_edited(self.item.id())
+        });
         let title = render_dynamic_title(
             &self.item,
             self.compact,
@@ -294,7 +300,14 @@ impl ItemCard {
                         .justify_center()
                         .child(checkbox)
                 }))
-                .child(div().min_w_0().flex_1().truncate().child(title))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .when_some(editor_width, |title, width| title.max_w(width))
+                        .child(title),
+                )
                 .when(!narrow_details, |row| {
                     let availability =
                         event_availability_indicator(&self.item, &self.element_id, cx);
@@ -539,7 +552,14 @@ impl ItemCard {
                     .min_w(px(0.))
                     .gap(px(1.))
                     .overflow_hidden()
-                    .child(div().row().w_full().min_w(px(0.)).child(title))
+                    .child(
+                        div()
+                            .row()
+                            .w_full()
+                            .min_w(px(0.))
+                            .when_some(editor_width, |title, width| title.max_w(width))
+                            .child(title),
+                    )
                     .children(meta_line),
             )
             .children(trailing_controls)

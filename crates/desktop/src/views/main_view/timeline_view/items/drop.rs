@@ -23,7 +23,7 @@ use super::super::{
     TimelineView, is_durationless_action, measure_from, timeline::compute_edge_scroll_speed,
 };
 use super::annotations::{SIGNAL_CARD_HEIGHT, day_start, sticky_chip_top};
-use super::item_min_height;
+use super::{MAX_ITEM_WIDTH, item_min_height};
 
 fn carried_duration(item: &AnyItem, at: DateTime<Local>, settings: &Settings) -> ChronoDuration {
     item.duration()
@@ -413,12 +413,15 @@ impl TimelineView {
             DropShape::Span { lead, duration } => {
                 let start = drop_info.drop_time - lead;
                 let duration = drop_info.span_duration(duration);
-                let bounds = self.lane_bounds_with_min_height(
+                let mut bounds = self.lane_bounds_with_min_height(
                     start,
                     duration,
                     lane.unwrap_or(Lane::FULL),
                     self.drop_min_height(drop_info),
                 );
+                if drop_info.dragged.len() == 1 {
+                    bounds.size.width = bounds.size.width.min(MAX_ITEM_WIDTH);
+                }
                 container.child(
                     div()
                         .absolute()

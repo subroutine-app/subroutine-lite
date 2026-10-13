@@ -76,6 +76,15 @@ pub(super) fn carousel_base_size(
     }
 }
 
+pub(super) fn carousel_footer_height(width: f32, height: f32, action_mode: bool) -> f32 {
+    if action_mode {
+        0.0
+    } else {
+        let footer: f32 = if width < 360.0 { 80.0 } else { 56.0 };
+        footer.min((height - 1.0).max(0.0))
+    }
+}
+
 pub(super) fn carousel_geometry(
     distance: f32,
     base_width: f32,
@@ -133,4 +142,41 @@ pub(super) fn vertical_centers(extents: &[(f32, f32)]) -> Vec<f32> {
 
 pub(super) fn entrance_distance(target: f32) -> f32 {
     target + if target < 0.0 { -0.7 } else { 0.7 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn centered_slot_matches_active_card_across_viewports_and_orientations() {
+        for (viewport_width, viewport_height) in [(240.0, 160.0), (640.0, 260.0), (1100.0, 700.0)] {
+            for orientation in [
+                FocusCarouselOrientation::Horizontal,
+                FocusCarouselOrientation::Vertical,
+            ] {
+                let (width, height) =
+                    carousel_base_size(viewport_width, viewport_height, orientation);
+                let extent = match orientation {
+                    FocusCarouselOrientation::Horizontal => viewport_width,
+                    FocusCarouselOrientation::Vertical => viewport_height,
+                };
+                let geometry = carousel_geometry(0.0, width, height, orientation, extent);
+                assert_eq!(
+                    (geometry.center, geometry.scale, geometry.opacity),
+                    (0.5, 1.0, 1.0)
+                );
+                assert_eq!((geometry.width, geometry.height), (width, height));
+                assert!(width <= viewport_width - 8.0);
+                assert!(height <= viewport_height - 8.0);
+                assert_eq!(carousel_footer_height(width, height, true), 0.0);
+                let footer = carousel_footer_height(width, height, false);
+                assert!(height - footer >= 1.0);
+                assert_eq!(
+                    footer,
+                    (if width < 360.0 { 80.0_f32 } else { 56.0_f32 }).min(height - 1.0)
+                );
+            }
+        }
+    }
 }

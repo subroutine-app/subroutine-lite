@@ -5,21 +5,20 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::components::{
-    MarqueeSelection,
-    elastic_overscroll::ElasticOverscroll,
-    scrollbar::Scrollbar,
-    virtual_list::{ScrollFocus, row_is_visible},
+    MarqueeSelection, elastic_overscroll::ElasticOverscroll, scrollbar::Scrollbar,
+    virtual_list::ScrollFocus,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Context, DragMoveEvent, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
-    Render, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement, StyleRefinement,
-    Styled, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Bounds, Context, DragMoveEvent, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Pixels, Render, RenderOnce, ScrollHandle, SharedString, Size,
+    StatefulInteractiveElement, StyleRefinement, Styled, WeakEntity, Window, container_query, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_kit_theme::ActiveTheme;
 
 use super::{DYNAMIC_LIST_ITEM_GAP, DYNAMIC_LIST_ITEM_HEIGHT, DynamicListDelegate};
-use crate::components::ext::StyledRefineExt as _;
+use crate::components::ext::{ElementExt as _, StyledRefineExt as _};
 
 const DEFAULT_OVERSCAN: usize = 6;
 const SHIFT_MS: u64 = 180;
@@ -272,11 +271,18 @@ impl Motion {
     }
 }
 
+enum ScrollRequest {
+    Explicit(ElementId),
+    Priority(ElementId),
+}
+
 pub struct DynamicListState<D: DynamicListDelegate> {
     id: ElementId,
     focus_handle: FocusHandle,
     delegate: D,
     scroll_handle: ScrollHandle,
+    viewport: Bounds<Pixels>,
+    pending_scroll: Option<ScrollRequest>,
     rows: Vec<RowLayout>,
     content_height: f32,
     layout_dirty: bool,
@@ -306,6 +312,8 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             focus_handle: cx.focus_handle(),
             delegate,
             scroll_handle: ScrollHandle::new(),
+            viewport: Bounds::default(),
+            pending_scroll: None,
             rows: Vec::new(),
             content_height: 0.0,
             layout_dirty: true,
@@ -405,7 +413,10 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     }
 
     pub fn scroll_by_y(&mut self, delta: Pixels) -> Pixels {
-        let viewport_height = f32::from(self.scroll_handle.bounds().size.height);
+        if self.viewport.size.width <= px(0.) || self.viewport.size.height <= px(0.) {
+            return px(0.);
+        }
+        let viewport_height = f32::from(self.viewport.size.height);
         let max_scroll_down = (self.content_height - viewport_height).max(0.0);
         let mut offset = self.scroll_handle.offset();
         let previous = offset.y;
@@ -443,10 +454,8 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
                 let (width, height) = weak
                     .update(cx, |this, cx| {
                         this.begin_drag(drag.ix, cx);
-                        let width = drag_preview_width(
-                            this.scroll_handle.bounds().size.width,
-                            this.content_padding,
-                        );
+                        let width =
+                            drag_preview_width(this.viewport.size.width, this.content_padding);
                         let height = this
                             .rows
                             .get(drag.ix)
@@ -496,6 +505,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         self.edge_scroll_speed = None;
         self.marquee_active = false;
         self.scroll_handle.set_offset(Default::default());
+        self.pending_scroll = None;
         self.overscroll.reset();
         self.departing.clear();
         self.motions.clear();
@@ -504,23 +514,6 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.layout_dirty = true;
-        cx.notify();
-    }
-
-    fn scroll_to_item(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if self.layout_changed(cx) {
-            self.rebuild_layout(cx);
-        }
-        let Some(bounds) = row_scroll_bounds(&self.rows, ix, f32::from(self.content_padding))
-        else {
-            return;
-        };
-        let top = bounds.start - f32::from(self.content_inset_top);
-        let viewport_height = f32::from(self.scroll_handle.bounds().size.height);
-        let max_scroll = (self.content_height - viewport_height).max(0.0);
-        let mut offset = self.scroll_handle.offset();
-        offset.y = px(-top.clamp(0.0, max_scroll));
-        self.scroll_handle.set_offset(offset);
         cx.notify();
     }
 
@@ -543,17 +536,36 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         if self.layout_changed(cx) {
             self.rebuild_layout(cx);
         }
+        let Some(row) = self.rows.get(ix) else {
+            return;
+        };
+        self.pending_scroll = Some(ScrollRequest::Explicit(row.id.clone()));
+        cx.notify();
+    }
+
+    pub(crate) fn reveal_priority(&mut self, id: ElementId) {
+        if !matches!(
+            self.pending_scroll.as_ref(),
+            Some(ScrollRequest::Explicit(_))
+        ) {
+            self.pending_scroll = Some(ScrollRequest::Priority(id));
+        }
+    }
+
+    fn apply_pending_scroll(&mut self) {
+        let Some(ScrollRequest::Explicit(id) | ScrollRequest::Priority(id)) =
+            self.pending_scroll.take()
+        else {
+            return;
+        };
+        let Some(ix) = self.rows.iter().position(|row| row.id == id) else {
+            return;
+        };
         let Some(bounds) = row_scroll_bounds(&self.rows, ix, f32::from(self.content_padding))
         else {
             return;
         };
-
-        let viewport_height = f32::from(self.scroll_handle.bounds().size.height);
-        if viewport_height <= 0.0 {
-            self.scroll_to_item(ix, cx);
-            return;
-        }
-
+        let viewport_height = f32::from(self.viewport.size.height);
         let mut offset = self.scroll_handle.offset();
         let scroll_top = (-f32::from(offset.y)).max(0.0);
         let Some(target) = reveal_scroll_target(
@@ -568,7 +580,22 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         let max_scroll = (self.content_height - viewport_height).max(0.0);
         offset.y = px(-target.clamp(0.0, max_scroll));
         self.scroll_handle.set_offset(offset);
-        cx.notify();
+    }
+
+    fn clamp_scroll(&mut self, cx: &mut Context<Self>) {
+        let mut offset = self.scroll_handle.offset();
+        let previous = offset.y;
+        offset.y = px(clamp_scroll_offset(
+            f32::from(offset.y),
+            self.content_height,
+            f32::from(self.viewport.size.height),
+        ));
+        if offset.y != previous {
+            self.scroll_handle.set_offset(offset);
+            cx.emit(DynamicListEvent::LayoutChanged {
+                scroll_delta: offset.y - previous,
+            });
+        }
     }
 
     fn layout_changed(&self, cx: &App) -> bool {
@@ -683,14 +710,11 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             let target = anchor
                 .and_then(|anchor| anchor.offset(&self.rows, inset))
                 .unwrap_or(f32::from(offset.y));
-            let viewport = f32::from(self.scroll_handle.bounds().size.height);
             let next = if count == 0 || epoch_changed {
                 gpui::point(px(0.), px(0.))
             } else {
-                gpui::point(
-                    offset.x,
-                    px(clamp_scroll_offset(target, self.content_height, viewport)),
-                )
+                // Rebuilds can run while hidden; clamp only after this frame's viewport is assigned.
+                gpui::point(offset.x, px(target.min(0.0)))
             };
             if next != offset {
                 self.scroll_handle.set_offset(next);
@@ -770,12 +794,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     ) -> Vec<AnyElement> {
         let now = Instant::now();
         let scroll_y = f32::from(self.scroll_handle.offset().y);
-        let measured = f32::from(self.scroll_handle.bounds().size.height);
-        let viewport_height = if measured > 0.0 {
-            measured
-        } else {
-            f32::from(window.viewport_size().height)
-        };
+        let viewport_height = f32::from(self.viewport.size.height);
         let mut rows = Vec::new();
 
         for row in &self.departing {
@@ -839,7 +858,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             changed = true;
         }
 
-        let viewport = self.scroll_handle.bounds();
+        let viewport = self.viewport;
         let local_y = f32::from(pointer_y - viewport.origin.y);
         let speed = edge_scroll_speed(local_y, f32::from(viewport.size.height));
         if self.edge_scroll_speed != speed {
@@ -894,7 +913,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         let Some(speed) = self.edge_scroll_speed else {
             return;
         };
-        let viewport = self.scroll_handle.bounds();
+        let viewport = self.viewport;
         let moved = self.scroll_by_y(px(speed));
         if moved != px(0.) {
             let content_top = viewport.origin.y + self.scroll_handle.offset().y;
@@ -902,17 +921,12 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         }
     }
 
-    fn visible_range(&self, window: &Window) -> std::ops::Range<usize> {
+    fn visible_range(&self) -> std::ops::Range<usize> {
         if self.rows.is_empty() {
             return 0..0;
         }
         let scroll_top = (-f32::from(self.scroll_handle.offset().y)).max(0.0);
-        let measured = f32::from(self.scroll_handle.bounds().size.height);
-        let viewport_height = if measured > 0.0 {
-            measured
-        } else {
-            f32::from(window.viewport_size().height)
-        };
+        let viewport_height = f32::from(self.viewport.size.height);
 
         visible_rows(&self.rows, scroll_top, viewport_height, self.overscan)
     }
@@ -965,12 +979,9 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         let can_drag = self.delegate.can_drag(ix, cx);
         let content = self.delegate.render_item(ix, window, cx);
         let list_id = self.id.clone();
-        let visible = row_is_visible(
-            px(y) + self.overscroll.offset(),
-            px(height),
-            &self.scroll_handle,
-            self.content_inset_top,
-        );
+        let visible_top = px(y) + self.overscroll.offset() + self.scroll_handle.offset().y;
+        let visible = visible_top + px(height) > self.content_inset_top
+            && visible_top < self.viewport.size.height;
         let focus = focus.clone();
         let scroll = self.scroll_handle.clone();
         let inset = self.content_inset_top;
@@ -1026,7 +1037,39 @@ impl<D: DynamicListDelegate> Focusable for DynamicListState<D> {
 impl<D: DynamicListDelegate> EventEmitter<DynamicListEvent> for DynamicListState<D> {}
 
 impl<D: DynamicListDelegate> Render for DynamicListState<D> {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let measured = view.clone();
+        div()
+            .id(ElementId::from((
+                self.id.clone(),
+                SharedString::new_static("dynamic-list"),
+            )))
+            .track_focus(&self.focus_handle)
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .on_prepaint(move |bounds, _, cx| {
+                measured.update(cx, |list, _| list.viewport = bounds);
+            })
+            .child(container_query(move |size, window, cx| {
+                view.update(cx, |list, cx| list.render_sized(size, window, cx))
+            }))
+    }
+}
+
+impl<D: DynamicListDelegate> DynamicListState<D> {
+    fn render_sized(
+        &mut self,
+        size: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.viewport.size = size;
+        if size.width <= px(0.) || size.height <= px(0.) {
+            self.delegate.pause_layout();
+            return div().size_full().into_any_element();
+        }
         if cx.reduce_motion() {
             self.departing.clear();
         } else {
@@ -1043,6 +1086,8 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
         if cx.reduce_motion() {
             self.finish_nonessential_motion();
         }
+        self.clamp_scroll(cx);
+        self.apply_pending_scroll();
         self.apply_edge_scroll(window, cx);
 
         let overscroll_y = if self.elastic_overscroll {
@@ -1067,10 +1112,9 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
                 .into_any_element()
         } else {
             let weak = cx.entity().downgrade();
-            let preview_width =
-                drag_preview_width(self.scroll_handle.bounds().size.width, self.content_padding);
+            let preview_width = drag_preview_width(size.width, self.content_padding);
 
-            let range = self.visible_range(window);
+            let range = self.visible_range();
             let focus = ScrollFocus::new(self.id.clone(), window, cx);
             let mut rows = Vec::with_capacity(range.len());
             for ix in range {
@@ -1079,8 +1123,6 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
 
             let content_height = self.content_height;
             let list_id = self.id.clone();
-            let unmeasured = self.scroll_handle.bounds().size.height <= px(0.);
-            let measured = self.scroll_handle.clone();
 
             div()
                 .id(ElementId::from((
@@ -1090,11 +1132,6 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
                 .size_full()
                 .overflow_scroll()
                 .track_scroll(&self.scroll_handle)
-                .on_focus_resolved(move |_, _, window, _| {
-                    if unmeasured && measured.bounds().size.height > px(0.) {
-                        window.refresh();
-                    }
-                })
                 .on_scroll_wheel({
                     let weak = weak.clone();
                     move |event, window, cx| {
@@ -1159,14 +1196,8 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
         }
 
         div()
-            .id(ElementId::from((
-                self.id.clone(),
-                SharedString::new_static("dynamic-list"),
-            )))
-            .track_focus(&self.focus_handle)
             .relative()
             .size_full()
-            .overflow_hidden()
             .child(body)
             .children(departing_rows)
             .when(scrollbar_visible, |this| {
@@ -1176,6 +1207,7 @@ impl<D: DynamicListDelegate> Render for DynamicListState<D> {
                     gpui::Axis::Vertical,
                 ))
             })
+            .into_any_element()
     }
 }
 

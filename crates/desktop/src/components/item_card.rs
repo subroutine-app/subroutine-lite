@@ -22,7 +22,12 @@ use subroutine_core::{AnyItem, ItemType};
 use uuid::Uuid;
 
 use crate::{
-    AppIcon, icons::Icon, selection::SelectionOrder, stores::AppDatabaseStore, utils::ButtonColors,
+    AppIcon,
+    components::{Button, ButtonVariants as _},
+    icons::Icon,
+    selection::SelectionOrder,
+    stores::AppDatabaseStore,
+    utils::ButtonColors,
 };
 
 pub use details::{ItemCardDetails, ItemCardStates};
@@ -137,8 +142,10 @@ pub struct ItemCard {
     navigation_context: Option<&'static str>,
     border: bool,
     list_position: Option<ItemCardPosition>,
+    horizontal_position: Option<ItemCardPosition>,
     neighbors: [Option<Uuid>; 2],
     editable: bool,
+    editor_width: Option<Pixels>,
     title_scale: ItemCardTitleScale,
     actionable: bool,
     projected_availability_store: Option<Entity<AppDatabaseStore>>,
@@ -193,6 +200,26 @@ impl Focusable for ItemCard {
 }
 
 impl ItemCard {
+    pub(crate) fn create_slot(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        cx: &App,
+    ) -> Button {
+        let label = label.into();
+        Button::new(id)
+            .ghost()
+            .size_full()
+            .rounded_xl()
+            .border(render::ITEM_CARD_BORDER)
+            .border_color(cx.theme().colors.hairline)
+            .text_color(cx.theme().colors.text_muted)
+            .icon(AppIcon::Plus)
+            .cursor_text()
+            .role(gpui::Role::Button)
+            .aria_label(label.clone())
+            .tooltip(label)
+    }
+
     pub fn new(
         item: &AnyItem,
         meta_text: Option<SharedString>,
@@ -227,8 +254,10 @@ impl ItemCard {
             navigation_context: None,
             border: true,
             list_position: None,
+            horizontal_position: None,
             neighbors: [None, None],
             editable: true,
+            editor_width: None,
             title_scale: ItemCardTitleScale::Standard,
             actionable: true,
             projected_availability_store: None,
@@ -339,6 +368,7 @@ impl ItemCard {
 
     pub fn position(mut self, position: ItemCardPosition) -> Self {
         self.list_position = Some(position);
+        self.horizontal_position = None;
         self.neighbors = [None, None];
         self
     }
@@ -348,12 +378,25 @@ impl ItemCard {
             previous.is_some(),
             next.is_some(),
         ));
+        self.horizontal_position = None;
         self.neighbors = [previous, next];
+        self
+    }
+
+    pub fn horizontal_position(mut self, position: ItemCardPosition) -> Self {
+        self.horizontal_position = Some(position);
+        self.list_position = None;
+        self.neighbors = [None, None];
         self
     }
 
     pub fn editable(mut self, editable: bool) -> Self {
         self.editable = editable;
+        self
+    }
+
+    pub fn editor_width(mut self, width: Pixels) -> Self {
+        self.editor_width = Some(width.max(px(0.)));
         self
     }
 

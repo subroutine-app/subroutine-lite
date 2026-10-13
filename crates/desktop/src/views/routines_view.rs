@@ -21,14 +21,15 @@ use crate::{
         Button, ButtonVariants, DynamicList, DynamicListCardStates, DynamicListDelegate,
         DynamicListState, EmptyState, ItemCard, ItemCardPosition, Label, MarqueeSelection,
         MarqueeView, SIDEBAR_GUTTER, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, SIDEBAR_MIN_WIDTH,
-        SidebarAddButton, SidebarPanel, apply_reorder, marquee,
+        SidebarDraft, SidebarPanel, apply_reorder, marquee,
     },
     icons::Icon,
-    item_manager::{DiscardDraft, ItemManager},
+    item_manager::{DraftView, ItemManager},
     selection::{
-        DismissExt as _, SelectionOrder, SelectionScope, focus_item, focus_item_extending,
+        DismissExt as _, SelectionManager, SelectionOrder, SelectionScope, focus_item,
+        focus_item_extending,
     },
-    stores::{AppDatabaseStore, RoutineDataChanged},
+    stores::{AppDatabaseStore, RoutineDataChanged, WorkspaceContent},
 };
 
 const ROUTINE_HEIGHT: Pixels = SIDEBAR_ITEM_HEIGHT;
@@ -656,7 +657,6 @@ impl Render for RoutineStepsEditor {
 #[derive(Clone)]
 struct RoutinesDelegate {
     routines: Vec<Routine>,
-    drafts: Vec<Routine>,
     query: String,
     items: Vec<Routine>,
     cards: DynamicListCardStates,
@@ -670,7 +670,6 @@ impl RoutinesDelegate {
     fn new(cx: &mut App) -> Self {
         let mut this = Self {
             routines: Vec::new(),
-            drafts: Vec::new(),
             query: String::new(),
             items: Vec::new(),
             cards: DynamicListCardStates::default(),
@@ -689,14 +688,11 @@ impl RoutinesDelegate {
             .cards
             .set_generation(store.read(cx).workspace_generation())
         {
-            self.drafts.clear();
             self.expanded.clear();
             self.editors.clear();
             self.focus_handles.clear();
         }
         self.routines = store.read(cx).routines().to_vec();
-        self.drafts
-            .retain(|draft| !self.routines.iter().any(|routine| routine.id == draft.id));
         self.rebuild(cx);
 
         for routine in &self.routines {
@@ -708,7 +704,6 @@ impl RoutinesDelegate {
 
     fn rebuild(&mut self, cx: &mut App) {
         self.items = self.routines.clone();
-        self.items.extend(self.drafts.iter().cloned());
         let tokens = self
             .query
             .split_whitespace()
@@ -753,16 +748,6 @@ impl RoutinesDelegate {
                 .entry(id)
                 .or_insert_with(|| cx.focus_handle());
         }
-    }
-
-    fn push_draft(&mut self, routine: Routine, cx: &mut App) {
-        self.drafts.push(routine);
-        self.rebuild(cx);
-    }
-
-    fn discard_draft(&mut self, id: Uuid, cx: &mut App) {
-        self.drafts.retain(|routine| routine.id != id);
-        self.rebuild(cx);
     }
 
     fn index_of(&self, id: Uuid) -> Option<usize> {
@@ -890,15 +875,8 @@ impl DynamicListDelegate for RoutinesDelegate {
             .cloned()
             .unwrap_or_else(|| cx.focus_handle());
         let item = AnyItem::Routine(routine);
-        let (is_editing, is_draft) = {
-            let manager = ItemManager::global(cx);
-            let manager = manager.read(cx);
-            (
-                manager.is_being_edited(routine_id),
-                manager.is_draft(routine_id),
-            )
-        };
-        let reorder_handle = (!expanded && !is_draft).then(|| {
+        let is_editing = ItemManager::global(cx).read(cx).is_being_edited(routine_id);
+        let reorder_handle = (!expanded).then(|| {
             DynamicListState::<Self>::reorder_handle(
                 ix,
                 ElementId::Uuid(routine_id),
@@ -970,7 +948,7 @@ impl DynamicListDelegate for RoutinesDelegate {
                         .h(self.cards.height(routine_id, ROUTINE_HEIGHT))
                         .flex_none()
                         .trailing(trailing)
-                        .draggable(!is_editing && !is_draft, None)
+                        .draggable(!is_editing, None)
                         .block_mouse_except_scroll()
                         .on_key_down(cx.listener(move |list, event: &KeyDownEvent, window, cx| {
                             if event.is_held {
@@ -1117,13 +1095,6 @@ impl RoutinesView {
 
         let item_manager = ItemManager::global(cx);
         cx.observe(&item_manager, |_, _, cx| cx.notify()).detach();
-        cx.subscribe(&item_manager, |view, _, event: &DiscardDraft, cx| {
-            view.list.update(cx, |list, cx| {
-                list.update_items(cx, |delegate, cx| delegate.discard_draft(event.0, cx));
-            });
-            cx.notify();
-        })
-        .detach();
 
         Self {
             list,
@@ -1153,17 +1124,19 @@ impl RoutinesView {
     }
 
     fn add_draft_routine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let routine = Routine::new("");
-        let id = routine.id;
-        let item = AnyItem::Routine(routine.clone());
-        self.list.update(cx, |list, cx| {
-            list.update_items(cx, |delegate, cx| delegate.push_draft(routine, cx));
-            if let Some(ix) = list.delegate().index_of(id) {
-                list.scroll_item_into_view(ix, cx);
-            }
-        });
-        ItemManager::global(cx).update(cx, |manager, cx| {
-            manager.begin_edit(&item, true, window, cx);
+        if AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready {
+            return;
+        }
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+        if manager.read(cx).is_editing() {
+            return;
+        }
+        SelectionManager::clear_global(cx);
+        self.focus_handle.focus(window, cx);
+        let item = AnyItem::Routine(Routine::new(""));
+        manager.update(cx, |manager, cx| {
+            manager.begin_view_draft(&item, DraftView::Routines, None, window, cx);
         });
         cx.notify();
     }
@@ -1199,16 +1172,14 @@ impl Render for RoutinesView {
         let entity = cx.entity();
         let body = SidebarPanel::new("routines-backdrop")
             .footer(
-                SidebarAddButton::new("new-routine", "New routine")
-                    .tooltip("Add a routine")
-                    .on_click({
-                        let entity = entity.clone();
-                        move |_event, window, cx| {
-                            entity.update(cx, |view, cx| {
-                                view.add_draft_routine(window, cx);
-                            });
-                        }
-                    }),
+                SidebarDraft::new("new-routine", "New routine", DraftView::Routines).on_click({
+                    let entity = entity.clone();
+                    move |_event, window, cx| {
+                        entity.update(cx, |view, cx| {
+                            view.add_draft_routine(window, cx);
+                        });
+                    }
+                }),
             )
             .on_double_click({
                 let entity = entity.clone();

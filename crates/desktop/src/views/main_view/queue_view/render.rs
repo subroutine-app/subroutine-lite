@@ -1,24 +1,26 @@
 use gpui::{
     AnyElement, App, Context, DragMoveEvent, Hsla, InteractiveElement, IntoElement, ParentElement,
     PathBuilder, Pixels, Point, Render, Size, StatefulInteractiveElement, Styled, Window, canvas,
-    div, point, prelude::FluentBuilder as _, px, size,
+    container_query, div, point, prelude::FluentBuilder as _, px, size,
 };
-use gpui_kit::foundation::StyledExt as _;
+use gpui_kit::{foundation::StyledExt as _, overlay::Tooltip};
 use gpui_kit_semantics::{NodeSpec, Role, Semantic as _};
 use gpui_kit_theme::ActiveTheme;
 use std::time::Instant;
+use subroutine_core::AnyItem;
 
 use crate::{
     AppIcon,
     color::ColorExt as _,
     components::{
-        DragData, DraggedItems, DynamicList, EmptyState, ItemCard,
-        ext::ElementExt as _,
+        DragData, DraggedItems, DynamicList, ItemCard,
         transition::{self, WindowTransitionExt as _},
     },
     icons::Icon,
+    item_manager::{DraftView, ItemManager},
     presentation::UxColor,
     selection::{CompleteSelected, SelectionManager},
+    stores::{AppDatabaseStore, WorkspaceContent},
     views::TOP_EDGE_INSET,
 };
 
@@ -65,6 +67,14 @@ impl QueueLayout {
                 size: current_size,
             },
         }
+    }
+
+    fn list_height(&self, column: &QueueColumn, cx: &App) -> Pixels {
+        column
+            .list
+            .read(cx)
+            .content_height()
+            .min((self.column_height - COLUMN_BORDER * 2. - COLUMN_HEADER - COLUMN_GAP).max(px(0.)))
     }
 
     fn column_x(&self, index: usize) -> Pixels {
@@ -135,10 +145,7 @@ fn column(
     } else {
         cx.theme().colors.text_muted
     };
-    let height =
-        column.list.read(cx).content_height().min(
-            (layout.column_height - COLUMN_BORDER * 2. - COLUMN_HEADER - COLUMN_GAP).max(px(0.)),
-        );
+    let height = layout.list_height(column, cx);
     let lane = column.lane;
     div()
         .id(format!("queue-lane-{}", lane.id()))
@@ -454,6 +461,76 @@ impl QueueView {
             .into_any_element()
     }
 
+    fn render_draft(
+        &self,
+        item: &AnyItem,
+        pose: CardPose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .absolute()
+            .left(pose.center.x - pose.size.width / 2.)
+            .top(pose.center.y - pose.size.height / 2.)
+            .w(pose.size.width)
+            .h(pose.size.height)
+            .child(
+                ItemCard::new_with_id(
+                    ("execution-current", item.id().as_u64_pair().1),
+                    item,
+                    None,
+                    window,
+                    cx,
+                )
+                .with_focus_handle(self.current_focus.clone())
+                .large_title(true)
+                .actionable(false)
+                .editable(true)
+                .draggable(false, None)
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
+    fn render_create_slot(&self, cx: &mut Context<Self>) -> AnyElement {
+        let status = match AppDatabaseStore::global(cx).read(cx).workspace_content() {
+            WorkspaceContent::Ready => {
+                return ItemCard::create_slot("queue-add-action", "Add to queue", cx)
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.begin_draft(window, cx);
+                    }))
+                    .into_any_element();
+            }
+            WorkspaceContent::Loading => ("queue-loading", AppIcon::Clock, "Loading queue…"),
+            WorkspaceContent::Unavailable => (
+                "queue-unavailable",
+                AppIcon::ClockAlert,
+                "Queue is unavailable",
+            ),
+        };
+        let (id, icon, label) = status;
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id(id)
+                    .size_10()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(cx.theme().colors.text_muted)
+                    .aria_label(label)
+                    .tooltip(move |_, cx| Tooltip::new(id, label).view(cx))
+                    .semantic_in(cx, NodeSpec::new(id, Role::Status).text(label))
+                    .child(Icon::new(icon).size_5()),
+            )
+            .into_any_element()
+    }
+
     fn current_label(&self) -> &'static str {
         match self.current.as_ref() {
             Some(CurrentItem::Event(EventMoment::InProgress { .. })) => {
@@ -463,23 +540,39 @@ impl QueueView {
                 "Event starting soon · queue paused"
             }
             Some(CurrentItem::Candidate(_)) => "Current item",
-            None => "All clear",
+            None => "Current item",
         }
     }
 }
 
-impl Render for QueueView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let animation_now = Instant::now();
-        if !cx.has_active_drag() {
-            self.clear_drop_target(cx);
+impl QueueView {
+    fn render_diagram(
+        &mut self,
+        viewport: Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if viewport.width <= px(0.) || viewport.height <= px(0.) {
+            return div().size_full().into_any_element();
         }
+        if self.viewport.height != viewport.height {
+            self.scroll_pending.extend(self.bottom_lanes(cx));
+        }
+        self.viewport = viewport;
+        let animation_now = Instant::now();
         self.advance_handoff(animation_now, cx);
         self.card_states.animate(window, cx);
-        SelectionManager::report_order(&self.order, cx);
         self.apply_completion_focus(window, cx);
+        let draft = ItemManager::global(cx)
+            .read(cx)
+            .view_draft(DraftView::Queue)
+            .cloned();
         let lanes = self.visible_lanes(cx);
-        let layout = self.layout(lanes.len());
+        let layout = if draft.is_some() {
+            QueueLayout::new(self.viewport, lanes.len(), CURRENT_HEIGHT)
+        } else {
+            self.layout(lanes.len())
+        };
         let priority = self.next_lane();
         let weights = lanes
             .iter()
@@ -495,34 +588,9 @@ impl Render for QueueView {
                 (index, weight.animate(window, cx))
             })
             .collect();
-        let view = cx.entity();
-        let bottom_lanes = self.bottom_lanes(cx);
         let mut diagram = div()
             .relative()
-            .w_full()
-            .flex_1()
-            .min_h(px(340.))
-            .on_prepaint(move |bounds, window, cx| {
-                view.update(cx, |view, cx| {
-                    if view.viewport != bounds.size {
-                        if view.viewport.height != bounds.size.height {
-                            view.scroll_pending.extend(bottom_lanes.iter().copied());
-                        }
-                        view.viewport = bounds.size;
-                        cx.notify();
-                    }
-                    let pending = std::mem::take(&mut view.scroll_pending);
-                    if !pending.is_empty() {
-                        cx.on_next_frame(window, move |view, window, cx| {
-                            for column in &view.columns {
-                                if pending.contains(&column.lane) {
-                                    column.scroll_to_priority(window, cx);
-                                }
-                            }
-                        });
-                    }
-                });
-            })
+            .size_full()
             .child(pipes(&layout, weights, cx));
         for (index, lane) in lanes.iter().enumerate() {
             let lane_column = self
@@ -530,6 +598,9 @@ impl Render for QueueView {
                 .iter()
                 .find(|column| column.lane == *lane)
                 .unwrap();
+            if self.scroll_pending.contains(lane) && lane_column.scroll_to_priority(window, cx) {
+                self.scroll_pending.remove(lane);
+            }
             diagram = diagram.child(column(
                 lane_column,
                 index,
@@ -540,30 +611,18 @@ impl Render for QueueView {
                 cx,
             ));
         }
-        if lanes.is_empty() {
-            diagram = diagram.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .w_full()
-                    .h(layout.column_height)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        EmptyState::new(Icon::new(AppIcon::ListChecks), "No actions waiting")
-                            .child(
-                                div()
-                                    .text_color(cx.theme().colors.text_muted)
-                                    .child("Future items stay in Upcoming."),
-                            ),
-                    ),
-            );
-        }
-        let color = if self.snapshot.blocker.is_some() {
-            UxColor::Attention
+
+        let label = if draft.is_some() {
+            "Current item"
         } else {
-            UxColor::Selected
+            self.current_label()
+        };
+        let color = if draft.is_none() && self.snapshot.blocker.is_some() {
+            UxColor::Attention.text(cx.theme())
+        } else if self.current.is_some() {
+            UxColor::Selected.text(cx.theme())
+        } else {
+            cx.theme().colors.text_muted
         };
         diagram = diagram.child(
             div()
@@ -573,10 +632,12 @@ impl Render for QueueView {
                 .flex()
                 .justify_center()
                 .text_xs()
-                .text_color(color.text(cx.theme()))
-                .child(self.current_label()),
+                .text_color(color)
+                .child(label),
         );
-        if let Some(shown) = self.presented(animation_now, cx) {
+        if let Some(draft) = draft {
+            diagram = diagram.child(self.render_draft(&draft, layout.current, window, cx));
+        } else if let Some(shown) = self.presented(animation_now, cx) {
             diagram = diagram.child(self.render_card(
                 &shown.item,
                 shown.pose,
@@ -593,27 +654,41 @@ impl Render for QueueView {
                     .top(layout.current.center.y - layout.current.size.height / 2.)
                     .w(layout.current.size.width)
                     .h(layout.current.size.height)
-                    .rounded_xl()
-                    .border_1()
-                    .border_color(cx.theme().colors.hairline)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(cx.theme().colors.text_muted)
-                    .child("Nothing to do right now"),
+                    .child(self.render_create_slot(cx)),
             );
         }
         if self.handoff.is_some() {
             window.request_animation_frame();
         }
+        diagram.into_any_element()
+    }
+}
+
+impl Render for QueueView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.clear_drop_target(cx);
+        }
+        SelectionManager::report_order(&self.order, cx);
+        let empty = self.current.is_none() && self.handoff.is_none();
+        let view = cx.entity();
+        let diagram = container_query(move |size, window, cx| {
+            view.update(cx, |view, cx| view.render_diagram(size, window, cx))
+        })
+        .w_full()
+        .flex_1()
+        .min_h(px(340.));
         let count = self.snapshot.candidates.len();
         let summary = if self.snapshot.blocker.is_some() {
             format!("{count} waiting · paused for event")
         } else {
             format!("{count} ready now")
         };
-        let blocked = self.snapshot.blocker.is_some();
+        let blocked = self.snapshot.blocker.is_some()
+            || ItemManager::global(cx)
+                .read(cx)
+                .view_draft(DraftView::Queue)
+                .is_some();
         let root = div()
             .id("execution-queue")
             .semantic_in(
@@ -653,12 +728,14 @@ impl Render for QueueView {
                     )
                     .child(div().text_lg().child("Queue"))
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().colors.text_muted)
-                            .child(summary),
-                    ),
+                    .when(!empty, |header| {
+                        header.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().colors.text_muted)
+                                .child(summary),
+                        )
+                    }),
             )
             .child(diagram);
         self.tab_root(root, cx)

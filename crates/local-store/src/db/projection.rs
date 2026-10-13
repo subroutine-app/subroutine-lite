@@ -12,10 +12,18 @@ use super::{
 use crate::{LocalStoreError, OutboxStatus, Result};
 use patch::{apply_remote_patch, validate_routine_order};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HolidaySetup {
+    Pending,
+    #[default]
+    Complete,
+}
+
 #[derive(Debug)]
 pub struct Projection {
     pub data: AllData,
     pub authoritative_snapshot: bool,
+    pub holiday_setup: HolidaySetup,
     pub pending_count: usize,
     pub blocked_count: usize,
     pub blocked_conflict: Option<BlockedConflict>,
@@ -107,8 +115,19 @@ pub(super) fn load_projection(connection: &Transaction<'_>) -> Result<Projection
             })
         })
         .transpose()?;
+    let holiday_setup_pending: bool = connection.query_row(
+        "SELECT workspace_kind = 'local' AND holiday_setup = 'pending'
+         FROM workspace WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
     Ok(Projection {
         data,
+        holiday_setup: if holiday_setup_pending {
+            HolidaySetup::Pending
+        } else {
+            HolidaySetup::Complete
+        },
         authoritative_snapshot: state.authoritative_snapshot,
         pending_count,
         blocked_count,

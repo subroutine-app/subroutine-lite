@@ -58,6 +58,7 @@ pub(super) const FALLBACK_ITEM_DURATION: ChronoDuration = ChronoDuration::minute
 
 pub(super) const ATTACHED_ITEM_LEFT: Pixels = px(16. * 4.);
 pub(super) const MIN_ITEM_WIDTH: Pixels = px(48. * 4.);
+pub(super) const MAX_ITEM_WIDTH: Pixels = px(680.);
 pub(super) const MIN_ITEM_HEIGHT: Pixels = px(16. * 4.);
 pub(super) const DURATIONLESS_ACTION_HEIGHT: Pixels = px(42.);
 

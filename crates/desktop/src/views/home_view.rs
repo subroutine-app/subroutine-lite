@@ -6,20 +6,24 @@ use gpui::{
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_kit::foundation::{Sizable as _, StyledExt as _};
+use gpui_kit::{
+    foundation::{Sizable as _, StyledExt as _},
+    overlay::Tooltip,
+};
 use gpui_kit_semantics::{NodeSpec, Role, Semantic as _};
 use gpui_kit_theme::ActiveTheme as _;
-use subroutine_core::{AnyItem, SchedulePoint};
+use subroutine_core::{Action, AnyItem, SchedulePoint};
 
 use crate::{
     AppIcon,
     app::ToggleSearch,
     branding,
     components::{Button, ButtonVariants as _, ItemCard, ItemCardStates},
-    item_manager::ItemManager,
+    icons::Icon,
+    item_manager::{DraftView, ItemManager},
     selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
     settings::{GlobalSettings, Settings},
-    stores::{AppDatabaseStore, DataChanged},
+    stores::{AppDatabaseStore, DataChanged, WorkspaceContent},
 };
 
 use super::main_view::{EventMoment, TemporalSnapshot, queue_system::QueueSnapshot};
@@ -84,6 +88,7 @@ impl HomeView {
         let store = AppDatabaseStore::global(cx);
         cx.observe(&store, |view, store, cx| {
             view.sync_workspace(store.read(cx).workspace_generation(), cx);
+            cx.notify();
         })
         .detach();
         cx.subscribe(&store, |view, store, _: &DataChanged, cx| {
@@ -157,6 +162,58 @@ impl HomeView {
         );
     }
 
+    fn begin_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.action.is_some()
+            || self.event.is_some()
+            || AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready
+        {
+            return;
+        }
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+        if manager.read(cx).is_editing() {
+            return;
+        }
+        SelectionManager::clear_global(cx);
+        self.focus_handle.focus(window, cx);
+        let item = AnyItem::Action(Action::new("").with_queued(true));
+        manager.update(cx, |manager, cx| {
+            manager.begin_view_draft(&item, DraftView::Home, None, window, cx);
+        });
+    }
+
+    fn action_slot(&self, cx: &mut Context<Self>) -> Div {
+        let content = AppDatabaseStore::global(cx).read(cx).workspace_content();
+        let (icon, status) = match content {
+            WorkspaceContent::Ready => {
+                return home_action_frame(
+                    ItemCard::create_slot("home-create-slot", "New action", cx)
+                        .h(HOME_PREVIEW_HEIGHT)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            cx.stop_propagation();
+                            view.begin_draft(window, cx);
+                        })),
+                    cx,
+                );
+            }
+            WorkspaceContent::Loading => (AppIcon::Clock, "Loading…"),
+            WorkspaceContent::Unavailable => (AppIcon::ClockAlert, "Workspace unavailable"),
+        };
+        home_action_frame(
+            div()
+                .id("home-empty-status")
+                .h(HOME_PREVIEW_HEIGHT)
+                .text_color(cx.theme().colors.text_muted)
+                .semantic_in(
+                    cx,
+                    NodeSpec::new("home-empty-status", Role::Status).text(status),
+                )
+                .tooltip(move |_, cx| Tooltip::new("home-empty-status", status).view(cx))
+                .child(Icon::new(icon).size_5()),
+            cx,
+        )
+    }
+
     fn item_preview(
         &self,
         element_id: impl Into<ElementId>,
@@ -196,6 +253,7 @@ impl HomeView {
                 )
             }
         });
+        let draft = ItemManager::global(cx).read(cx).is_draft(item.id());
         let card = self
             .item_preview(
                 ("home-action", item.id_u64()),
@@ -204,16 +262,13 @@ impl HomeView {
                 window,
                 cx,
             )
-            .selectable(order)
+            .when(!draft, |card| card.selectable(order))
+            .when(draft, |card| card.actionable(false).editable(true))
             .with_focus_handle(self.action_focus.clone())
             .details(self.details.get(item.id()))
             .h(self.details.height(item.id(), HOME_PREVIEW_HEIGHT));
 
-        div()
-            .column()
-            .gap_1()
-            .child(home_caption("NEXT IN QUEUE", cx).px(px(10.)))
-            .child(card)
+        home_action_frame(card, cx)
     }
 
     fn event_preview(
@@ -306,9 +361,22 @@ impl Render for HomeView {
         self.retain_details();
         self.details.animate(window, cx);
         let now = Local::now();
-        let event_first = matches!(self.event, Some(EventMoment::InProgress { .. }));
-        let action_id = self.action.as_ref().map(AnyItem::id);
-        let event_id = self.event.as_ref().map(|moment| moment.card_event().id);
+        let draft = ItemManager::global(cx)
+            .read(cx)
+            .view_draft(DraftView::Home)
+            .cloned();
+        let event_first =
+            draft.is_none() && matches!(self.event, Some(EventMoment::InProgress { .. }));
+        let action_id = self
+            .action
+            .as_ref()
+            .filter(|_| draft.is_none())
+            .map(AnyItem::id);
+        let event_id = self
+            .event
+            .as_ref()
+            .filter(|_| draft.is_none())
+            .map(|moment| moment.card_event().id);
         let ids = if event_first {
             [event_id, action_id]
         } else {
@@ -334,13 +402,15 @@ impl Render for HomeView {
             }
         }
 
-        let action = self
-            .action
+        let action = draft
             .as_ref()
-            .map(|item| self.action_preview(item, order.clone(), now, window, cx));
+            .or(self.action.as_ref())
+            .map(|item| self.action_preview(item, order.clone(), now, window, cx))
+            .or_else(|| self.event.is_none().then(|| self.action_slot(cx)));
         let event = self
             .event
             .as_ref()
+            .filter(|_| draft.is_none())
             .map(|moment| self.event_preview(moment, order, now, window, cx));
         let previews = if event_first {
             [event, action]
@@ -417,6 +487,14 @@ impl Render for HomeView {
                     .child(home_new_item_button().compact().size_10().rounded_full()),
             )
     }
+}
+
+fn home_action_frame(card: impl IntoElement, cx: &App) -> Div {
+    div()
+        .column()
+        .gap_1()
+        .child(home_caption("NEXT IN QUEUE", cx).px(px(10.)))
+        .child(card)
 }
 
 fn home_caption(label: impl Into<SharedString>, cx: &App) -> Div {

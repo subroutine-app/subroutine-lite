@@ -26,10 +26,10 @@ use uuid::Uuid;
 
 use super::super::{MIN_ITEM_HEIGHT, MIN_ITEM_WIDTH, ResizeDragData, ResizeEdge, TimelineView};
 use super::{
-    ATTACHED_ITEM_LEFT, FALLBACK_ITEM_DURATION, ITEM_KEY_CONTEXT, Lane, NavigationHandoffs,
-    RESIZE_HANDLE_HEIGHT, ResizeGhost, SLOT_GAP, TimelineSlot, item_inspection_matches_press,
-    item_layout_duration, item_min_height, item_timeline_span, item_title_only, measure_from,
-    timeline_selection_ids,
+    ATTACHED_ITEM_LEFT, FALLBACK_ITEM_DURATION, ITEM_KEY_CONTEXT, Lane, MAX_ITEM_WIDTH,
+    NavigationHandoffs, RESIZE_HANDLE_HEIGHT, ResizeGhost, SLOT_GAP, TimelineSlot,
+    item_inspection_matches_press, item_layout_duration, item_min_height, item_timeline_span,
+    item_title_only, measure_from, timeline_selection_ids,
 };
 
 const SKELETON_EVENT_DURATION: ChronoDuration = ChronoDuration::hours(1);
@@ -162,7 +162,9 @@ impl TimelineView {
         time: DateTime<Local>,
         duration: ChronoDuration,
     ) -> Bounds<Pixels> {
-        self.lane_bounds(time, duration, Lane::FULL)
+        let mut bounds = self.lane_bounds(time, duration, Lane::FULL);
+        bounds.size.width = bounds.size.width.min(MAX_ITEM_WIDTH);
+        bounds
     }
 
     pub(super) fn lane_bounds(
@@ -182,7 +184,10 @@ impl TimelineView {
         lane: Lane,
     ) -> Bounds<Pixels> {
         let layout_duration = item_layout_duration(item, duration, self.pixel_duration);
-        self.lane_bounds_with_min_height(time, layout_duration, lane, item_min_height(item))
+        let mut bounds =
+            self.lane_bounds_with_min_height(time, layout_duration, lane, item_min_height(item));
+        bounds.size.width = bounds.size.width.min(MAX_ITEM_WIDTH);
+        bounds
     }
 
     pub(super) fn lane_bounds_with_min_height(
@@ -677,7 +682,7 @@ impl TimelineView {
         };
         let scroll_y = self.scroll_offset + self.center_relative().y;
         let left = self.item_area_left();
-        let width = self.item_area_width();
+        let width = self.item_area_width().min(MAX_ITEM_WIDTH);
 
         self.projected_work
             .iter()

@@ -8,7 +8,7 @@ pub use db::{
         OutboxEntry, OutboxStatus,
         stale::{StaleResolution, StaleResolutionKind},
     },
-    projection::{BlockedConflict, Projection},
+    projection::{BlockedConflict, HolidaySetup, Projection},
     schema::StoreDiagnostics,
     sync::SyncState,
 };

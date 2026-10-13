@@ -1,5 +1,5 @@
 use super::{
-    SyncActivity, SyncActivityLog, SyncDirection, UndoHistory,
+    SyncActivity, SyncActivityLog, SyncDirection, UndoHistory, WorkspaceContent,
     local_store::{WorkspacePersistence, workspace_root_from_env},
 };
 use crate::auth::AuthSession;
@@ -7,7 +7,7 @@ use crate::item_subject::SavedItem;
 use crate::settings::Settings;
 use chrono::{DateTime, Local, Utc};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global};
-use local_store::{BlockedConflict, Projection};
+use local_store::{BlockedConflict, HolidaySetup, Projection};
 use std::thread;
 use std::time::Instant;
 use subroutine_core::{
@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 mod actions;
 mod history;
+mod holidays;
 mod items;
 mod replay;
 mod sync;
@@ -80,6 +81,8 @@ pub struct AppDatabaseStore {
     signal_templates: Vec<SignalTemplate>,
     dataset_id: Option<Uuid>,
     last_applied_seq: i64,
+    authoritative_snapshot: bool,
+    holiday_setup: HolidaySetup,
     history: UndoHistory<StoreChange>,
     persistence: Option<WorkspacePersistence>,
     workspace_generation: u64,
@@ -107,41 +110,55 @@ impl AppDatabaseStore {
         let workspace_root = workspace_root_from_env();
         let initial = workspace_root
             .and_then(|root| WorkspacePersistence::open_initial(root, server_url.as_deref()));
-        let (persistence, data, pending_count, blocked_count, blocked_conflict, status) =
-            match initial {
-                Ok(persistence) => match persistence.projection() {
-                    Ok(projection) => (
-                        Some(persistence),
-                        projection.data,
-                        projection.pending_count,
-                        projection.blocked_count,
-                        projection.blocked_conflict,
-                        StoreStatus::Ready,
-                    ),
-                    Err(error) => {
-                        tracing::error!(%error, "could not load the local projection");
-                        (
-                            None,
-                            AllData::default(),
-                            0,
-                            0,
-                            None,
-                            StoreStatus::Error(error),
-                        )
-                    }
-                },
+        let (
+            persistence,
+            data,
+            authoritative_snapshot,
+            pending_count,
+            blocked_count,
+            blocked_conflict,
+            holiday_setup,
+            status,
+        ) = match initial {
+            Ok(persistence) => match persistence.projection() {
+                Ok(projection) => (
+                    Some(persistence),
+                    projection.data,
+                    projection.authoritative_snapshot,
+                    projection.pending_count,
+                    projection.blocked_count,
+                    projection.blocked_conflict,
+                    projection.holiday_setup,
+                    StoreStatus::Ready,
+                ),
                 Err(error) => {
-                    tracing::error!(%error, "could not open the local workspace");
+                    tracing::error!(%error, "could not load the local projection");
                     (
                         None,
                         AllData::default(),
+                        false,
                         0,
                         0,
                         None,
+                        HolidaySetup::Complete,
                         StoreStatus::Error(error),
                     )
                 }
-            };
+            },
+            Err(error) => {
+                tracing::error!(%error, "could not open the local workspace");
+                (
+                    None,
+                    AllData::default(),
+                    false,
+                    0,
+                    0,
+                    None,
+                    HolidaySetup::Complete,
+                    StoreStatus::Error(error),
+                )
+            }
+        };
 
         let should_start_bootstrap = auth.is_signed_in();
         let (cmd_tx, cmd_rx) = flume::unbounded();
@@ -190,6 +207,8 @@ impl AppDatabaseStore {
             signal_templates,
             dataset_id: (!dataset_id.is_nil()).then_some(dataset_id),
             last_applied_seq: seq,
+            authoritative_snapshot,
+            holiday_setup,
             history: UndoHistory::default(),
             persistence,
             workspace_generation: 0,
@@ -247,6 +266,8 @@ impl AppDatabaseStore {
     }
 
     fn replace_projection(&mut self, projection: Projection, cx: &mut Context<Self>) {
+        self.authoritative_snapshot = projection.authoritative_snapshot;
+        self.holiday_setup = projection.holiday_setup;
         if let Some(conflict) = &projection.blocked_conflict
             && self.blocked_conflict.as_ref().is_none_or(|old| {
                 old.mutation_id != conflict.mutation_id || old.error.error != conflict.error.error
@@ -356,6 +377,23 @@ impl AppDatabaseStore {
 
     pub fn is_ready(&self) -> bool {
         self.status == StoreStatus::Ready && !self.local_retry_in_flight
+    }
+
+    pub(crate) fn workspace_content(&self) -> WorkspaceContent {
+        if self.local_retry_in_flight {
+            return WorkspaceContent::Loading;
+        }
+        if !self.is_ready() {
+            return WorkspaceContent::Unavailable;
+        }
+        let Some(persistence) = &self.persistence else {
+            return WorkspaceContent::Unavailable;
+        };
+        if persistence.is_remote() {
+            WorkspaceContent::remote(self.authoritative_snapshot, &self.sync_status)
+        } else {
+            WorkspaceContent::Ready
+        }
     }
 
     pub(crate) fn workspace_generation(&self) -> u64 {

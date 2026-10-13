@@ -1,6 +1,7 @@
 mod commands;
 mod drag_drop;
 mod editor;
+mod holiday_setup;
 mod input;
 mod lifecycle;
 mod navigation;
@@ -37,6 +38,7 @@ use gpui_kit::{
     overlay::{Dialog, ToastLayer},
 };
 use gpui_kit_theme::ActiveTheme;
+use holiday_setup::HolidaySetup;
 use navigation::WorkspaceRoute;
 use navigation_drawer::NavigationDrawer;
 use sources::{SourceFilterPicker, SourceSortPicker};
@@ -157,6 +159,7 @@ pub struct RootView {
     pending_navigation_focus: bool,
     toasts: Entity<ToastLayer>,
     context_menu: ContextMenuHost,
+    holiday_setup: Entity<HolidaySetup>,
     home_view: Entity<HomeView>,
     main_view: Entity<MainView>,
     inspector: Entity<ItemInspector>,
@@ -237,6 +240,9 @@ impl Render for RootView {
         let toggle_left = Self::navigation_toggle_left(left_panel_width);
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         let window_header = self.render_workspace_header(cx);
+        let show_holidays = crate::stores::AppDatabaseStore::global(cx)
+            .read(cx)
+            .holiday_setup_pending();
         let workspace = self.render_workspace(content_owns_top_material, cx);
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         let workspace = self.with_workspace_header(workspace, window_header, cx);
@@ -271,7 +277,15 @@ impl Render for RootView {
             .child(self.drag_lifecycle_observer(cx))
             .child(self.navigation_hover_observer(cx))
             .map(|root| self.bind_actions(root, cx))
-            .child(workspace)
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(workspace),
+            )
+            .when(show_holidays, |root| root.child(self.holiday_setup.clone()))
             .children(library_drawer)
             .children(navigation_drawer)
             .when(cfg!(not(target_os = "windows")), |root| {

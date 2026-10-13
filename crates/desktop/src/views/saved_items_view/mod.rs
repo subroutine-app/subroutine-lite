@@ -3,23 +3,23 @@ use std::collections::{HashMap, HashSet};
 use chronoutil::RelativeDuration;
 use gpui::{
     App, Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render,
-    ScrollHandle, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _,
+    ScrollHandle, StatefulInteractiveElement, Styled, Window, div,
 };
 use subroutine_core::{ActionTemplate, AnyItem, EventTemplate};
 use uuid::Uuid;
 
 use crate::{
     components::{
-        DragData, DraggedItems, ItemCardStates, MarqueeSelection, MarqueeView, SidebarAddButton,
+        DragData, DraggedItems, ItemCardStates, MarqueeSelection, MarqueeView, SidebarDraft,
         SidebarPanel,
         elastic_overscroll::ElasticOverscroll,
         marquee,
         menu::{MenuBuilder, open_context_menu},
     },
-    item_manager::{DiscardDraft, ItemManager},
+    item_manager::{DraftView, ItemManager},
     item_subject::SavedItem,
     selection::{DismissExt as _, SelectionManager, SelectionScope},
-    stores::{AppDatabaseStore, DataChanged},
+    stores::{AppDatabaseStore, DataChanged, WorkspaceContent},
 };
 
 mod list;
@@ -49,7 +49,6 @@ pub(super) struct SavedItemDropTarget {
 pub struct SavedItemsView {
     items: SavedItemsList,
     workspace_generation: u64,
-    draft: Option<SavedItem>,
     scroll_handle: ScrollHandle,
     focus_handle: FocusHandle,
     item_focus_handles: HashMap<Uuid, FocusHandle>,
@@ -79,20 +78,6 @@ impl SavedItemsView {
             view.items.action_templates = store.action_templates();
             view.items.event_templates = store.event_templates();
             view.items.loading = false;
-            if view.draft.as_ref().is_some_and(|draft| match draft {
-                SavedItem::Action(template) => view
-                    .items
-                    .action_templates
-                    .iter()
-                    .any(|item| item.id == template.id),
-                SavedItem::Event(template) => view
-                    .items
-                    .event_templates
-                    .iter()
-                    .any(|item| item.id == template.id),
-            }) {
-                view.draft = None;
-            }
             view.retain_details();
             view.refresh_focus_handles(cx);
             cx.notify();
@@ -101,23 +86,10 @@ impl SavedItemsView {
 
         let item_manager = ItemManager::global(cx);
         cx.observe(&item_manager, |_, _, cx| cx.notify()).detach();
-        cx.subscribe(&item_manager, |view, _, event: &DiscardDraft, cx| {
-            if view
-                .draft
-                .as_ref()
-                .is_some_and(|draft| draft.id() == event.0)
-            {
-                view.draft = None;
-                view.retain_details();
-                cx.notify();
-            }
-        })
-        .detach();
 
         let mut view = Self {
             items,
             workspace_generation: db_store.read(cx).workspace_generation(),
-            draft: None,
             scroll_handle: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             item_focus_handles: HashMap::new(),
@@ -135,7 +107,6 @@ impl SavedItemsView {
         }
         self.workspace_generation = generation;
         self.items.details = ItemCardStates::default();
-        self.draft = None;
         self.item_focus_handles.clear();
         self.refresh_focus_handles(cx);
         self.scroll_handle = ScrollHandle::new();
@@ -151,8 +122,7 @@ impl SavedItemsView {
                 .action_templates
                 .iter()
                 .map(|item| item.id)
-                .chain(self.items.event_templates.iter().map(|item| item.id))
-                .chain(self.draft.iter().map(SavedItem::id)),
+                .chain(self.items.event_templates.iter().map(|item| item.id)),
         );
     }
 
@@ -161,7 +131,7 @@ impl SavedItemsView {
     }
 
     pub(crate) fn item_count(&self) -> usize {
-        self.items.matching_ids().len() + usize::from(self.draft.is_some())
+        self.items.matching_ids().len()
     }
 
     pub(crate) fn set_filter(&mut self, filter: SavedItemsFilter, cx: &mut Context<Self>) {
@@ -189,7 +159,13 @@ impl SavedItemsView {
     }
 
     fn add_draft(&mut self, kind: SavedItemKind, window: &mut Window, cx: &mut Context<Self>) {
+        if AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready {
+            return;
+        }
         let manager = ItemManager::global(cx);
+        if manager.read(cx).view_draft(DraftView::SavedItems).is_some() {
+            return;
+        }
         manager.update(cx, |manager, cx| {
             manager.commit_open_edit(window, cx);
         });
@@ -203,20 +179,11 @@ impl SavedItemsView {
                 SavedItem::Event(EventTemplate::new("", RelativeDuration::minutes(30)))
             }
         };
-        let id = draft.id();
-        let item = AnyItem::from(draft.clone());
-        self.draft = Some(draft);
+        let item = AnyItem::from(draft);
         SelectionManager::clear_global(cx);
         self.focus_handle.focus(window, cx);
         manager.update(cx, |manager, cx| {
-            manager.begin_edit(&item, true, window, cx);
-        });
-        self.overscroll.reset();
-        cx.on_next_frame(window, move |view, _, cx| {
-            if view.draft.as_ref().is_some_and(|draft| draft.id() == id) {
-                view.scroll_handle.scroll_to_bottom();
-                cx.notify();
-            }
+            manager.begin_view_draft(&item, DraftView::SavedItems, None, window, cx);
         });
         cx.notify();
     }
@@ -327,8 +294,7 @@ impl Render for SavedItemsView {
             crate::views::LIBRARY_HEADER_HEIGHT + crate::components::SIDEBAR_ITEM_GAP;
         self.marquee
             .scroll(&self.scroll_handle, content_inset_top, window);
-        let content = if let Some(empty) = self.items.empty_state().filter(|_| self.draft.is_none())
-        {
+        let content = if let Some(empty) = self.items.empty_state() {
             div()
                 .absolute()
                 .top(content_inset_top)
@@ -349,10 +315,7 @@ impl Render for SavedItemsView {
                     self.drop_target,
                     window,
                     cx,
-                ))
-                .when_some(self.draft.as_ref(), |rows, draft| {
-                    rows.child(render_draft(draft, &self.items.details, window, cx))
-                });
+                ));
             div()
                 .id("saved-items-scroll")
                 .size_full()
@@ -379,29 +342,33 @@ impl Render for SavedItemsView {
         };
         let body = SidebarPanel::new("saved-items-panel")
             .footer(
-                SidebarAddButton::new("new-saved-item", label).on_click(cx.listener(
-                    |view, event: &gpui::ClickEvent, window, cx| match view.items.filter {
-                        SavedItemsFilter::All => {
-                            let mut menu = MenuBuilder::new();
-                            for (label, kind) in [
-                                ("Action", SavedItemKind::Action),
-                                ("Event", SavedItemKind::Event),
-                            ] {
-                                let view = cx.entity();
-                                menu = menu.item(label, move |window, cx| {
-                                    view.update(cx, |view, cx| view.add_draft(kind, window, cx));
-                                });
+                SidebarDraft::new("new-saved-item", label, DraftView::SavedItems).on_click(
+                    cx.listener(|view, event: &gpui::ClickEvent, window, cx| {
+                        match view.items.filter {
+                            SavedItemsFilter::All => {
+                                let mut menu = MenuBuilder::new();
+                                for (label, kind) in [
+                                    ("Action", SavedItemKind::Action),
+                                    ("Event", SavedItemKind::Event),
+                                ] {
+                                    let view = cx.entity();
+                                    menu = menu.item(label, move |window, cx| {
+                                        view.update(cx, |view, cx| {
+                                            view.add_draft(kind, window, cx)
+                                        });
+                                    });
+                                }
+                                open_context_menu(menu, event.position(), window, cx);
                             }
-                            open_context_menu(menu, event.position(), window, cx);
+                            SavedItemsFilter::Actions => {
+                                view.add_draft(SavedItemKind::Action, window, cx)
+                            }
+                            SavedItemsFilter::Events => {
+                                view.add_draft(SavedItemKind::Event, window, cx)
+                            }
                         }
-                        SavedItemsFilter::Actions => {
-                            view.add_draft(SavedItemKind::Action, window, cx)
-                        }
-                        SavedItemsFilter::Events => {
-                            view.add_draft(SavedItemKind::Event, window, cx)
-                        }
-                    },
-                )),
+                    }),
+                ),
             )
             .child(content);
 

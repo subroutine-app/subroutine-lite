@@ -25,6 +25,18 @@ with-env { SUBROUTINE_LITE_OFFLINE_ONLY: 'true' } { cargo run -r -p desktop }
 
 Uses the local workspace, not your account cache. Leaves saved credentials alone; running normally can resume sync.
 
+## Starting view and empty workspaces
+
+A fresh installation opens on Timeline at now. Choosing Home or another primary view remembers it for the next launch; opening a library, searching, or hovering a tab while dragging does not replace that choice. Existing settings retain the previously selected main view. Navigation order stays fixed.
+
+Home, Upcoming, Queue, and Focus use their normal card layout even when empty. A plus slot becomes an inline draft in the same position; nothing is saved until the draft is submitted or finished. Empty Upcoming shows only Today with a static create slot; populated agendas use hoverable Add item controls and show additional dates only when they contain items or markers. The separate item creator remains available through New item. An account cache still awaiting its first snapshot is shown as loading or unavailable, not as an empty agenda.
+
+## Regional holidays
+
+Fresh local workspaces offer a region selector with **Add holidays** and **Skip**. The system locale suggests a country, never a state or province. Adding creates editable date-only markers for **2000–2050** from the bundled snapshot; the choice is saved once, so edits and deletions survive restarts. Existing workspaces and signed-in accounts are not seeded.
+
+The catalog covers 31 selections across 10 countries. It is compiled into a static hash map, with no runtime Python or network access. See [Bundled holidays](../../docs/holidays.md) for coverage, accuracy limitations, and the pinned generator used to refresh build inputs.
+
 ## Frosted background
 
 **Settings → Appearance → Frosted background** enables native behind-window blur on macOS and acrylic on Windows 10 version 1809 (build 17763) or newer. The wash lightens when the window loses focus and returns smoothly when activated.

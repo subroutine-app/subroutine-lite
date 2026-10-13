@@ -115,6 +115,15 @@ impl WorkspacePersistence {
             .map_err(|error| error.to_string())
     }
 
+    pub(super) fn complete_holiday_setup(
+        &self,
+        markers: Vec<subroutine_core::Marker>,
+    ) -> Result<Projection, String> {
+        self.store
+            .complete_holiday_setup(markers)
+            .map_err(|error| error.to_string())
+    }
+
     pub(super) fn apply_local_patch(
         &self,
         patch: subroutine_core::OptimisticPatch,

@@ -8,13 +8,13 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use gpui::{App, AsyncApp, Context, FocusHandle, Focusable, Pixels, Point, Size, Window, px, size};
+use gpui::{App, AsyncApp, Context, FocusHandle, Focusable, Pixels, Point, Size, Window, px};
 use subroutine_core::{Action, AnyItem, Event};
 use uuid::Uuid;
 
 use crate::{
     components::ItemCardStates,
-    item_manager::ItemManager,
+    item_manager::{DraftView, ItemManager},
     selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
     settings::{GlobalSettings, Settings},
     stores::AppDatabaseStore,
@@ -173,6 +173,7 @@ impl QueueView {
                 view.loaded = false;
                 view.reconcile(cx);
             }
+            cx.notify();
         })
         .detach();
         cx.observe(&ItemManager::global(cx), |view, _, cx| view.reconcile(cx))
@@ -205,7 +206,7 @@ impl QueueView {
             handoff: None,
             card_states: ItemCardStates::default(),
             order: SelectionOrder::new(SelectionScope::Queue, []),
-            viewport: size(px(900.), px(560.)),
+            viewport: Size::default(),
             scroll_pending: QueueLane::ALL.into_iter().collect(),
             dragging: false,
             drop_target: None,
@@ -220,8 +221,35 @@ impl QueueView {
         self.reconcile(cx);
     }
 
+    fn begin_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.current.is_some()
+            || self.handoff.is_some()
+            || !AppDatabaseStore::global(cx).read(cx).is_ready()
+        {
+            return;
+        }
+        let manager = ItemManager::global(cx);
+        if manager.read(cx).view_draft(DraftView::Queue).is_some() {
+            return;
+        }
+        manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+        if manager.read(cx).is_editing() {
+            return;
+        }
+        self.focus_handle.focus(window, cx);
+        let item = AnyItem::Action(Action::new("").with_queued(true));
+        manager.update(cx, |manager, cx| {
+            manager.begin_view_draft(&item, DraftView::Queue, None, window, cx);
+        });
+    }
+
     fn reconcile(&mut self, cx: &mut Context<Self>) {
         let animation_now = Instant::now();
+        let manager = ItemManager::global(cx);
+        let drafting = manager.read(cx).view_draft(DraftView::Queue).is_some();
+        if drafting {
+            self.handoff = None;
+        }
         self.advance_handoff(animation_now, cx);
         self.now = Utc::now();
         let mut snapshot = QueueSnapshot::new(
@@ -230,27 +258,36 @@ impl QueueView {
             self.now,
             Settings::global(cx).schedule.granularity,
         );
-        let manager = ItemManager::global(cx);
         snapshot
             .candidates
             .retain(|item| !manager.read(cx).is_completing(item.id()));
-        let desired = snapshot
-            .blocker
-            .clone()
-            .map(CurrentItem::Event)
-            .or_else(|| {
-                snapshot
-                    .candidates
-                    .first()
-                    .cloned()
-                    .map(CurrentItem::Candidate)
-            });
+        let desired = if drafting {
+            None
+        } else {
+            snapshot
+                .blocker
+                .clone()
+                .map(CurrentItem::Event)
+                .or_else(|| {
+                    snapshot
+                        .candidates
+                        .first()
+                        .cloned()
+                        .map(CurrentItem::Candidate)
+                })
+        };
         let previous_id = self.current.as_ref().map(CurrentItem::id);
         let desired_id = desired.as_ref().map(CurrentItem::id);
-        let blocked = snapshot.blocker.is_some();
+        let blocked = snapshot.blocker.is_some() || drafting;
         let began_blocking = blocked && self.snapshot.blocker.is_none();
         if previous_id != desired_id {
-            self.handoff = if self.loaded && !cx.reduce_motion() {
+            self.handoff = if self.loaded
+                && self.viewport.width > px(0.)
+                && self.viewport.height > px(0.)
+                && previous_id.is_some()
+                && !drafting
+                && !cx.reduce_motion()
+            {
                 let outgoing = self.presented(animation_now, cx);
                 let origin = desired.as_ref().and_then(|item| match item {
                     CurrentItem::Candidate(item) => self.column_origin(item.id(), cx),
@@ -367,6 +404,11 @@ impl QueueView {
             || self.current.as_ref().and_then(CurrentItem::action_id),
             |motion| motion.hidden_action(self.current.as_ref()),
         );
+        let blocked = self.snapshot.blocker.is_some()
+            || ItemManager::global(cx)
+                .read(cx)
+                .view_draft(DraftView::Queue)
+                .is_some();
         for column in &mut self.columns {
             let items = self
                 .snapshot
@@ -387,7 +429,7 @@ impl QueueView {
                 items,
                 &self.item_focus_handles,
                 self.order.clone(),
-                self.snapshot.blocker.is_some(),
+                blocked,
                 self.workspace_generation,
                 cx,
             );

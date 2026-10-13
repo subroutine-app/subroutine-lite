@@ -4,7 +4,7 @@ use gpui::{Context, Window, actions};
 use subroutine_core::{Action, AnyItem, Event, ItemType, SchedulePoint};
 use uuid::Uuid;
 
-use super::{EditKind, ItemManager, ItemSubject};
+use super::{DraftView, EditKind, ItemManager, ItemSubject};
 use crate::{settings::Settings, stores::AppDatabaseStore};
 
 pub(crate) const DRAFT_KEY_CONTEXT: &str = "ItemDraft";
@@ -92,6 +92,18 @@ fn convert_draft(
 }
 
 impl ItemManager {
+    pub(crate) fn view_draft(&self, view: DraftView) -> Option<&AnyItem> {
+        let editing = self.editing_item.as_ref()?;
+        match (&editing.kind, &editing.original) {
+            (EditKind::ViewDraft { view: owner, .. }, ItemSubject::Live(item))
+                if *owner == view =>
+            {
+                Some(item)
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn draft_item(&self, id: Uuid) -> Option<&AnyItem> {
         let editing = self
             .editing_item
@@ -104,7 +116,19 @@ impl ItemManager {
     }
 
     pub(crate) fn draft_type(&self, id: Uuid) -> Option<DraftType> {
-        if self.editing_item.as_ref()?.kind == EditKind::FixedTypeDraft {
+        if matches!(
+            self.editing_item.as_ref()?.kind,
+            EditKind::ViewDraft {
+                view: DraftView::Home
+                    | DraftView::Queue
+                    | DraftView::Focus
+                    | DraftView::Unqueued
+                    | DraftView::Unscheduled
+                    | DraftView::Routines
+                    | DraftView::SavedItems,
+                ..
+            }
+        ) {
             return None;
         }
         self.draft_item(id).and_then(DraftType::of)

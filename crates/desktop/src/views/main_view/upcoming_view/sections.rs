@@ -133,9 +133,12 @@ impl UpcomingSections {
             .collect();
         self.states.retain(|section, _| populated.contains(section));
         for section in populated {
-            self.states
-                .entry(section)
-                .or_insert_with(|| SectionState::new(section == UpcomingSection::Day(today)));
+            self.states.entry(section).or_insert_with(|| {
+                SectionState::new(
+                    section == UpcomingSection::Day(today)
+                        || self.pending_reveals.contains(&section),
+                )
+            });
         }
         for section in std::mem::take(&mut self.pending_reveals) {
             self.set_expanded(section, true);
@@ -147,9 +150,7 @@ impl UpcomingSections {
     }
 
     pub fn is_expanded(&self, section: UpcomingSection) -> bool {
-        self.states
-            .get(&section)
-            .is_some_and(|state| state.expanded)
+        self.states.get(&section).is_none_or(|state| state.expanded)
     }
 
     pub fn set_expanded(&mut self, section: UpcomingSection, expanded: bool) {
@@ -194,7 +195,7 @@ impl UpcomingSections {
     pub fn layout_state(&self, section: UpcomingSection) -> (bool, f32) {
         self.states
             .get(&section)
-            .map_or((false, 0.), |state| (state.expanded, state.reveal.value()))
+            .map_or((true, 1.), |state| (state.expanded, state.reveal.value()))
     }
 }
 
@@ -214,7 +215,7 @@ mod tests {
                     .with_start(Some(SchedulePoint::Date(date))),
             )
         });
-        let agenda = Agenda::build_revealing(&items, &[], &[], today, &BTreeSet::new());
+        let agenda = Agenda::build_revealing(&items, &[], &[], &[], today, &BTreeSet::new());
         let day = UpcomingSection::Day(today);
         let next_day = UpcomingSection::Day(tomorrow);
         let mut sections = UpcomingSections::default();
@@ -240,6 +241,7 @@ mod tests {
         let agenda = |items: &[AnyItem]| {
             Agenda::build_revealing(
                 items,
+                &[],
                 std::slice::from_ref(&marker),
                 &[],
                 today,
@@ -253,7 +255,7 @@ mod tests {
         sections.sync(&agenda(&[]), today);
         for section in [day, scheduled] {
             assert!(!sections.can_expand(section));
-            assert_eq!(sections.layout_state(section), (false, 0.));
+            assert_eq!(sections.layout_state(section), (true, 1.));
         }
 
         let undated = AnyItem::Action(Action::new("No start").with_queued(true));
@@ -283,7 +285,7 @@ mod tests {
         sections.sync(&agenda(&[]), today);
         sections.set_expanded(scheduled, true);
         assert!(!sections.can_expand(scheduled));
-        assert_eq!(sections.layout_state(scheduled), (false, 0.));
+        assert_eq!(sections.layout_state(scheduled), (true, 1.));
 
         sections.sync(&agenda(&[draft]), today);
         assert!(sections.can_expand(scheduled));

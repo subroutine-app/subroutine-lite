@@ -157,5 +157,7 @@ impl<T> UndoHistory<T> {
 
 mod http_store;
 mod local_store;
+mod workspace_content;
 
 pub use http_store::*;
+pub(crate) use workspace_content::WorkspaceContent;

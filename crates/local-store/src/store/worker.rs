@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use std::sync::mpsc;
 use subroutine_core::{
-    AllData, ApiErrorBody, ClientMutation, DataDelta, MutationReceipt, OptimisticPatch,
+    AllData, ApiErrorBody, ClientMutation, DataDelta, Marker, MutationReceipt, OptimisticPatch,
 };
 use uuid::Uuid;
 
@@ -17,6 +17,7 @@ pub(super) enum Command {
     InstallSnapshot(Box<AllData>, SyncState, Reply<Projection>),
     ApplyDelta(Box<DataDelta>, Reply<Projection>),
     ApplyLocalPatch(Box<OptimisticPatch>, Reply<Projection>),
+    CompleteHolidaySetup(Vec<Marker>, Reply<Projection>),
 
     SetEventBusyOverride(Uuid, Option<bool>, Reply<Projection>),
     Enqueue(Box<ClientMutation>, Reply<Projection>),
@@ -59,6 +60,9 @@ impl Command {
             Command::ApplyDelta(delta, reply) => respond(reply, database.apply_delta(*delta)),
             Command::ApplyLocalPatch(patch, reply) => {
                 respond(reply, database.apply_local_patch(*patch))
+            }
+            Command::CompleteHolidaySetup(markers, reply) => {
+                respond(reply, database.complete_holiday_setup(markers))
             }
 
             Command::SetEventBusyOverride(event_id, busy_override, reply) => respond(

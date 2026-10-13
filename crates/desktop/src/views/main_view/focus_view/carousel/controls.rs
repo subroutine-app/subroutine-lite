@@ -16,7 +16,10 @@ use crate::{
     settings::FocusCarouselOrientation,
 };
 
-use super::super::{FocusMode, FocusView};
+use super::{
+    super::{FocusMode, FocusView},
+    CarouselPosition,
+};
 
 pub(super) struct CarouselNavigation {
     pub(super) has_previous: bool,
@@ -28,11 +31,15 @@ impl FocusView {
         &self,
         orientation: FocusCarouselOrientation,
         navigation: CarouselNavigation,
-        is_completing: bool,
-        progress: f32,
-        position: String,
+        position: Option<CarouselPosition>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let active = position.is_some();
+        let CarouselPosition {
+            is_completing,
+            progress,
+            label: position,
+        } = position.unwrap_or_default();
         let action_mode = self.mode == FocusMode::Action;
         let event_position = || {
             div()
@@ -56,6 +63,7 @@ impl FocusView {
                     FocusCarouselOrientation::Vertical => AppIcon::MoveUp,
                 })
                 .tooltip("Previous")
+                .tab_stop(active)
                 .disabled(!navigation.has_previous)
                 .on_click(
                     cx.listener(|view, _, window, cx| view.move_active(-1, false, window, cx)),
@@ -74,7 +82,8 @@ impl FocusView {
                     "Complete"
                 })
                 .text_color(UxColor::Action.text(cx.theme()))
-                .disabled(is_completing)
+                .tab_stop(active)
+                .disabled(!active || is_completing)
                 .on_click(cx.listener(|view, _, window, cx| view.complete_active(window, cx)))
         };
         let complete_icon = || {
@@ -90,7 +99,8 @@ impl FocusView {
                     "Complete"
                 })
                 .text_color(UxColor::Action.text(cx.theme()))
-                .disabled(is_completing)
+                .tab_stop(active)
+                .disabled(!active || is_completing)
                 .on_click(cx.listener(|view, _, window, cx| view.complete_active(window, cx)))
         };
         let next = || {
@@ -104,6 +114,7 @@ impl FocusView {
                     FocusCarouselOrientation::Vertical => AppIcon::MoveDown,
                 })
                 .tooltip("Next")
+                .tab_stop(active)
                 .disabled(!navigation.has_next)
                 .on_click(cx.listener(|view, _, window, cx| view.move_active(1, false, window, cx)))
         };
@@ -183,8 +194,11 @@ impl FocusView {
                 ),
         };
 
+        let frame = frame.id("focus.controls");
+        if !active {
+            return frame.invisible().into_any_element();
+        }
         frame
-            .id("focus.controls")
             .bg_glass()
             .glass_surface(Surface::Overlay)
             .glass_radius(Radius::Control)

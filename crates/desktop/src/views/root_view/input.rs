@@ -18,6 +18,7 @@ use crate::{
         DuplicateSelected, PasteItems, SelectAllItems, SelectionManager, TogglePinnedSelected,
         ToggleQueuedSelected,
     },
+    settings::PrimaryView,
     stores::AppDatabaseStore,
     views::{CreatorMode, DEFAULT_CREATOR_MODE, SelectedMainView},
 };
@@ -283,6 +284,10 @@ impl RootView {
         {
             cx.on_next_frame(window, move |view, window, cx| {
                 if view.route == WorkspaceRoute::Main && !view.library_drawer_open {
+                    Self::remember_primary_view(
+                        PrimaryView::Main(view.main_view.read(cx).selected_view()),
+                        cx,
+                    );
                     let focus = view.main_view.read(cx).selected_view_focus_handle(cx);
                     focus.focus(window, cx);
                     window.dispatch_action(command.action(), cx);

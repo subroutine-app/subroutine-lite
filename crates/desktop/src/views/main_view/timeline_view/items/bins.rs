@@ -22,7 +22,10 @@ use crate::{
 };
 
 use super::super::{CloseTimelineBin, TimelineView};
-use super::{ItemNavigation, NavigationHandoffs, TimelineBin, TimelineSlot, attached::SlotKind};
+use super::{
+    ItemNavigation, MAX_ITEM_WIDTH, NavigationHandoffs, TimelineBin, TimelineSlot,
+    attached::SlotKind,
+};
 
 const HEADER_HEIGHT: Pixels = px(58.);
 const HEADER_GAP: Pixels = px(8.);
@@ -653,6 +656,7 @@ impl TimelineView {
                     .details(self.bin_details.get(id))
                     .draggable(true, None)
                     .w_full()
+                    .max_w(MAX_ITEM_WIDTH)
                     .h(self.bin_details.height(id, SIDEBAR_ITEM_HEIGHT))
                     .flex_none();
                     self.wire_timeline_item_card(card, &entry.item, cx)

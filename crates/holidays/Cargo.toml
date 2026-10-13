@@ -1,0 +1,18 @@
+[package]
+name = "subroutine-holidays"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+uuid.workspace = true
+phf = "0.13"
+subroutine-core = { package = "core", path = "../core" }
+
+[build-dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+phf_codegen = "0.13"

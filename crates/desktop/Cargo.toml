@@ -37,6 +37,8 @@ gpui_kit_semantics = {
 }
 
 subroutine-core = { package = "core", path = "../core" }
+subroutine-holidays = { path = "../holidays" }
+sys-locale = "0.3"
 parser = { path = "../parser" }
 flume = { workspace = true }
 chrono = { workspace = true }

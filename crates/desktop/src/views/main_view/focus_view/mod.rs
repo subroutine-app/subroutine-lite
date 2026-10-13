@@ -14,13 +14,13 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use gpui::{App, AsyncApp, Context, FocusHandle, Focusable, Pixels, Size, Window, px, size};
+use gpui::{App, AsyncApp, Context, FocusHandle, Focusable, Pixels, Size, Window};
 use subroutine_core::{Action, AnyItem, Event, Signal};
 use uuid::Uuid;
 
 use crate::{
     components::{ItemCardStates, elastic_overscroll::ElasticOverscroll},
-    item_manager::ItemManager,
+    item_manager::{DiscardDraft, DraftView, ItemManager},
     selection::{SelectionManager, SelectionOrder, SelectionScope},
     settings::GlobalSettings,
     stores::AppDatabaseStore,
@@ -64,6 +64,8 @@ pub struct FocusView {
     settings_button_focus: FocusHandle,
     settings_open: bool,
     mode: FocusMode,
+    requested_mode: Option<FocusMode>,
+    inline_card_id: Option<Uuid>,
     source_actions: Vec<Action>,
     items: Vec<AnyItem>,
     queue_blocker: Option<EventMoment>,
@@ -83,8 +85,10 @@ pub struct FocusView {
     item_focus_handles: HashMap<Uuid, FocusHandle>,
     loaded: bool,
     restore_focus: bool,
-    carousel_size: Size<Pixels>,
+
     viewport_size: Size<Pixels>,
+    // Keep motion identity when the measured layout adds or removes the scroll wrapper.
+    carousel_motion: HashMap<Uuid, carousel::CarouselMotion>,
 
     card_states: ItemCardStates,
     notice_states: ItemCardStates,
@@ -105,12 +109,24 @@ impl FocusView {
         let store = AppDatabaseStore::global(cx);
         cx.observe(&store, |view, store, cx| {
             view.sync_workspace(store.read(cx).workspace_generation(), cx);
+            cx.notify();
         })
         .detach();
 
         cx.observe(&ItemManager::global(cx), |view, _, cx| {
             view.reconcile_items(cx);
         })
+        .detach();
+
+        cx.subscribe(
+            &ItemManager::global(cx),
+            |view, _, event: &DiscardDraft, cx| {
+                if view.inline_card_id == Some(event.0) {
+                    view.inline_card_id = None;
+                    cx.notify();
+                }
+            },
+        )
         .detach();
 
         cx.observe(&SelectionManager::global(cx), |view, selection, cx| {
@@ -172,6 +188,8 @@ impl FocusView {
             settings_button_focus: cx.focus_handle(),
             settings_open: false,
             mode: FocusMode::default(),
+            requested_mode: None,
+            inline_card_id: None,
             source_actions: Vec::new(),
             items: Vec::new(),
             queue_blocker: None,
@@ -191,8 +209,8 @@ impl FocusView {
             item_focus_handles: HashMap::new(),
             loaded: false,
             restore_focus: false,
-            carousel_size: size(px(640.), px(260.)),
-            viewport_size: size(px(640.), px(400.)),
+            viewport_size: Size::default(),
+            carousel_motion: HashMap::new(),
 
             card_states: ItemCardStates::default(),
             notice_states: ItemCardStates::default(),
@@ -214,7 +232,10 @@ impl FocusView {
             return;
         }
         self.workspace_generation = generation;
+        self.requested_mode = None;
+        self.inline_card_id = None;
         self.card_states = ItemCardStates::default();
+        self.carousel_motion.clear();
         self.notice_states = ItemCardStates::default();
         self.notice_card_widths.clear();
         self.event_notice = NoticeSlot::default();
@@ -236,7 +257,19 @@ impl FocusView {
     }
 
     pub(super) fn set_mode(&mut self, mode: FocusMode, cx: &mut Context<Self>) {
-        if self.mode == mode {
+        self.requested_mode = (self.mode != mode).then_some(mode);
+        cx.notify();
+    }
+
+    fn resolve_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mode) = self.requested_mode.take() else {
+            return;
+        };
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| {
+            manager.commit_open_edit(window, cx);
+        });
+        if manager.read(cx).is_editing() {
             return;
         }
 
@@ -260,6 +293,13 @@ impl FocusView {
             }
         }
         cx.notify();
+    }
+
+    fn has_draft(&self, cx: &App) -> bool {
+        ItemManager::global(cx)
+            .read(cx)
+            .view_draft(DraftView::Focus)
+            .is_some()
     }
 
     pub(super) fn is_action_mode(&self) -> bool {

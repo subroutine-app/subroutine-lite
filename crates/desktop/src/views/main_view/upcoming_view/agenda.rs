@@ -19,7 +19,20 @@ const DAY_ROW_HEIGHT: Pixels = px(38.);
 const ITEM_CARD_HEIGHT: Pixels = px(64.);
 const TITLE_ONLY_ITEM_CARD_HEIGHT: Pixels = px(40.);
 
-const CREATE_ROW_HEIGHT: Pixels = px(44.);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CreateKind {
+    Slot,
+    Append,
+}
+
+impl CreateKind {
+    pub(super) fn height(self) -> Pixels {
+        match self {
+            Self::Slot => ITEM_CARD_HEIGHT,
+            Self::Append => px(44.),
+        }
+    }
+}
 
 pub(super) fn row_top_inset(index: usize) -> Pixels {
     if index == 0 {
@@ -51,6 +64,7 @@ pub(super) enum UpcomingRow {
     },
     Create {
         date: NaiveDate,
+        kind: CreateKind,
     },
 }
 
@@ -73,7 +87,7 @@ impl UpcomingRow {
     pub(super) fn section(&self) -> UpcomingSection {
         match self {
             Self::Missed => UpcomingSection::Missed,
-            Self::Day { date, .. } | Self::Create { date } => UpcomingSection::Day(*date),
+            Self::Day { date, .. } | Self::Create { date, .. } => UpcomingSection::Day(*date),
             Self::Item { section, .. } => *section,
         }
     }
@@ -111,7 +125,7 @@ impl UpcomingRow {
         match self {
             UpcomingRow::Day { date, .. } => day_height(*date),
             UpcomingRow::Item { item, .. } => card_height(item),
-            UpcomingRow::Create { .. } => CREATE_ROW_HEIGHT,
+            UpcomingRow::Create { kind, .. } => kind.height(),
             UpcomingRow::Missed => DAY_ROW_HEIGHT,
         }
     }
@@ -141,6 +155,7 @@ pub(super) struct AgendaLayout {
 impl Agenda {
     pub(super) fn build_revealing(
         items: &[AnyItem],
+        drafts: &[AnyItem],
         markers: &[Marker],
         signals: &[Signal],
         today: NaiveDate,
@@ -208,6 +223,14 @@ impl Agenda {
                     .push((AnyItem::Signal(signal), true));
             }
         }
+        // Provisional dates must not introduce extra recurrence projections around a draft.
+        let mut draft_dates = BTreeSet::new();
+        for draft in drafts {
+            if let Some(date) = draft.start_date() {
+                draft_dates.insert(date);
+                by_day.entry(date).or_default().push((draft.clone(), false));
+            }
+        }
         for entries in by_day.values_mut() {
             entries.sort_by_key(|(item, _)| day_order(item));
         }
@@ -216,8 +239,22 @@ impl Agenda {
         days.retain(|date| (start..=end).contains(date));
         days.insert(today);
         let mut days: BTreeSet<NaiveDate> = days.into_iter().take(MAX_DAYS).collect();
-        days.extend(revealed_dates);
+        days.extend(revealed_dates.iter().copied().filter(|date| {
+            concrete_days.contains(date)
+                || visible_markers
+                    .iter()
+                    .any(|entry| !entry.projected && entry.marker.covers(*date))
+        }));
+        days.extend(&draft_dates);
 
+        let has_content = !missed.is_empty()
+            || !by_day.is_empty()
+            || visible_markers.iter().any(|entry| !entry.projected);
+        let create_kind = if has_content {
+            CreateKind::Append
+        } else {
+            CreateKind::Slot
+        };
         let mut agenda = Agenda::default();
         if !missed.is_empty() {
             missed.sort_by_key(|item| (item.start_date(), day_order(item), item.id()));
@@ -246,6 +283,7 @@ impl Agenda {
             });
 
             let entries = by_day.remove(&date).unwrap_or_default();
+
             agenda.rows.extend(
                 entries
                     .into_iter()
@@ -255,7 +293,12 @@ impl Agenda {
                         section: UpcomingSection::Day(date),
                     }),
             );
-            agenda.rows.push(UpcomingRow::Create { date });
+            if !draft_dates.contains(&date) {
+                agenda.rows.push(UpcomingRow::Create {
+                    date,
+                    kind: create_kind,
+                });
+            }
         }
 
         agenda
@@ -466,6 +509,196 @@ mod tests {
     use subroutine_core::{Action, SchedulePoint};
 
     #[test]
+    fn empty_agenda_has_only_today_and_one_nonselectable_create_card() {
+        let today = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
+        let agenda = Agenda::build_revealing(&[], &[], &[], &[], today, &BTreeSet::new());
+        let mut sections = super::super::sections::UpcomingSections::default();
+        sections.sync(&agenda, today);
+        let dates: Vec<_> = agenda
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                UpcomingRow::Day { date, .. } => Some(*date),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dates, [today]);
+        let layout = agenda.layout(
+            |section| sections.layout_state(section),
+            |_| panic!("empty agendas have no item cards"),
+            |_| DAY_ROW_HEIGHT,
+        );
+        assert_eq!(layout.rows, [0, 1]);
+        assert!(layout.order.is_empty());
+        assert!(layout.positions.is_empty());
+        for row in &agenda.rows {
+            assert!(row.selectable_ids().next().is_none());
+        }
+        assert_eq!(
+            agenda
+                .rows
+                .iter()
+                .filter(|row| matches!(
+                    row,
+                    UpcomingRow::Create {
+                        kind: CreateKind::Slot,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn populated_agendas_only_have_append_controls_and_content_dates() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let tomorrow = today.succ_opt().unwrap();
+        let next = tomorrow.succ_opt().unwrap();
+        let action = |date| {
+            AnyItem::Action(
+                Action::new("Scheduled")
+                    .with_queued(true)
+                    .with_start(Some(SchedulePoint::Date(date))),
+            )
+        };
+        for (items, markers, signals, expected_dates) in [
+            (
+                vec![action(tomorrow)],
+                vec![],
+                vec![],
+                vec![today, tomorrow],
+            ),
+            (
+                vec![action(today.pred_opt().unwrap())],
+                vec![],
+                vec![],
+                vec![today],
+            ),
+            (
+                vec![],
+                vec![Marker::new("Today", today)],
+                vec![],
+                vec![today],
+            ),
+            (
+                vec![],
+                vec![Marker::new("Later", next)],
+                vec![],
+                vec![today, next],
+            ),
+            (
+                vec![],
+                vec![],
+                vec![Signal::new("Later", day_start(next))],
+                vec![today, next],
+            ),
+        ] {
+            let agenda =
+                Agenda::build_revealing(&items, &[], &markers, &signals, today, &BTreeSet::new());
+            let dates: Vec<_> = agenda
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    UpcomingRow::Day { date, .. } => Some(*date),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(dates, expected_dates);
+            let controls: Vec<_> = agenda
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    UpcomingRow::Create { kind, .. } => Some(*kind),
+                    _ => None,
+                })
+                .collect();
+            assert!(!controls.is_empty());
+            assert!(controls.iter().all(|kind| *kind == CreateKind::Append));
+        }
+    }
+
+    #[test]
+    fn revealed_dates_only_survive_when_they_have_content() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let past = today - Duration::days(3);
+        let future = today + Duration::days(FUTURE_HORIZON_DAYS + 1);
+        let requested = BTreeSet::from([past, today.succ_opt().unwrap(), future]);
+        let dates = |agenda: &Agenda| {
+            agenda
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    UpcomingRow::Day { date, .. } => Some(*date),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let empty = Agenda::build_revealing(&[], &[], &[], &[], today, &requested);
+        assert_eq!(dates(&empty), [today]);
+
+        let item = AnyItem::Action(
+            Action::new("Far ahead")
+                .with_queued(true)
+                .with_start(Some(SchedulePoint::Date(future))),
+        );
+        let agenda = Agenda::build_revealing(
+            &[item],
+            &[],
+            &[Marker::new("Earlier", past)],
+            &[],
+            today,
+            &requested,
+        );
+        assert_eq!(dates(&agenda), [past, today, future]);
+    }
+
+    #[test]
+    fn inline_draft_replaces_empty_agenda_slot_without_moving() {
+        let today = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
+        let requested = BTreeSet::from([today.succ_opt().unwrap()]);
+        let before = Agenda::build_revealing(&[], &[], &[], &[], today, &requested);
+        let mut sections = super::super::sections::UpcomingSections::default();
+        sections.sync(&before, today);
+        let before_layout = before.layout(
+            |section| sections.layout_state(section),
+            item_card_height,
+            |_| DAY_ROW_HEIGHT,
+        );
+        let draft = AnyItem::Action(
+            Action::new("")
+                .with_queued(true)
+                .with_start(Some(SchedulePoint::Date(today))),
+        );
+        sections.reveal(UpcomingSection::Day(today));
+        let after = Agenda::build_revealing(
+            &[],
+            std::slice::from_ref(&draft),
+            &[],
+            &[],
+            today,
+            &requested,
+        );
+        sections.sync(&after, today);
+        let after_layout = after.layout(
+            |section| sections.layout_state(section),
+            item_card_height,
+            |_| DAY_ROW_HEIGHT,
+        );
+        assert_eq!(before_layout.rows, [0, 1]);
+        assert_eq!(before_layout.rows, after_layout.rows);
+        assert_eq!(before_layout.sizes, after_layout.sizes);
+        assert_eq!(after_layout.positions[&draft.id()], 1);
+        assert!(!sections.is_animating());
+        assert!(
+            after
+                .rows
+                .iter()
+                .all(|row| !matches!(row, UpcomingRow::Create { .. }))
+        );
+    }
+
+    #[test]
     fn item_neighbors_include_projections_and_stop_at_boundaries() {
         let today = NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
         let day = UpcomingSection::Day(today);
@@ -489,7 +722,10 @@ mod tests {
                     relative: None,
                 },
                 item(5, day, false),
-                UpcomingRow::Create { date: today },
+                UpcomingRow::Create {
+                    date: today,
+                    kind: CreateKind::Append,
+                },
                 item(7, day, true),
                 item(8, UpcomingSection::Day(today.succ_opt().unwrap()), false),
             ],

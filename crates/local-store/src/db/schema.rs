@@ -12,7 +12,7 @@ pub(crate) const APPLICATION_ID: i32 = 0x5355_4252; // "SUBR"
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const MIGRATION_1: &str = include_str!("schema.sql");
-const MIGRATIONS: &[&str] = &[MIGRATION_1];
+const MIGRATIONS: &[&str] = &[MIGRATION_1, include_str!("schema_v2.sql")];
 pub(crate) const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +110,14 @@ pub(crate) fn migrate_with(
         .then(|| backup_before_migration(connection, path, version, supported))
         .transpose()?;
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Another opener may have migrated while this connection waited for the write lock.
+    let version: i32 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > supported {
+        return Err(LocalStoreError::UnsupportedSchema {
+            actual: version,
+            supported,
+        });
+    }
     for migration in migrations.iter().skip(version as usize) {
         tx.execute_batch(migration)?;
     }

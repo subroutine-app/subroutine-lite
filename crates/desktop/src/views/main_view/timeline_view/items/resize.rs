@@ -19,6 +19,7 @@ use crate::{
 };
 
 use super::super::{Lane, TimelineView, is_durationless_action, item_min_height};
+use super::MAX_ITEM_WIDTH;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ResizeEdge {
@@ -291,7 +292,7 @@ impl TimelineView {
             .top(y)
             .h(h)
             .left(bounds.left())
-            .w(bounds.size.width)
+            .w(bounds.size.width.min(MAX_ITEM_WIDTH))
             .border_1()
             .border_dashed()
             .border_color(color)

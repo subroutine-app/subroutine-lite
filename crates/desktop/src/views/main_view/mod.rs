@@ -208,7 +208,7 @@ impl MainView {
         let queue_view = cx.new(|cx| QueueView::new(window, cx));
         let focus_view = cx.new(FocusView::new);
 
-        let selected_view = Settings::global(cx).desktop_layout.selected_main_view;
+        let selected_view = Settings::global(cx).desktop_layout.selected_main_view();
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         cx.observe(&calendar_view, |view, _, cx| {
@@ -367,13 +367,14 @@ impl MainView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_view_inner(view, window, cx);
+        self.preview_view(view, window, cx);
+        cx.emit(SelectedMainViewChanged(view));
     }
 
     pub(crate) fn select_focus_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_view
             .update(cx, |focus, cx| focus.set_mode(FocusMode::Event, cx));
-        self.select_view_inner(SelectedMainView::Focus, window, cx);
+        self.select_view(SelectedMainView::Focus, window, cx);
     }
 
     pub(crate) fn finish_item_drag(&mut self, cx: &mut Context<Self>) {
@@ -389,7 +390,8 @@ impl MainView {
             .update(cx, |queue, cx| queue.clear_drop_target(cx));
     }
 
-    fn select_view_inner(
+    // Drag-hover changes the visible tab without emitting a deliberate navigation choice.
+    pub(crate) fn preview_view(
         &mut self,
         view: SelectedMainView,
         window: &mut Window,
@@ -447,7 +449,6 @@ impl MainView {
         }
 
         self.selected_view = view;
-        cx.emit(SelectedMainViewChanged(view));
         let handle = self.selected_view_focus_handle(cx);
         handle.focus(window, cx);
         if view == SelectedMainView::Focus {

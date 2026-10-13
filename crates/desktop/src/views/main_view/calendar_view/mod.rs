@@ -14,18 +14,20 @@ use gpui::{
     App, AppContext, AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
     Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
     MouseDownEvent, MousePressureEvent, MouseUpEvent, ParentElement, Pixels, PressureStage, Render,
-    ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled, Task, Window, actions, div,
-    ease_in_out, prelude::FluentBuilder, px, relative,
+    ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled, Task, Window, actions,
+    container_query, div, ease_in_out, prelude::FluentBuilder, px, relative,
 };
 use gpui_kit::foundation::Sizable;
 use gpui_kit::layout::ScrollFade;
 use gpui_kit::overlay::{GlassExt as _, GlassPreset};
 use gpui_kit_theme::ActiveTheme;
 use gpui_kit_theme::{Radius, Surface};
-use subroutine_core::{Action, AnyItem, ItemType, Marker, SchedulePoint, Signal};
+use subroutine_core::{Action, AnyItem, Event, ItemType, Marker, SchedulePoint, Signal};
 
+mod borders;
 mod grid;
 mod inspector_list;
+mod markers;
 
 use inspector_list::{CalendarInspectorDelegate, CalendarInspectorEntry};
 
@@ -36,14 +38,15 @@ use crate::{
         MarqueeSelection, MarqueeView, MonthSelect, MonthSelectEvent, MonthSelectState, marquee,
     },
     dates::InclusiveDateRange,
-    item_manager::{DiscardDraft, ItemManager},
+    item_manager::{DraftView, ItemManager},
+    item_subject::ItemSubject,
     keys::{force_click_modifier, key},
     selection::{
         SelectionManager, SelectionOrder, SelectionScope, focus_item, focus_item_extending,
     },
-    stores::AppDatabaseStore,
+    stores::{AppDatabaseStore, WorkspaceContent},
     views::{
-        StartItemCreatorOnDate, StartMarkerCreatorOnRange,
+        EditSelectedItem, OpenItemInspector, StartItemCreatorOnDate, StartMarkerCreatorOnRange,
         drop_confirmation::{confirm_drop, resolve_dragged, scheduled_item_count},
     },
 };
@@ -57,6 +60,42 @@ fn action_dropped_on_date(action: Action, date: NaiveDate) -> Action {
     let start = action_start_on_date(&action, date);
     action.with_queued(true).with_start(Some(start))
 }
+#[derive(Clone, Copy)]
+struct GridCreation {
+    range: InclusiveDateRange,
+}
+
+impl GridCreation {
+    fn new(date: NaiveDate, selection: Option<InclusiveDateRange>) -> Self {
+        Self {
+            range: selection
+                .filter(|range| range.day_count() > 1)
+                .unwrap_or_else(|| InclusiveDateRange::single(date)),
+        }
+    }
+
+    fn marker(self) -> Marker {
+        let mut marker = Marker::new("", self.range.start());
+        marker.end_date = (self.range.day_count() > 1).then_some(self.range.end());
+        marker
+    }
+
+    fn label(self) -> String {
+        if self.range.day_count() == 1 {
+            format!(
+                "New marker for {}",
+                self.range.start().format("%A, %B %-d, %Y")
+            )
+        } else {
+            format!(
+                "New marker for {} – {}",
+                self.range.start().format("%b %-d, %Y"),
+                self.range.end().format("%b %-d, %Y")
+            )
+        }
+    }
+}
+
 const REFRESH_RATE: f64 = 1.0;
 const AUTOSCROLL_REFRESH_RATE: f64 = 25.0;
 const MIN_WEEK_HEIGHT: Pixels = px(88.);
@@ -313,20 +352,23 @@ pub(super) fn date_context_menu(
 pub struct CalendarView {
     pub(super) focus_handle: FocusHandle,
     items: Vec<AnyItem>,
-    draft_items: Vec<AnyItem>,
+
     markers: Vec<Marker>,
+    marker_lanes: HashMap<uuid::Uuid, usize>,
     signals: Vec<Signal>,
-    draft_markers: Vec<Marker>,
     current_date: NaiveDate,
     current_weekday: u32,
     loaded: bool,
     drop_target: Option<NaiveDate>,
+    hovered_date: Option<NaiveDate>,
+    editing_marker_id: Option<uuid::Uuid>,
     item_drag_active: bool,
     scroll_offset: Pixels,
 
     week_height: Pixels,
+    marker_min_week_height: Pixels,
     bounds: Option<Bounds<Pixels>>,
-    has_horizontal_gutters: bool,
+
     month_selector_open: bool,
     month_select: Entity<MonthSelectState>,
     inspector_date: Option<NaiveDate>,
@@ -347,6 +389,7 @@ pub struct CalendarView {
     month_in_view: NaiveDate,
     scroll_update: Option<f32>,
     scroll_target: Option<f32>,
+    pending_scroll_week: Option<NaiveWeek>,
     scroll_cancelled: bool,
     marquee: MarqueeSelection,
     edge_scroll_speed: Option<Pixels>,
@@ -379,6 +422,7 @@ impl CalendarView {
             if view.item_drag_active
                 || cx.has_active_drag()
                 || view.inspector_focus.contains_focused(window, cx)
+                || view.inspector_draft_focused(window, cx)
                 || crate::components::menu::context_menu_has_focus(window, cx)
             {
                 return;
@@ -388,6 +432,7 @@ impl CalendarView {
         .detach();
         cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
+                view.hovered_date = None;
                 view.deselect_dates(cx);
             }
         })
@@ -398,6 +443,7 @@ impl CalendarView {
         cx.on_focus_out(&inspector_focus, window, |view, _, window, cx| {
             if view.item_drag_active
                 || cx.has_active_drag()
+                || view.inspector_draft_focused(window, cx)
                 || crate::components::menu::context_menu_has_focus(window, cx)
             {
                 return;
@@ -424,24 +470,12 @@ impl CalendarView {
 
         let item_manager = ItemManager::global(cx);
         cx.observe(&item_manager, |view, manager, cx| {
-            let mut changed = false;
-            for draft in &mut view.draft_items {
-                if let Some(item) = manager.read(cx).draft_item(draft.id())
-                    && item.item_type() != draft.item_type()
-                {
-                    *draft = item.clone();
-                    changed = true;
-                }
+            if view
+                .editing_marker_id
+                .is_some_and(|id| !manager.read(cx).is_being_edited(id))
+            {
+                view.editing_marker_id = None;
             }
-            if changed && let Some(range) = view.inspector_range {
-                view.sync_inspector_list(range, cx);
-            }
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe(&item_manager, |view, _, event: &DiscardDraft, cx| {
-            view.draft_markers.retain(|marker| marker.id != event.0);
-            view.draft_items.retain(|item| item.id() != event.0);
             if let Some(range) = view.inspector_range {
                 view.sync_inspector_list(range, cx);
             }
@@ -470,20 +504,23 @@ impl CalendarView {
         Self {
             focus_handle,
             items: Vec::new(),
-            draft_items: Vec::new(),
+
             markers: Vec::new(),
+            marker_lanes: HashMap::new(),
             signals: Vec::new(),
-            draft_markers: Vec::new(),
             current_date: now.date_naive(),
             current_weekday: now.weekday().num_days_from_sunday(),
             loaded: false,
             drop_target: None,
+            hovered_date: None,
+            editing_marker_id: None,
             item_drag_active: false,
             scroll_offset: px(0.),
 
             week_height: MAX_WEEK_HEIGHT,
+            marker_min_week_height: px(0.),
             bounds: None,
-            has_horizontal_gutters: false,
+
             month_selector_open: false,
             month_select,
             inspector_date: None,
@@ -507,6 +544,7 @@ impl CalendarView {
                 .unwrap_or_else(|| now.date_naive()),
             scroll_update: None,
             scroll_target: None,
+            pending_scroll_week: None,
             scroll_cancelled: false,
             marquee: MarqueeSelection::new(SelectionScope::Calendar),
             edge_scroll_speed: None,
@@ -542,8 +580,7 @@ impl CalendarView {
     pub fn refresh_items(&mut self, queue: Vec<AnyItem>, cx: &mut Context<Self>) {
         self.items = queue;
         self.items.sort_by_key(|i| i.start().map(|t| t.timestamp()));
-        self.draft_items
-            .retain(|draft| !self.items.iter().any(|item| item.id() == draft.id()));
+
         if let Some(range) = self.inspector_range {
             self.sync_inspector_list(range, cx);
         }
@@ -556,11 +593,6 @@ impl CalendarView {
 
     pub fn refresh_markers(&mut self, markers: Vec<Marker>, cx: &mut Context<Self>) {
         self.markers = markers;
-        self.draft_markers
-            .retain(|draft| !self.markers.iter().any(|marker| marker.id == draft.id));
-        if let Some(range) = self.inspector_range {
-            self.sync_inspector_list(range, cx);
-        }
         cx.notify();
     }
 
@@ -573,7 +605,7 @@ impl CalendarView {
     }
 
     fn stored_markers(&self) -> impl Iterator<Item = &Marker> {
-        self.markers.iter().chain(self.draft_markers.iter())
+        self.markers.iter()
     }
 
     pub(super) fn projected_markers(&self, start: NaiveDate, end: NaiveDate) -> Vec<Marker> {
@@ -741,11 +773,9 @@ impl CalendarView {
             self.suppress_date_click = false;
             return;
         }
-        let range = InclusiveDateRange::single(date);
         self.set_date_selection(date, date);
         if click_count >= 2 {
-            self.open_range_inspector(range, date, window, cx);
-            self.add_draft_marker(range, window, cx);
+            self.begin_grid_draft(date, window, cx);
         } else {
             self.focus_handle.focus(window, cx);
             cx.notify();
@@ -877,12 +907,14 @@ impl CalendarView {
     }
 
     fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
-        let height = (bounds.size.width / 7. * 1.3).clamp(MIN_WEEK_HEIGHT, MAX_WEEK_HEIGHT);
+        let height = (bounds.size.width / 7. * 1.3)
+            .clamp(MIN_WEEK_HEIGHT, MAX_WEEK_HEIGHT)
+            .max(self.marker_min_week_height);
         if self.bounds.is_some_and(|previous| {
             height != self.week_height || previous.size.height != bounds.size.height
         }) {
             let anchor = self.top_offset_weeks(self.scroll_offset);
-            self.cancel_scroll();
+            self.cancel_scroll_transition();
             let horizon = bounds.size.height / 2. + grid::EDGE_HORIZON;
             self.scroll_offset = self.visible_top() - horizon - anchor * height;
         } else if self.bounds.is_none() {
@@ -890,6 +922,24 @@ impl CalendarView {
         }
         self.week_height = height;
         self.bounds = Some(bounds);
+    }
+
+    fn set_marker_min_week_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
+        if self.marker_min_week_height == height {
+            return;
+        }
+        let target = self
+            .scroll_target
+            .map(|weeks| self.top_offset_weeks(self.week_height * weeks));
+        self.marker_min_week_height = height;
+        if let Some(bounds) = self.bounds {
+            self.set_bounds(bounds);
+            if let Some(anchor) = target {
+                let horizon = bounds.size.height / 2. + grid::EDGE_HORIZON;
+                let offset = self.visible_top() - horizon - self.week_height * anchor;
+                self.scroll_to_weeks(offset / self.week_height, cx);
+            }
+        }
     }
 
     fn day_width(&self) -> Pixels {
@@ -985,46 +1035,10 @@ impl CalendarView {
         }
     }
 
-    fn markers_on(&self, date: NaiveDate) -> Vec<(Marker, bool)> {
-        let mut markers: Vec<(Marker, bool)> = self
-            .stored_markers()
-            .filter(|marker| marker.covers(date))
-            .cloned()
-            .map(|marker| (marker, false))
-            .chain(
-                self.projected_markers(date, date)
-                    .into_iter()
-                    .filter(|marker| marker.covers(date))
-                    .map(|marker| (marker, true)),
-            )
-            .collect();
-        markers.sort_by_key(|(marker, projected)| (*projected, marker.date, marker.id));
-        markers
-    }
-
-    fn markers_in_range(&self, range: InclusiveDateRange) -> Vec<(Marker, bool)> {
-        let mut markers: Vec<(Marker, bool)> = Vec::new();
-        for offset in 0..range.day_count() {
-            let Some(date) = range
-                .start()
-                .checked_add_signed(chrono::Duration::days(i64::from(offset)))
-            else {
-                break;
-            };
-            for entry in self.markers_on(date) {
-                if !markers.iter().any(|(marker, _)| marker.id == entry.0.id) {
-                    markers.push(entry);
-                }
-            }
-        }
-        markers
-    }
-
     fn items_on(&self, date: NaiveDate) -> Vec<(AnyItem, bool)> {
         let mut items: Vec<(AnyItem, bool)> = self
             .items
             .iter()
-            .chain(self.draft_items.iter())
             .filter(|item| super::is_calendar_item_on(item, date))
             .cloned()
             .map(|item| (item, false))
@@ -1075,20 +1089,28 @@ impl CalendarView {
         items
     }
 
-    fn inspector_entries(&self, range: InclusiveDateRange) -> Vec<CalendarInspectorEntry> {
+    fn inspector_entries(
+        &self,
+        range: InclusiveDateRange,
+        cx: &App,
+    ) -> Vec<CalendarInspectorEntry> {
         let mut entries: Vec<_> = self
-            .markers_in_range(range)
+            .items_in_range(range)
             .into_iter()
-            .map(|(marker, projected)| CalendarInspectorEntry {
-                item: AnyItem::Marker(marker),
-                projected,
-            })
-            .chain(
-                self.items_in_range(range)
-                    .into_iter()
-                    .map(|(item, projected)| CalendarInspectorEntry { item, projected }),
-            )
+            .map(|(item, projected)| CalendarInspectorEntry { item, projected })
             .collect();
+        if let Some(item) = ItemManager::global(cx)
+            .read(cx)
+            .view_draft(DraftView::Calendar)
+            .filter(|item| matches!(item, AnyItem::Action(_) | AnyItem::Event(_)))
+            .filter(|item| item.start_date().is_some_and(|date| range.contains(date)))
+        {
+            entries.retain(|entry| entry.item.id() != item.id());
+            entries.push(CalendarInspectorEntry {
+                item: item.clone(),
+                projected: false,
+            });
+        }
         entries.sort_by_key(|entry| {
             (
                 entry.item.start().map(|start| start.timestamp()),
@@ -1107,17 +1129,17 @@ impl CalendarView {
             .workspace_generation()
             != generation
         {
-            self.draft_items.clear();
-            self.draft_markers.clear();
             self.inspector_item_focus_handles.clear();
             self.marquee.end();
         }
-        let entries = self.inspector_entries(range);
+        let entries = self.inspector_entries(range, cx);
         let order = SelectionOrder::new(
             SelectionScope::Calendar,
             entries
                 .iter()
-                .filter(|entry| !entry.projected)
+                .filter(|entry| {
+                    !entry.projected && !ItemManager::global(cx).read(cx).is_draft(entry.item.id())
+                })
                 .map(|entry| entry.item.id()),
         );
         self.inspector_item_focus_handles
@@ -1135,52 +1157,154 @@ impl CalendarView {
         });
     }
 
-    fn add_draft_item_on_date(
-        &mut self,
-        date: NaiveDate,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let item = AnyItem::Action(
-            Action::new("")
-                .with_queued(true)
-                .with_start(Some(SchedulePoint::Date(date))),
-        );
-        let id = item.id();
-        self.draft_items.push(item.clone());
-        self.sync_inspector_list(InclusiveDateRange::single(date), cx);
-        ItemManager::global(cx).update(cx, |manager, cx| {
-            manager.begin_edit(&item, true, window, cx);
+    fn inspector_draft_focused(&self, window: &Window, cx: &App) -> bool {
+        let manager = ItemManager::global(cx);
+        let manager = manager.read(cx);
+        self.inspector_date.is_some()
+            && matches!(
+                manager.view_draft(DraftView::Calendar),
+                Some(AnyItem::Action(_) | AnyItem::Event(_))
+            )
+            && manager
+                .editing_item
+                .as_ref()
+                .is_some_and(|editing| editing.input.read(cx).focus_handle(cx).is_focused(window))
+    }
+
+    fn begin_inspector_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(date), Some(range)) = (self.inspector_date, self.inspector_range) else {
+            return;
+        };
+        if AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready
+            || self.item_drag_active
+        {
+            return;
+        }
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+        if manager.read(cx).is_editing() {
+            return;
+        }
+        let start = local_time_on(date, chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        let item = AnyItem::Event(Event::new("", start, chrono::Duration::hours(1)));
+        SelectionManager::clear_global(cx);
+        self.inspector_focus.focus(window, cx);
+        manager.update(cx, |manager, cx| {
+            manager.begin_view_draft(&item, DraftView::Calendar, None, window, cx);
         });
-        let row = self.inspector_list.read(cx).delegate().index_of(id);
-        if let Some(row) = row {
+        self.sync_inspector_list(range, cx);
+        if let Some(row) = self.inspector_list.read(cx).delegate().index_of(item.id()) {
             self.inspector_list
                 .update(cx, |list, cx| list.scroll_item_into_view(row, cx));
         }
         cx.notify();
     }
 
-    fn add_draft_marker(
+    fn begin_grid_draft(&mut self, date: NaiveDate, window: &mut Window, cx: &mut Context<Self>) {
+        let creation = GridCreation::new(date, self.selected_date_range);
+        self.begin_grid_draft_for_range(creation.range, window, cx);
+    }
+
+    fn begin_grid_draft_for_range(
         &mut self,
         range: InclusiveDateRange,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut marker = Marker::new("", range.start());
-        marker.end_date = (range.day_count() > 1).then_some(range.end());
-        let item = AnyItem::Marker(marker.clone());
-        let id = item.id();
-        self.draft_markers.push(marker);
-        self.sync_inspector_list(range, cx);
-        ItemManager::global(cx).update(cx, |manager, cx| {
-            manager.begin_edit(&item, true, window, cx);
+        if AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready
+            || self.item_drag_active
+            || self.date_range_drag.is_some()
+        {
+            return;
+        }
+        if self.inspector_date.is_some() {
+            self.close_day_inspector(window, cx);
+        }
+        let manager = ItemManager::global(cx);
+        if manager.read(cx).is_editing() {
+            return;
+        }
+        SelectionManager::clear_global(cx);
+        self.set_date_selection(range.start(), range.end());
+        self.focus_handle.focus(window, cx);
+        self.reveal_date(range.start(), cx);
+        let item = AnyItem::Marker(GridCreation { range }.marker());
+        manager.update(cx, |manager, cx| {
+            manager.begin_view_draft(&item, DraftView::Calendar, None, window, cx);
         });
-        let row = self.inspector_list.read(cx).delegate().index_of(id);
-        if let Some(row) = row {
-            self.inspector_list
-                .update(cx, |list, cx| list.scroll_item_into_view(row, cx));
+        cx.notify();
+    }
+
+    pub(super) fn edit_grid_marker(
+        &mut self,
+        marker: &Marker,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if AppDatabaseStore::global(cx).read(cx).workspace_content() != WorkspaceContent::Ready {
+            return;
+        }
+        let Some(marker) = self
+            .markers
+            .iter()
+            .find(|stored| stored.id == marker.id)
+            .cloned()
+        else {
+            return;
+        };
+        if self.inspector_date.is_some() {
+            self.close_day_inspector(window, cx);
+        }
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| {
+            manager.begin_edit(&AnyItem::Marker(marker.clone()), false, window, cx);
+        });
+        if manager.read(cx).is_being_edited(marker.id) {
+            self.reveal_date(marker.date, cx);
         }
         cx.notify();
+    }
+
+    fn reveal_grid_marker_edit(
+        &mut self,
+        content_top: Pixels,
+        resized: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let manager = ItemManager::global(cx);
+        let marker =
+            manager
+                .read(cx)
+                .editing_item
+                .as_ref()
+                .and_then(|editing| match &editing.original {
+                    ItemSubject::Live(AnyItem::Marker(marker)) => Some((marker.id, marker.date)),
+                    _ => None,
+                });
+        let id = marker.map(|(id, _)| id);
+        if self.editing_marker_id == id && !resized {
+            return;
+        }
+        self.editing_marker_id = id;
+        let (Some((id, date)), Some(bounds)) = (marker, self.bounds) else {
+            return;
+        };
+        let lane = self.marker_lanes.get(&id).copied().unwrap_or(0);
+        let current = self.scroll_target.unwrap_or_else(|| self.scroll_weeks());
+        let top = self.week_to_offset(date.week(Weekday::Sun))
+            + self.week_height * current
+            + bounds.size.height / 2.
+            + grid::EDGE_HORIZON
+            + content_top
+            + markers::MARKER_PITCH * lane as f32;
+        let delta = if top < self.visible_top() {
+            self.visible_top() - top
+        } else if top + markers::MARKER_HEIGHT > bounds.size.height {
+            bounds.size.height - top - markers::MARKER_HEIGHT
+        } else {
+            return;
+        };
+        self.scroll_to_weeks(current + delta / self.week_height, cx);
     }
 
     pub fn get_sunday(&self, date: NaiveDate) -> NaiveDate {
@@ -1236,6 +1360,11 @@ impl CalendarView {
     }
 
     pub fn cancel_scroll(&mut self) {
+        self.pending_scroll_week = None;
+        self.cancel_scroll_transition();
+    }
+
+    fn cancel_scroll_transition(&mut self) {
         if self.scroll_update.is_some() || self.is_scrolling() {
             self.scroll_update = None;
             self.scroll_target = None;
@@ -1253,14 +1382,15 @@ impl CalendarView {
     }
 
     pub fn scroll_to_weeks(&mut self, weeks: f32, cx: &mut Context<Self>) {
+        self.pending_scroll_week = None;
         self.scroll_update = Some(weeks);
         self.scroll_target = Some(weeks);
         cx.notify();
     }
 
     pub fn scroll_to_week(&mut self, week: NaiveWeek, cx: &mut Context<Self>) {
-        let top = self.week_to_offset(week);
-        self.scroll_to_weeks(self.top_offset_weeks(top), cx);
+        self.pending_scroll_week = Some(week);
+        cx.notify();
     }
 
     pub fn scroll_to_date(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
@@ -1749,18 +1879,13 @@ impl CalendarView {
                                     .compact()
                                     .px_2()
                                     .icon(AppIcon::Plus)
-                                    .tooltip(if range.day_count() > 1 {
-                                        "New marker"
-                                    } else {
-                                        "New item"
-                                    })
+                                    .role(gpui::Role::Button)
+                                    .aria_label("New event or action")
+                                    .tooltip("New event · Change type to Action in the draft")
                                     .block_mouse_except_scroll()
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        if range.day_count() > 1 {
-                                            view.add_draft_marker(range, window, cx);
-                                        } else {
-                                            view.add_draft_item_on_date(date, window, cx);
-                                        }
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        cx.stop_propagation();
+                                        view.begin_inspector_draft(window, cx);
                                     })),
                             )
                             .child(
@@ -1813,8 +1938,8 @@ impl CalendarView {
         Some(panel)
     }
 
-    fn render_weekday_labels(&self, cx: &App) -> gpui::Div {
-        let narrow = self.day_width() < px(60.);
+    fn render_weekday_labels(day_width: Pixels, cx: &App) -> gpui::Div {
+        let narrow = day_width < px(60.);
         let days = if narrow {
             ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
         } else {
@@ -1847,7 +1972,7 @@ impl CalendarView {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub(super) fn render_header_foreground(&self, cx: &App) -> AnyElement {
+    pub(super) fn render_header_foreground(&self, _cx: &App) -> AnyElement {
         div()
             .id("calendar.day-names")
             .debug_selector(|| "calendar.day-names".into())
@@ -1856,9 +1981,17 @@ impl CalendarView {
             .h(DAY_NAMES_HEIGHT)
             .overflow_hidden()
             .child(
-                self.render_weekday_labels(cx)
+                div()
+                    .size_full()
+                    .min_w_0()
                     .max_w(MAX_CALENDAR_WIDTH)
-                    .mx_auto(),
+                    .mx_auto()
+                    .child(container_query(|size, _, cx| {
+                        if size.width <= px(0.) || size.height <= px(0.) {
+                            return div().size_full();
+                        }
+                        Self::render_weekday_labels(size.width / 7., cx)
+                    })),
             )
             .into_any_element()
     }
@@ -1874,7 +2007,7 @@ impl CalendarView {
             .h(DAY_NAMES_HEIGHT)
             .block_mouse_except_scroll()
             .child(
-                self.render_weekday_labels(cx)
+                Self::render_weekday_labels(self.day_width(), cx)
                     .id("calendar.day-names")
                     .bg_glass()
                     .glass_surface(Surface::Canvas)
@@ -2069,21 +2202,17 @@ impl MarqueeView for CalendarView {
     }
 }
 
-impl Render for CalendarView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let entity = cx.entity();
+impl CalendarView {
+    fn render_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(week) = self.pending_scroll_week.take() {
+            let top = self.week_to_offset(week);
+            self.scroll_to_weeks(self.top_offset_weeks(top), cx);
+        }
+
         let body = self
             .drop_zone()
             .absolute()
             .inset_0()
-            .on_prepaint(move |bounds, _, cx| {
-                entity.update(cx, |view, cx| {
-                    if view.bounds != Some(bounds) {
-                        view.set_bounds(bounds);
-                        cx.notify();
-                    }
-                });
-            })
             .flex()
             .flex_1()
             .overflow_hidden()
@@ -2119,7 +2248,12 @@ impl Render for CalendarView {
                     .text_only()
                     .child(self.render_grid(window, cx)),
             );
-        SelectionManager::report_order(&self.inspector_list.read(cx).delegate().order(), cx);
+        if self.inspector_date.is_some() && !self.item_drag_active {
+            let order = self.inspector_list.read(cx).delegate().order();
+            if !order.ids().is_empty() {
+                SelectionManager::report_order(&order, cx);
+            }
+        }
         if let Some(request) =
             SelectionManager::take_completion_focus(SelectionScope::Calendar, window, cx)
         {
@@ -2139,10 +2273,39 @@ impl Render for CalendarView {
             }
         }
         let inspector = self.render_day_inspector(window, cx);
-        let compact_inspector = inspector.is_some()
+        let calendar = div()
+            .relative()
+            .size_full()
+            .min_w_0()
+            .child(body)
+            .children(inspector);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let calendar = calendar.child(self.render_day_names(cx));
+        calendar
+    }
+
+    fn render_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let compact_inspector = self.inspector_date.is_some()
+            && !self.item_drag_active
             && self.bounds.is_some_and(|bounds| {
                 bounds.size.height - self.visible_top() < DAY_INSPECTOR_COMPACT_HEIGHT
             });
+        div()
+            .relative()
+            .size_full()
+            .when(!compact_inspector, |this| {
+                this.child(self.render_month_selection(cx))
+                    .children(self.render_today_shortcut(cx))
+            })
+    }
+}
+
+impl Render for CalendarView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let measured = cx.entity();
+        let content = cx.entity();
+        let controls = cx.entity();
+
         let calendar = div()
             .relative()
             .w_full()
@@ -2151,12 +2314,24 @@ impl Render for CalendarView {
             .h_full()
             .flex_none()
             .mx_auto()
-            .child(body)
-            .children(inspector);
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let calendar = calendar.child(self.render_day_names(cx));
-
-        let viewport = cx.entity();
+            .on_prepaint(move |bounds, _, cx| {
+                if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+                    return;
+                }
+                measured.update(cx, |view, _| {
+                    if view.bounds != Some(bounds) {
+                        view.set_bounds(bounds);
+                    }
+                });
+            })
+            .child(container_query(move |size, window, cx| {
+                if size.width <= px(0.) || size.height <= px(0.) {
+                    return div().size_full().into_any_element();
+                }
+                content.update(cx, |view, cx| {
+                    view.render_content(window, cx).into_any_element()
+                })
+            }));
 
         self.tab_root(div().relative().column(), cx)
             .group("calendar-view")
@@ -2174,6 +2349,35 @@ impl Render for CalendarView {
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.clear_drop_target(cx)),
             )
+            .on_action(
+                cx.listener(|view, request: &OpenItemInspector, window, cx| {
+                    let Some(marker) = view
+                        .markers
+                        .iter()
+                        .find(|marker| marker.id == request.0)
+                        .cloned()
+                    else {
+                        cx.propagate();
+                        return;
+                    };
+                    view.edit_grid_marker(&marker, window, cx);
+                }),
+            )
+            .on_action(cx.listener(|view, _: &EditSelectedItem, window, cx| {
+                let selection = SelectionManager::global(cx);
+                let selection = selection.read(cx);
+                let marker = match (selection.scope(), selection.ids()) {
+                    (Some(SelectionScope::Calendar), [id]) => {
+                        view.markers.iter().find(|marker| marker.id == *id).cloned()
+                    }
+                    _ => None,
+                };
+                let Some(marker) = marker else {
+                    cx.propagate();
+                    return;
+                };
+                view.edit_grid_marker(&marker, window, cx);
+            }))
             .on_action(cx.listener(|view, _: &OpenSelectedRange, window, cx| {
                 let Some(range) = view.selected_date_range else {
                     cx.propagate();
@@ -2228,20 +2432,17 @@ impl Render for CalendarView {
                     .min_w_0()
                     .min_h_0()
                     .overflow_hidden()
-                    .on_prepaint(move |bounds, _, cx| {
-                        let has_horizontal_gutters = bounds.size.width > MAX_CALENDAR_WIDTH;
-                        viewport.update(cx, |view, cx| {
-                            if view.has_horizontal_gutters != has_horizontal_gutters {
-                                view.has_horizontal_gutters = has_horizontal_gutters;
-                                cx.notify();
-                            }
-                        });
-                    })
                     .child(calendar),
             )
-            .when(!compact_inspector, |this| {
-                this.child(self.render_month_selection(cx))
-                    .children(self.render_today_shortcut(cx))
-            })
+            .child(
+                container_query(move |size, _, cx| {
+                    if size.width <= px(0.) || size.height <= px(0.) {
+                        return div().size_full().into_any_element();
+                    }
+                    controls.update(cx, |view, cx| view.render_controls(cx).into_any_element())
+                })
+                .absolute()
+                .inset_0(),
+            )
     }
 }

@@ -10,7 +10,8 @@ use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate};
 use gpui::{
     App, AsyncApp, Bounds, Context, DragMoveEvent, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
-    Render, ScrollHandle, Styled, Window, actions, div, prelude::FluentBuilder, px,
+    Render, ScrollHandle, Styled, Window, actions, container_query, div, prelude::FluentBuilder,
+    px,
 };
 
 use crate::{
@@ -536,14 +537,19 @@ impl MarqueeView for TimelineView {
     }
 }
 
-impl Render for TimelineView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl TimelineView {
+    fn render_content(
+        &mut self,
+        viewport_height: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        self.apply_pending_fit(viewport_height, cx);
         self.animate_card_details(window, cx);
         SelectionManager::report_order(&self.selection_order(), cx);
         self.apply_completion_focus(window, cx);
         self.marquee.scroll_region(window);
-        let entity = cx.entity();
-        let hook_entity = entity.clone();
+        let hook_entity = cx.entity();
 
         let body = self
             .drop_zone()
@@ -565,20 +571,6 @@ impl Render for TimelineView {
                     }
                 }),
             )
-            .on_prepaint(move |bounds, _, cx| {
-                entity.update(cx, |view, cx| {
-                    if view.bounds != Some(bounds) {
-                        view.bounds = Some(bounds);
-                        view.bounds_changed = true;
-                        cx.notify();
-                    } else if view.bounds_changed {
-                        view.bounds_changed = false;
-                    }
-                    if let Some((start, end)) = view.pending_fit.take() {
-                        view.zoom_to_span(start, end, cx);
-                    }
-                });
-            })
             .flex()
             .flex_1()
             .overflow_hidden()
@@ -674,6 +666,41 @@ impl Render for TimelineView {
             .items_center()
             .child(body)
             .child(self.render_timeline_toolbar(cx))
+    }
+}
+
+impl Render for TimelineView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let measured = cx.entity();
+        let content = cx.entity();
+        div()
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .on_prepaint(move |bounds, _, cx| {
+                if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
+                    return;
+                }
+                measured.update(cx, |view, _| {
+                    if view.bounds != Some(bounds) {
+                        view.bounds = Some(bounds);
+                        view.bounds_changed = true;
+                    }
+                });
+            })
+            .child(container_query(move |size, window, cx| {
+                if size.width <= px(0.) || size.height <= px(0.) {
+                    return div().size_full().into_any_element();
+                }
+                content.update(cx, |view, cx| {
+                    let content = view
+                        .render_content(size.height, window, cx)
+                        .into_any_element();
+                    view.bounds_changed = false;
+                    content
+                })
+            }))
     }
 }
 

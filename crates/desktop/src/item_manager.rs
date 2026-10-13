@@ -43,8 +43,30 @@ impl EventEmitter<DiscardDraft> for ItemManager {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DraftView {
+    Home,
     Upcoming,
     Timeline,
+    Calendar,
+    Queue,
+    Focus,
+    Unqueued,
+    Unscheduled,
+    Routines,
+    SavedItems,
+}
+
+impl DraftView {
+    fn queues_actions(self) -> bool {
+        match self {
+            Self::Home
+            | Self::Upcoming
+            | Self::Calendar
+            | Self::Queue
+            | Self::Focus
+            | Self::Unscheduled => true,
+            Self::Timeline | Self::Unqueued | Self::Routines | Self::SavedItems => false,
+        }
+    }
 }
 
 pub(crate) struct DraftSubmitted {
@@ -57,7 +79,6 @@ impl EventEmitter<DraftSubmitted> for ItemManager {}
 enum EditKind {
     Existing,
     Draft,
-    FixedTypeDraft,
     ViewDraft {
         view: DraftView,
         cursor: Option<DateTime<Utc>>,
@@ -258,9 +279,27 @@ impl ItemManager {
         if cx.has_global::<GlobalItemManager>() {
             return cx.global::<GlobalItemManager>().0.clone();
         }
-        let store = cx.new(|cx| Self::new(cx));
-        cx.set_global(GlobalItemManager(store.clone()));
-        store
+        let database = AppDatabaseStore::global(cx);
+        let mut generation = database.read(cx).workspace_generation();
+        let manager = cx.new(|cx| {
+            cx.observe(&database, move |manager: &mut Self, database, cx| {
+                let current = database.read(cx).workspace_generation();
+                if current != generation {
+                    generation = current;
+                    if let Some(editing) = manager.editing_item.take()
+                        && editing.is_draft()
+                    {
+                        cx.emit(DiscardDraft(editing.id()));
+                    }
+                    manager.last_focus = None;
+                    cx.notify();
+                }
+            })
+            .detach();
+            Self::new(cx)
+        });
+        cx.set_global(GlobalItemManager(manager.clone()));
+        manager
     }
 
     pub fn global(cx: &App) -> Entity<Self> {
@@ -280,20 +319,6 @@ impl ItemManager {
             EditKind::Existing
         };
         self.begin_subject_edit(ItemSubject::Live(item.clone()), kind, window, cx);
-    }
-
-    pub(super) fn begin_fixed_type_draft(
-        &mut self,
-        item: &AnyItem,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.begin_subject_edit(
-            ItemSubject::Live(item.clone()),
-            EditKind::FixedTypeDraft,
-            window,
-            cx,
-        );
     }
 
     pub(super) fn begin_view_draft(
@@ -529,7 +554,17 @@ impl ItemManager {
             && match draft_view {
                 Some(DraftView::Upcoming) => settings.queue_batch_mode,
                 Some(DraftView::Timeline) => settings.timeline_batch_mode,
-                None => false,
+                Some(
+                    DraftView::Home
+                    | DraftView::Calendar
+                    | DraftView::Queue
+                    | DraftView::Focus
+                    | DraftView::Unqueued
+                    | DraftView::Unscheduled
+                    | DraftView::Routines
+                    | DraftView::SavedItems,
+                )
+                | None => false,
             };
         let cursor = match editing.kind {
             EditKind::ViewDraft { cursor, .. }
@@ -570,7 +605,7 @@ impl ItemManager {
                     };
                     if draft_view.is_some() {
                         let mut updated = updated;
-                        if draft_view == Some(DraftView::Upcoming) {
+                        if draft_view.is_some_and(DraftView::queues_actions) {
                             updated.set_queued(true);
                         }
                         let items = if batching

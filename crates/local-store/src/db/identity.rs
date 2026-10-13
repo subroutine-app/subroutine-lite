@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use uuid::Uuid;
 
 use super::parse_uuid;
@@ -24,7 +24,8 @@ pub(super) fn initialize_identity(
         }
     };
 
-    let existing = connection
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let existing = tx
         .query_row(
             "SELECT workspace_kind, workspace_id, client_id, server_origin, account_id
              FROM workspace WHERE singleton = 1",
@@ -62,6 +63,7 @@ pub(super) fn initialize_identity(
             }
         };
         verify_workspace(&identity, &normalized)?;
+        tx.commit()?;
         return Ok(identity);
     }
 
@@ -69,10 +71,10 @@ pub(super) fn initialize_identity(
     let client_id = Uuid::new_v4();
     let identity = match normalized {
         WorkspaceSpec::Local => {
-            connection.execute(
+            tx.execute(
                 "INSERT INTO workspace (
-                    singleton, workspace_kind, workspace_id, client_id
-                 ) VALUES (1, 'local', ?1, ?2)",
+                    singleton, workspace_kind, workspace_id, client_id, holiday_setup
+                 ) VALUES (1, 'local', ?1, ?2, 'pending')",
                 params![workspace_id.to_string(), client_id.to_string()],
             )?;
             WorkspaceIdentity::Local {
@@ -84,7 +86,7 @@ pub(super) fn initialize_identity(
             server_origin,
             account_id,
         } => {
-            connection.execute(
+            tx.execute(
                 "INSERT INTO workspace (
                     singleton, workspace_kind, workspace_id, client_id, server_origin, account_id
                  ) VALUES (1, 'remote', ?1, ?2, ?3, ?4)",
@@ -103,6 +105,7 @@ pub(super) fn initialize_identity(
             }
         }
     };
+    tx.commit()?;
     Ok(identity)
 }
 

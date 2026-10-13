@@ -372,7 +372,7 @@ impl RootView {
             .on_click({
                 let root = root.clone();
                 move |_, window, cx| {
-                    root.update(cx, |root, cx| root.select_navigation(id, window, cx));
+                    root.update(cx, |root, cx| root.choose_navigation(id, window, cx));
                 }
             })
     }
@@ -436,7 +436,7 @@ impl RootView {
             .on_click({
                 let root = root.clone();
                 move |_, window, cx| {
-                    root.update(cx, |root, cx| root.select_navigation(id, window, cx));
+                    root.update(cx, |root, cx| root.choose_navigation(id, window, cx));
                 }
             })
     }

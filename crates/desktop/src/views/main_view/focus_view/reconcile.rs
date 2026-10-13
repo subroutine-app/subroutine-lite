@@ -84,8 +84,17 @@ impl FocusView {
         }
 
         let navigable_ids: HashSet<_> = live_ids.difference(&completing).copied().collect();
-        self.active_id =
-            retained_action_id(previous_active, previous_index, &self.items, &completing);
+        self.active_id = self
+            .inline_card_id
+            .filter(|id| navigable_ids.contains(id))
+            .or_else(|| {
+                retained_action_id(previous_active, previous_index, &self.items, &completing)
+            });
+        if self.inline_card_id.is_some_and(|id| {
+            self.source_actions.iter().any(|action| action.id == id) && !live_ids.contains(&id)
+        }) {
+            self.inline_card_id = None;
+        }
 
         if was_loaded
             && previous_active != self.active_id
@@ -162,7 +171,16 @@ impl FocusView {
             && previous
                 .and_then(|id| self.event_focus_handles.get(&id))
                 .is_some_and(|handle| handle.contains_focused(window, cx));
-        self.active_event_id = retained_event_id(previous, &previous_ids, &ids);
+        self.active_event_id = self
+            .inline_card_id
+            .filter(|id| ids.contains(id))
+            .or_else(|| retained_event_id(previous, &previous_ids, &ids));
+        if self
+            .inline_card_id
+            .is_some_and(|id| self.events.iter().any(|event| event.id == id) && !ids.contains(&id))
+        {
+            self.inline_card_id = None;
+        }
         self.event_moments = moments;
         let live: HashSet<_> = ids.into_iter().collect();
         self.event_focus_handles.retain(|id, _| live.contains(id));
@@ -173,13 +191,16 @@ impl FocusView {
         }
         if previous != self.active_event_id && self.mode == FocusMode::Event {
             self.reset_wheel();
-            if restore_focus {
+            if restore_focus && !self.has_draft(cx) {
                 let expected = self.active_event_id;
                 let handle = expected
                     .and_then(|id| self.event_focus_handles.get(&id).cloned())
                     .unwrap_or_else(|| self.focus_handle.clone());
                 cx.on_next_frame(window, move |view, window, cx| {
-                    if view.mode == FocusMode::Event && view.active_event_id == expected {
+                    if view.mode == FocusMode::Event
+                        && view.active_event_id == expected
+                        && !view.has_draft(cx)
+                    {
                         handle.focus(window, cx);
                     }
                 });

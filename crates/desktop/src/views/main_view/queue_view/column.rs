@@ -164,23 +164,25 @@ impl QueueColumn {
         }
     }
 
-    pub(super) fn scroll_to_priority(&self, window: &Window, cx: &mut App) {
+    pub(super) fn scroll_to_priority(&self, window: &Window, cx: &mut App) -> bool {
         let delegate = self.list.read(cx).delegate();
         let target = delegate
             .items
             .iter()
-            .position(|item| {
+            .find(|item| {
                 delegate
                     .focus_handles
                     .get(&item.id())
                     .is_some_and(|handle| handle.contains_focused(window, cx))
             })
-            .or_else(|| delegate.items.len().checked_sub(1));
-        if let Some(index) = target {
-            self.list.update(cx, |list, cx| {
-                list.scroll_item_into_view(index, cx);
-            });
-        }
+            .or_else(|| delegate.items.last())
+            .map(AnyItem::id);
+        let Some(id) = target else {
+            return false;
+        };
+        self.list
+            .update(cx, |list, _| list.reveal_priority(ElementId::Uuid(id)));
+        true
     }
 }
 

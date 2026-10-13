@@ -1,5 +1,6 @@
 use super::{
     RootView,
+    holiday_setup::HolidaySetup,
     navigation::WorkspaceRoute,
     navigation_drawer::NavigationDrawer,
     panels::{LIBRARY_DRAWER_WIDTH, NAVIGATION_SIDEBAR_MAX_WIDTH, NAVIGATION_SIDEBAR_MIN_WIDTH},
@@ -14,7 +15,7 @@ use crate::{
         panel_group::{PanelGroupResized, PanelGroupState, SidePanelState},
     },
     selection::SelectionManager,
-    settings::Settings,
+    settings::{PrimaryView, Settings},
     stores::AppDatabaseStore,
     views::{
         ActionLibraryKind, ActionLibraryView, HomeView, HomeViewEvent, InspectItem, ItemInspector,
@@ -45,6 +46,14 @@ impl RootView {
         let layout_state = Self::create_layout_state(cx);
         let store = AppDatabaseStore::global(cx);
         Self::observe_connection(&store, window, cx);
+        let holiday_setup = cx.new(|cx| HolidaySetup::new(window, cx));
+        cx.subscribe_in(&holiday_setup, window, |view, setup, _: &(), window, cx| {
+            if setup.read(cx).focus_handle(cx).contains_focused(window, cx) {
+                view.focus_handle.focus(window, cx);
+            }
+            cx.notify();
+        })
+        .detach();
         let home_view = cx.new(|cx| HomeView::new(window, cx));
         cx.on_focus_in(
             &home_view.read(cx).focus_handle(cx),
@@ -89,7 +98,13 @@ impl RootView {
 
         Self::subscribe_home_navigation(&home_view, window, cx);
 
-        let initial_fh = home_view.read(cx).focus_handle(cx);
+        let (route, initial_fh) = match Settings::global(cx).desktop_layout.primary_view() {
+            PrimaryView::Home => (WorkspaceRoute::Home, home_view.read(cx).focus_handle(cx)),
+            PrimaryView::Main(_) => (
+                WorkspaceRoute::Main,
+                main_view.read(cx).selected_view_focus_handle(cx),
+            ),
+        };
         window.focus(&initial_fh, cx);
 
         Self::restore_root_focus(&focus_handle, window, cx);
@@ -102,9 +117,10 @@ impl RootView {
             focus_handle,
             pending_main_command: None,
             manual_sync: None,
-            pending_navigation_focus: false,
+            pending_navigation_focus: true,
             toasts,
             context_menu,
+            holiday_setup,
             home_view,
             main_view,
             inspector,
@@ -117,13 +133,13 @@ impl RootView {
             routines_view,
             saved_items_view,
             source_kinds: Vec::new(),
-            route: WorkspaceRoute::Home,
+            route,
             window_material: Default::default(),
 
             library_drawer_route: WorkspaceRoute::Unqueued,
             library_drawer_open: false,
             library_drawer_width: LIBRARY_DRAWER_WIDTH,
-            library_background_route: WorkspaceRoute::Home,
+            library_background_route: route,
             pending_full_source_route: None,
             item_drag_active: false,
             drag_navigation: DragNavigation::default(),
@@ -308,11 +324,7 @@ impl RootView {
                 view.dismiss_library_drawer(cx);
                 view.pending_full_source_route = None;
                 view.route = WorkspaceRoute::Main;
-                if Settings::global(cx).desktop_layout.selected_main_view != change.0 {
-                    Settings::update(cx, |settings| {
-                        settings.desktop_layout.selected_main_view = change.0
-                    });
-                }
+                Self::remember_primary_view(PrimaryView::Main(change.0), cx);
                 cx.notify();
             },
         )

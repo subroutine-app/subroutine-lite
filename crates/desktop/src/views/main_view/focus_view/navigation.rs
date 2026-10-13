@@ -3,7 +3,7 @@ use subroutine_core::AnyItem;
 use uuid::Uuid;
 
 use crate::{
-    item_manager::ItemManager,
+    item_manager::{DraftView, ItemManager},
     selection::{SelectionManager, SelectionOrder, SelectionScope, focus_item},
 };
 
@@ -47,6 +47,9 @@ impl FocusView {
             return;
         };
         self.restore_focus = false;
+        if self.has_draft(cx) {
+            return;
+        }
         let target = request
             .target
             .filter(|id| order.ids().contains(id))
@@ -66,6 +69,9 @@ impl FocusView {
     }
 
     pub(super) fn activate(&mut self, id: Uuid, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_draft(cx) {
+            return;
+        }
         if self.mode == FocusMode::Event {
             let Some(handle) = self.event_focus_handles.get(&id).cloned() else {
                 return;
@@ -74,7 +80,10 @@ impl FocusView {
             self.reset_wheel();
             SelectionManager::clear_global(cx);
             cx.on_next_frame(window, move |view, window, cx| {
-                if view.mode == FocusMode::Event && view.active_event_id == Some(id) {
+                if view.mode == FocusMode::Event
+                    && view.active_event_id == Some(id)
+                    && !view.has_draft(cx)
+                {
                     handle.focus(window, cx);
                 }
             });
@@ -99,7 +108,7 @@ impl FocusView {
             return;
         };
         cx.on_next_frame(window, move |view, window, cx| {
-            if view.mode == FocusMode::Action && view.active_id == Some(id) {
+            if view.mode == FocusMode::Action && view.active_id == Some(id) && !view.has_draft(cx) {
                 handle.focus(window, cx);
             }
         });
@@ -112,6 +121,9 @@ impl FocusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.has_draft(cx) {
+            return;
+        }
         if self.mode == FocusMode::Event {
             let ids = self.navigable_ids(cx);
             if let Some(target) = adjacent_event_id(self.active_event_id, &ids, delta) {
@@ -144,7 +156,10 @@ impl FocusView {
         cx.notify();
         if let Some(handle) = self.item_focus_handles.get(&target).cloned() {
             cx.on_next_frame(window, move |view, window, cx| {
-                if view.mode == FocusMode::Action && view.active_id == Some(target) {
+                if view.mode == FocusMode::Action
+                    && view.active_id == Some(target)
+                    && !view.has_draft(cx)
+                {
                     handle.focus(window, cx);
                 }
             });
@@ -152,6 +167,9 @@ impl FocusView {
     }
 
     pub(super) fn navigable_ids(&self, cx: &App) -> Vec<Uuid> {
+        if self.has_draft(cx) {
+            return Vec::new();
+        }
         if self.mode == FocusMode::Event {
             return self
                 .event_moments
@@ -173,6 +191,15 @@ impl FocusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.resolve_mode(window, cx);
+        let manager = ItemManager::global(cx);
+        let draft = manager.read(cx).view_draft(DraftView::Focus).cloned();
+        if let Some(draft) = draft {
+            manager.update(cx, |manager, cx| {
+                manager.begin_view_draft(&draft, DraftView::Focus, None, window, cx);
+            });
+            return;
+        }
         if self.mode == FocusMode::Event {
             SelectionManager::clear_global(cx);
             if let Some(id) = self.active_event_id {
@@ -208,7 +235,10 @@ impl FocusView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.mode != FocusMode::Action || self.queue_blocker.is_some() {
+        if self.mode != FocusMode::Action
+            || self.queue_blocker.is_some()
+            || ItemManager::global(cx).read(cx).is_editing()
+        {
             return;
         }
 

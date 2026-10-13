@@ -1,16 +1,17 @@
-use crate::components::Button;
-use crate::components::ButtonVariants as _;
+use crate::components::ItemCard;
 use crate::components::ext::InteractiveElementExt;
-use crate::icons::Icon;
+use crate::{
+    item_manager::{DraftView, ItemManager},
+    selection::SelectionManager,
+    stores::{AppDatabaseStore, WorkspaceContent},
+};
 use gpui::{
     AnyElement, App, ClickEvent, Div, ElementId, InteractiveElement, Interactivity, IntoElement,
-    ParentElement, Pixels, RenderOnce, SharedString, Stateful, StatefulInteractiveElement,
-    StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    MouseButton, ParentElement, Pixels, RenderOnce, SharedString, Stateful,
+    StatefulInteractiveElement, StyleRefinement, Styled, Window, div, prelude::FluentBuilder as _,
+    px,
 };
-use gpui_kit::foundation::Sizable as _;
-use gpui_kit_theme::ActiveTheme;
-
-use crate::AppIcon;
+use gpui_kit::foundation::Disableable as _;
 use gpui_kit::foundation::StyledExt as _;
 
 type ClickHandler = dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static;
@@ -93,26 +94,25 @@ impl RenderOnce for SidebarPanel {
 }
 
 #[derive(IntoElement)]
-pub struct SidebarAddButton {
+pub(crate) struct SidebarDraft {
     id: ElementId,
     label: SharedString,
-    tooltip: Option<SharedString>,
+    owner: DraftView,
     on_click: Option<Box<ClickHandler>>,
 }
 
-impl SidebarAddButton {
-    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+impl SidebarDraft {
+    pub(crate) fn new(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        owner: DraftView,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
-            tooltip: None,
+            owner,
             on_click: None,
         }
-    }
-
-    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
-        self.tooltip = Some(tooltip.into());
-        self
     }
 
     pub fn on_click(
@@ -124,19 +124,40 @@ impl SidebarAddButton {
     }
 }
 
-impl RenderOnce for SidebarAddButton {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        Button::new(self.id)
-            .ghost()
-            .small()
-            .w_full()
-            .icon(Icon::new(AppIcon::Plus).size_4())
-            .label(self.label)
-            .text_color(cx.theme().colors.text_muted)
-            .bg(cx.theme().colors.raised)
-            .hover(|this| this.bg(cx.theme().colors.hover))
-            .occlude()
-            .when_some(self.tooltip, |this, tooltip| this.tooltip(tooltip))
-            .when_some(self.on_click, |this, handler| this.on_click(handler))
+impl RenderOnce for SidebarDraft {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let draft = ItemManager::global(cx)
+            .read(cx)
+            .view_draft(self.owner)
+            .cloned();
+        let frame = div().w_full().h(SIDEBAR_ITEM_HEIGHT).flex_none();
+        if let Some(item) = draft {
+            return frame.child(
+                ItemCard::new_with_id(self.id, &item, None, window, cx)
+                    .actionable(false)
+                    .editable(true)
+                    .draggable(false, None)
+                    .size_full()
+                    .block_mouse_except_scroll(),
+            );
+        }
+        let ready =
+            AppDatabaseStore::global(cx).read(cx).workspace_content() == WorkspaceContent::Ready;
+        frame.child(
+            ItemCard::create_slot(self.id, self.label, cx)
+                .disabled(!ready)
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    SelectionManager::claim_press(cx);
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when_some(self.on_click, |slot, handler| {
+                    slot.on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    })
+                }),
+        )
     }
 }

@@ -248,6 +248,8 @@ impl AppDatabaseStore {
         self.signal_templates.clear();
         self.dataset_id = None;
         self.last_applied_seq = 0;
+        self.authoritative_snapshot = false;
+        self.holiday_setup = local_store::HolidaySetup::Complete;
         self.pending_count = 0;
         self.blocked_count = 0;
         self.blocked_conflict = None;

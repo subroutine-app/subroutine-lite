@@ -60,6 +60,21 @@ fn card_border_widths(
     }
 }
 
+fn horizontal_card_border_widths(position: ItemCardPosition) -> Edges<Pixels> {
+    let (left, right) = match position {
+        ItemCardPosition::Standalone => (ITEM_CARD_BORDER, ITEM_CARD_BORDER),
+        ItemCardPosition::First => (ITEM_CARD_BORDER, px(0.)),
+        ItemCardPosition::Middle => (px(0.), px(0.)),
+        ItemCardPosition::Last => (px(0.), ITEM_CARD_BORDER),
+    };
+    Edges {
+        top: ITEM_CARD_BORDER,
+        bottom: ITEM_CARD_BORDER,
+        left,
+        right,
+    }
+}
+
 fn inset_card_focus_ring(
     focus: FocusHandle,
     borders: Edges<Pixels>,
@@ -225,7 +240,12 @@ impl RenderOnce for ItemCard {
             })
         });
         let position = self.list_position.unwrap_or_default();
-        let borders = card_border_widths(position, is_marked, neighbor_marks);
+        let horizontal = self.horizontal_position.is_some();
+        let inset_focus = self.list_position.is_some() || horizontal;
+        let borders = self.horizontal_position.map_or_else(
+            || card_border_widths(position, is_marked, neighbor_marks),
+            horizontal_card_border_widths,
+        );
         let joined_above = matches!(position, ItemCardPosition::Middle | ItemCardPosition::Last);
         let joined_below = matches!(position, ItemCardPosition::First | ItemCardPosition::Middle);
         let standalone = position == ItemCardPosition::Standalone;
@@ -373,12 +393,21 @@ impl RenderOnce for ItemCard {
                     .pt(ITEM_CARD_BORDER - borders.top)
                     .pb(ITEM_CARD_BORDER - borders.bottom)
             })
-            .overflow_hidden()
-            .when(!preview && !subtle && standalone, |this| this.shadow_sm())
-            .track_focus(&self.focus_handle.clone().tab_stop(self.tab_stop))
-            .when(self.list_position.is_none(), |card| {
-                card.focus_ring(cx.theme())
+            .when(horizontal, |card| {
+                card.border_l(borders.left)
+                    .border_r(borders.right)
+                    .pl(ITEM_CARD_BORDER - borders.left)
+                    .pr(ITEM_CARD_BORDER - borders.right)
+                    .when(borders.left == px(0.), |card| card.rounded_l(px(0.)))
+                    .when(borders.right == px(0.), |card| card.rounded_r(px(0.)))
+                    .shadow_none()
             })
+            .overflow_hidden()
+            .when(!preview && !subtle && standalone && !horizontal, |this| {
+                this.shadow_sm()
+            })
+            .track_focus(&self.focus_handle.clone().tab_stop(self.tab_stop))
+            .when(!inset_focus, |card| card.focus_ring(cx.theme()))
             .key_context(key_context)
             .when(can_change_type, |card| {
                 card.on_mouse_down_out(move |event, window, cx| {
@@ -518,7 +547,7 @@ impl RenderOnce for ItemCard {
             })
             .child(content);
 
-        if self.list_position.is_some() {
+        if inset_focus {
             let radii = &card.style().corner_radii;
             let [top_left, top_right, bottom_right, bottom_left] = [
                 radii.top_left,
@@ -551,6 +580,26 @@ impl RenderOnce for ItemCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn horizontal_spans_keep_only_terminal_side_borders() {
+        for (position, left, right) in [
+            (
+                ItemCardPosition::Standalone,
+                ITEM_CARD_BORDER,
+                ITEM_CARD_BORDER,
+            ),
+            (ItemCardPosition::First, ITEM_CARD_BORDER, px(0.)),
+            (ItemCardPosition::Middle, px(0.), px(0.)),
+            (ItemCardPosition::Last, px(0.), ITEM_CARD_BORDER),
+        ] {
+            let borders = horizontal_card_border_widths(position);
+            assert_eq!(borders.top, ITEM_CARD_BORDER);
+            assert_eq!(borders.bottom, ITEM_CARD_BORDER);
+            assert_eq!(borders.left, left);
+            assert_eq!(borders.right, right);
+        }
+    }
 
     #[test]
     fn adjacent_rows_draw_each_boundary_once() {

@@ -16,7 +16,7 @@ mod preferences;
 
 pub use global::GlobalSettings;
 
-pub use layout::DesktopLayoutSettings;
+pub use layout::{DesktopLayoutSettings, PrimaryView};
 pub use persistence::SettingsPersistenceIssue;
 pub(crate) use persistence::settings_path;
 pub use preferences::{
