@@ -1,12 +1,14 @@
 use gpui::{App, Hsla, Window, WindowBackgroundAppearance};
 use gpui_kit::motion::MotionSpec;
-use gpui_kit_theme::{ActiveTheme as _, Theme};
+use gpui_kit_theme::{ActiveTheme as _, Appearance, Theme};
 
 use crate::components::transition::{EASE_OUT_CUBIC, WindowTransitionExt as _};
 
 const FOCUS_WASH: MotionSpec = MotionSpec::new(200, EASE_OUT_CUBIC);
 const INACTIVE_WASH_FACTOR: f32 = 0.6;
 const WASH_BOOST: f32 = 0.08;
+const LIGHT_ACTIVE_WASH: f32 = 0.96;
+const LIGHT_INACTIVE_WASH: f32 = 0.92;
 
 #[cfg(target_os = "windows")]
 mod windows;
@@ -89,7 +91,17 @@ impl WindowMaterial {
         } else {
             opacity * INACTIVE_WASH_FACTOR
         };
-        canvas.alpha((opacity + WASH_BOOST).min(1.0))
+        let opacity = (opacity + WASH_BOOST).min(1.0);
+        // Text contrast alone can allow a light canvas to turn gray over dark windows.
+        let opacity = match theme.appearance {
+            Appearance::Light => opacity.max(if active {
+                LIGHT_ACTIVE_WASH
+            } else {
+                LIGHT_INACTIVE_WASH
+            }),
+            Appearance::Dark => opacity,
+        };
+        canvas.alpha(opacity)
     }
 
     pub(crate) fn apply(self, window: &mut Window) {
@@ -108,6 +120,30 @@ mod tests {
     use gpui_kit_theme::Density;
 
     #[test]
+    fn light_canvases_stay_light_over_dark_windows_even_when_inactive() {
+        let subroutine =
+            TokenDocument::parse(include_str!("../../../assets/themes/subroutine-light.json"))
+                .unwrap();
+        for tokens in gpui_kit::tokens::all()
+            .into_iter()
+            .chain([&subroutine])
+            .filter(|tokens| tokens.meta.appearance == Appearance::Light)
+        {
+            let theme = Theme::from_tokens(tokens, Density::Comfortable);
+            for (active, max_lightness_loss) in [(true, 0.04), (false, 0.08)] {
+                let tint = WindowMaterial::Frosted.tint(&theme, active);
+                let background = gpui::black().blend(tint);
+                assert!(
+                    theme.colors.canvas.l - background.l <= max_lightness_loss,
+                    "{} loses its light canvas when active={active}",
+                    theme.id,
+                );
+                assert!(theme.contrast(theme.colors.text_muted, background) >= 4.5);
+            }
+        }
+    }
+
+    #[test]
     fn window_tint_restores_contrast_when_active_and_stays_opaque_without_frost() {
         let themes = [
             include_str!("../../../assets/themes/subroutine-dark.json"),
@@ -117,12 +153,7 @@ mod tests {
             let tokens = TokenDocument::parse(json).unwrap();
             Theme::from_tokens(&tokens, Density::Comfortable)
         });
-        for active in [true, false] {
-            assert_eq!(
-                WindowMaterial::Frosted.tint(&themes[0], active).a,
-                WindowMaterial::Frosted.tint(&themes[1], active).a,
-            );
-        }
+
         for theme in themes {
             let tint = WindowMaterial::Frosted.tint(&theme, true);
             let inactive = WindowMaterial::Frosted.tint(&theme, false);
