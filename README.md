@@ -1,5 +1,5 @@
-<img src="crates/desktop/resources/branding/subroutine_logotype_brick_transparent.svg" alt="Subroutine" width="320">
+# Subroutine Lite
 
-A task planner built around subroutines: reusable sequences of steps that help you decide what to do next.
+[![Subroutine](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/subroutine-app/subroutine-lite/main/assets/badge/lite.json)](https://subroutineapp.com)
 
-Build and run: [Desktop](crates/desktop/README.md) · [Android](android/README.md)
+A productivity app which reduces decision fatigue and focuses your attention on the right things and the right time. Rather than being a simple calendar and to-do list, Subroutine is designed to model your time and track your mental state to guide you through your day.
