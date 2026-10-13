@@ -247,14 +247,11 @@ impl Agenda {
         }));
         days.extend(&draft_dates);
 
-        let has_content = !missed.is_empty()
-            || !by_day.is_empty()
-            || visible_markers.iter().any(|entry| !entry.projected);
-        let create_kind = if has_content {
-            CreateKind::Append
-        } else {
-            CreateKind::Slot
-        };
+        let has_actions_or_events = !missed.is_empty()
+            || by_day
+                .values()
+                .flatten()
+                .any(|(item, _)| matches!(item, AnyItem::Action(_) | AnyItem::Event(_)));
         let mut agenda = Agenda::default();
         if !missed.is_empty() {
             missed.sort_by_key(|item| (item.start_date(), day_order(item), item.id()));
@@ -283,7 +280,12 @@ impl Agenda {
             });
 
             let entries = by_day.remove(&date).unwrap_or_default();
-
+            let create_kind = if date == today && !has_actions_or_events {
+                CreateKind::Slot
+            } else {
+                CreateKind::Append
+            };
+            let needs_create_row = !entries.is_empty() || create_kind == CreateKind::Slot;
             agenda.rows.extend(
                 entries
                     .into_iter()
@@ -293,7 +295,7 @@ impl Agenda {
                         section: UpcomingSection::Day(date),
                     }),
             );
-            if !draft_dates.contains(&date) {
+            if needs_create_row && !draft_dates.contains(&date) {
                 agenda.rows.push(UpcomingRow::Create {
                     date,
                     kind: create_kind,
@@ -506,7 +508,7 @@ fn project_signals(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use subroutine_core::{Action, SchedulePoint};
+    use subroutine_core::{Action, Event, SchedulePoint};
 
     #[test]
     fn empty_agenda_has_only_today_and_one_nonselectable_create_card() {
@@ -514,6 +516,7 @@ mod tests {
         let agenda = Agenda::build_revealing(&[], &[], &[], &[], today, &BTreeSet::new());
         let mut sections = super::super::sections::UpcomingSections::default();
         sections.sync(&agenda, today);
+        assert!(!sections.add_in_header(&agenda, today));
         let dates: Vec<_> = agenda
             .rows
             .iter()
@@ -551,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn populated_agendas_only_have_append_controls_and_content_dates() {
+    fn actions_and_events_suppress_slots_and_preserve_content_dates() {
         let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
         let tomorrow = today.succ_opt().unwrap();
         let next = tomorrow.succ_opt().unwrap();
@@ -576,21 +579,13 @@ mod tests {
                 vec![today],
             ),
             (
-                vec![],
+                vec![AnyItem::Event(Event::new(
+                    "Later",
+                    day_start(next),
+                    Duration::hours(1),
+                ))],
                 vec![Marker::new("Today", today)],
                 vec![],
-                vec![today],
-            ),
-            (
-                vec![],
-                vec![Marker::new("Later", next)],
-                vec![],
-                vec![today, next],
-            ),
-            (
-                vec![],
-                vec![],
-                vec![Signal::new("Later", day_start(next))],
                 vec![today, next],
             ),
         ] {
@@ -613,9 +608,51 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            assert!(!controls.is_empty());
             assert!(controls.iter().all(|kind| *kind == CreateKind::Append));
         }
+    }
+
+    #[test]
+    fn markers_keep_today_slot_without_expanding_other_dates() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let future = today + Duration::days(7);
+        let markers = [
+            Marker::new("Holiday", today),
+            Marker::new("Another holiday", future),
+        ];
+        let agenda = Agenda::build_revealing(&[], &[], &markers, &[], today, &BTreeSet::new());
+        let mut sections = super::super::sections::UpcomingSections::default();
+        sections.sync(&agenda, today);
+        assert_eq!(agenda.rows.len(), 3);
+        assert!(
+            matches!(agenda.rows[1], UpcomingRow::Create { date, kind: CreateKind::Slot } if date == today)
+        );
+        assert!(!sections.add_in_header(&agenda, today));
+        assert!(sections.add_in_header(&agenda, future));
+        let layout = agenda.layout(
+            |section| sections.layout_state(section),
+            |_| panic!("marker-only dates have no item cards"),
+            |_| DAY_ROW_HEIGHT,
+        );
+        assert_eq!(layout.sizes[0].height, DAY_ROW_HEIGHT + row_top_inset(0));
+        assert_eq!(layout.sizes[1].height, CreateKind::Slot.height());
+        assert_eq!(layout.sizes[2].height, DAY_ROW_HEIGHT);
+
+        let signals = [Signal::new("Later", day_start(future))];
+        let annotated =
+            Agenda::build_revealing(&[], &[], &markers, &signals, today, &BTreeSet::new());
+        let slots: Vec<_> = annotated
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                UpcomingRow::Create {
+                    date,
+                    kind: CreateKind::Slot,
+                } => Some(*date),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(slots, [today]);
     }
 
     #[test]

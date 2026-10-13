@@ -5,7 +5,7 @@ use gpui::{FontWeight, Pixels, SharedString, Window, px};
 
 use super::{
     agenda::{Agenda, UpcomingRow},
-    sections::{UpcomingSection, UpcomingSections},
+    sections::UpcomingSections,
 };
 
 pub(super) const HEADER_PADDING: Pixels = px(5.);
@@ -65,7 +65,7 @@ impl DayHeaders {
                     + weekday_width
                     + px(16. + 12. + 4. + 8.),
             );
-            let (date_width, marker_width) = if sections.is_expanded(UpcomingSection::Day(*date)) {
+            let (date_width, marker_width) = if !sections.add_in_header(agenda, *date) {
                 (
                     date_width,
                     (content_width - date_width - HEADER_GAP).max(px(1.)),

@@ -112,6 +112,7 @@ impl GridBorders {
         self,
         first_row_top: Pixels,
         week_height: Pixels,
+        sidebar_right: Option<Pixels>,
         cx: &App,
     ) -> impl IntoElement {
         let theme = cx.theme();
@@ -127,7 +128,7 @@ impl GridBorders {
             |_, _, _| {},
             move |bounds, _, window, _| {
                 let scale = window.scale_factor();
-                for quad in self.quads(bounds, first_row_top, week_height, scale) {
+                for quad in self.quads(bounds, first_row_top, week_height, scale, sidebar_right) {
                     let bounds = quad.bounds;
                     window.paint_quad(fill(
                         Bounds::new(
@@ -155,12 +156,15 @@ impl GridBorders {
         first_row_top: Pixels,
         week_height: Pixels,
         scale: f32,
+        sidebar_right: Option<Pixels>,
     ) -> Vec<BorderQuad> {
         if self.vertical.is_empty() || bounds.size.width <= px(0.) {
             return Vec::new();
         }
         let left = (bounds.left().as_f32() * scale).ceil() as i32;
         let right = (bounds.right().as_f32() * scale).floor() as i32;
+        let shared_left =
+            sidebar_right.is_some_and(|edge| (edge.as_f32() * scale).ceil() as i32 == left);
         let x_band = |column, width| match column {
             0 => (left, left + width),
             7 => (right - width, right),
@@ -191,6 +195,9 @@ impl GridBorders {
         }
         for (row, styles) in self.vertical.iter().enumerate() {
             for (column, &style) in styles.iter().enumerate() {
+                if column == 0 && shared_left && style != BorderStyle::Selected {
+                    continue;
+                }
                 let width = style.width(scale);
                 let (left, right) = x_band(column, width);
                 strokes.push(BorderQuad::new(
@@ -360,6 +367,62 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_shares_only_the_touching_unselected_edge() {
+        let start = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
+        let date = |day| start + chrono::Duration::days(day);
+        let borders = GridBorders::new(
+            start,
+            3,
+            Some(InclusiveDateRange::new(date(5), date(7))),
+            Some(date(14)),
+            |_| 1.0,
+        );
+        let bounds = Bounds::new(point(px(252.4), px(-0.4)), size(px(140.), px(120.)));
+        for scale in [1.0, 1.25, 2.0] {
+            let raster = |sidebar_right| {
+                rasterize(&borders.quads(bounds, px(0.), px(40.), scale, sidebar_right))
+            };
+            let exposed = raster(None);
+            let shared = raster(Some(bounds.left()));
+            assert_eq!(raster(Some(bounds.left() - px(20.))), exposed);
+            assert_eq!(
+                shared
+                    .iter()
+                    .filter(|(_, style)| **style == BorderStyle::Selected)
+                    .collect::<Vec<_>>(),
+                exposed
+                    .iter()
+                    .filter(|(_, style)| **style == BorderStyle::Selected)
+                    .collect::<Vec<_>>()
+            );
+
+            let left = (bounds.left().as_f32() * scale).ceil() as i32;
+            let width = BorderStyle::Grid.width(scale);
+            for row in 0..3 {
+                let y = ((bounds.top().as_f32() + 40. * row as f32 + 20.) * scale) as i32;
+                for x in left..left + width {
+                    if row == 0 {
+                        assert_eq!(exposed.get(&(x, y)), Some(&BorderStyle::Grid));
+                        assert_eq!(shared.get(&(x, y)), None);
+                    } else {
+                        assert_eq!(shared.get(&(x, y)), Some(&BorderStyle::Selected));
+                    }
+                }
+            }
+            assert_eq!(
+                shared
+                    .iter()
+                    .filter(|((x, _), _)| *x >= left + width)
+                    .collect::<Vec<_>>(),
+                exposed
+                    .iter()
+                    .filter(|((x, _), _)| *x >= left + width)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
     fn exposed_edges_shared_edges_and_corners_keep_the_same_full_width() {
         let start = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
         let bounds = Bounds::new(point(px(0.4), px(-0.4)), size(px(140.), px(80.)));
@@ -372,7 +435,7 @@ mod tests {
                     start + chrono::Duration::days(last),
                 );
                 let borders = GridBorders::new(start, 2, Some(selection), None, |_| 0.0);
-                let quads = borders.quads(bounds, row_top, week_height, scale);
+                let quads = borders.quads(bounds, row_top, week_height, scale, None);
                 let actual: BTreeMap<_, _> = rasterize(&quads)
                     .into_iter()
                     .filter(|(_, style)| *style == BorderStyle::Selected)

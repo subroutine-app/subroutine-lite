@@ -91,9 +91,7 @@ impl TimelineView {
                         let TimelineSlot::Bin(bin) = slot else {
                             return None;
                         };
-                        let top = self.time_to_offset(bin.start)
-                            + self.scroll_offset
-                            + self.center_relative().y;
+                        let top = self.geometry.y(self.time_to_offset(bin.start));
                         let visible = self.bounds.is_some_and(|bounds| {
                             top + super::MIN_ITEM_HEIGHT - super::SLOT_GAP > TOP_EDGE_INSET
                                 && top < bounds.size.height

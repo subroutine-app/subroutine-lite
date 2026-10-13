@@ -33,7 +33,9 @@ use super::{
 };
 
 mod divisions;
+mod geometry;
 mod items;
+mod outer_labels;
 mod timeline;
 mod toolbar;
 
@@ -146,8 +148,8 @@ pub(super) struct TimelineView {
     bounds: Option<Bounds<Pixels>>,
     bounds_changed: bool,
     item_y_scale: f32,
-    item_y_offset: Pixels,
-    item_geometry_now: DateTime<Local>,
+    display_scroll_delta: Pixels,
+    geometry: geometry::TimelineGeometry,
     items: Vec<TimelineItem>,
     active_draft: Option<uuid::Uuid>,
     item_details: ItemCardStates,
@@ -376,8 +378,8 @@ impl TimelineView {
             bounds: None,
             bounds_changed: false,
             item_y_scale: 1.0,
-            item_y_offset: px(0.),
-            item_geometry_now: now,
+            display_scroll_delta: px(0.),
+            geometry: geometry::TimelineGeometry::new(now, pixel_duration, window.scale_factor()),
             items: vec![],
             active_draft: None,
             item_details: ItemCardStates::default(),
@@ -545,6 +547,7 @@ impl TimelineView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         self.apply_pending_fit(viewport_height, cx);
+        self.update_geometry(window, cx);
         self.animate_card_details(window, cx);
         SelectionManager::report_order(&self.selection_order(), cx);
         self.apply_completion_focus(window, cx);
@@ -617,7 +620,7 @@ impl TimelineView {
                 this.child(ResizeDragMouseUpHook(hook_entity.clone()))
             })
             .child(force_create_hook(hook_entity.clone()))
-            .children(self.render_sticky_outer_label(cx))
+            .children(self.render_outer_labels(window, cx))
             .map(|this| {
                 let markers = self.render_marker_header(window, cx);
                 let shortcut_top = TOP_EDGE_INSET

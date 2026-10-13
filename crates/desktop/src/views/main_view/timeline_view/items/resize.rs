@@ -280,7 +280,7 @@ impl TimelineView {
             lane,
             resize.min_height(),
         );
-        let y = bounds.top() + self.scroll_offset + self.center_relative().y;
+        let y = self.geometry.y(bounds.top());
         let h = bounds.size.height;
         let color = cx.theme().colors.focus;
         let label_text = match resize.edge {

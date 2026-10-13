@@ -8,10 +8,10 @@ use crate::components::menu::MenuBuilder;
 use crate::components::{Button, ButtonVariants, Label};
 use chrono::{DateTime, Duration as ChronoDuration, Local};
 use gpui::{
-    App, ClickEvent, Context, Entity, Focusable, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, MouseMoveEvent, MousePressureEvent, MouseUpEvent, ParentElement, PinchEvent,
-    Pixels, Point, ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled, Window, div,
-    point, prelude::FluentBuilder, px,
+    App, ClickEvent, Context, Entity, Focusable, InteractiveElement, IntoElement, MouseButton,
+    MouseMoveEvent, MousePressureEvent, MouseUpEvent, ParentElement, PinchEvent, Pixels, Point,
+    ScrollDelta, ScrollWheelEvent, StatefulInteractiveElement, Styled, Window, div, point,
+    prelude::FluentBuilder, px,
 };
 use gpui_kit_theme::ActiveTheme;
 
@@ -27,8 +27,8 @@ use subroutine_core::{AnyItem, SchedulePoint};
 
 use super::{
     BaseTimeDivision, EDGE_HORIZON, HOUR_DIVIDER_HEIGHT, MAX_PIXEL_DURATION, MIN_PIXEL_DURATION,
-    PIXEL_SCALE, POINTER_FLOOR_BOUNDARY_FRACTION, SPAN_FIT_FILL, STICKY_OUTER_LABEL_GAP,
-    STICKY_OUTER_LABEL_HEIGHT, STICKY_OUTER_LABEL_INSET, TimelineView,
+    PIXEL_SCALE, POINTER_FLOOR_BOUNDARY_FRACTION, SPAN_FIT_FILL, STICKY_OUTER_LABEL_INSET,
+    TimelineView,
 };
 
 const ZOOM: MotionSpec = MotionSpec::new(100, transition::EASE_OUT_CUBIC);
@@ -63,40 +63,7 @@ fn anchored_scroll_offset(
     anchor_offset + px(offset_seconds / pixel_duration.as_seconds_f32())
 }
 
-fn timeline_y_rebase(
-    previous_now: DateTime<Local>,
-    now: DateTime<Local>,
-    previous_pixel_duration: ChronoDuration,
-    pixel_duration: ChronoDuration,
-) -> (f32, Pixels) {
-    let seconds_per_pixel = pixel_duration.as_seconds_f32();
-    (
-        previous_pixel_duration.as_seconds_f32() / seconds_per_pixel,
-        px((previous_now - now).as_seconds_f32() / seconds_per_pixel),
-    )
-}
-
 const MIN_SELECTION_FIT_SPAN: ChronoDuration = ChronoDuration::minutes(30);
-
-fn attached_outer_label_top(boundary_center_y: Pixels) -> Pixels {
-    boundary_center_y - HOUR_DIVIDER_HEIGHT / 2.
-}
-
-fn sticky_outer_label_ceiling() -> Pixels {
-    TOP_EDGE_INSET
-}
-
-fn sticky_outer_label_handoff_y() -> Pixels {
-    sticky_outer_label_ceiling() + HOUR_DIVIDER_HEIGHT / 2.
-}
-
-fn sticky_outer_label_top(next_boundary_center_y: Pixels) -> Pixels {
-    sticky_outer_label_ceiling().min(
-        attached_outer_label_top(next_boundary_center_y)
-            - STICKY_OUTER_LABEL_HEIGHT
-            - STICKY_OUTER_LABEL_GAP,
-    )
-}
 
 fn timeline_context_menu(time: DateTime<Local>, view: Entity<TimelineView>) -> MenuBuilder {
     let label = time.format("%a %b %-d, %-I:%M %p").to_string();
@@ -198,9 +165,7 @@ fn calendar_date_range_span(
 
 impl TimelineView {
     pub fn time_to_offset(&self, time: DateTime<Local>) -> Pixels {
-        let offset_secs = (time - self.now).as_seconds_f32();
-        let conversion = self.pixel_duration.as_seconds_f32();
-        px(offset_secs / conversion)
+        self.geometry.offset(time)
     }
 
     pub fn duration_to_height(&self, duration: ChronoDuration) -> Pixels {
@@ -208,10 +173,8 @@ impl TimelineView {
     }
 
     pub(super) fn position_to_time(&self, center_offset: Pixels) -> DateTime<Local> {
-        let pos_offset = center_offset - self.scroll_offset;
-        let time_offset_ns =
-            self.pixel_duration.as_seconds_f32() * pos_offset.as_f32() * 1_000_000_000.0;
-        self.now + ChronoDuration::nanoseconds(time_offset_ns.round() as i64)
+        self.geometry
+            .time_at_y(center_offset + self.center_relative().y)
     }
 
     fn pointed_subdivision_boundary_at(&self, position: Point<Pixels>) -> Option<DateTime<Local>> {
@@ -622,7 +585,7 @@ impl TimelineView {
         }
 
         let diameter = px(24.);
-        let y = self.time_to_offset(time) + self.scroll_offset + self.center_relative().y;
+        let y = self.geometry.y(self.time_to_offset(time) - diameter / 2.);
 
         let colors = &cx.theme().colors;
         let hover_background = colors.control_hover.alpha(0.8);
@@ -633,7 +596,7 @@ impl TimelineView {
                 .ghost()
                 .compact()
                 .absolute()
-                .top(y - diameter / 2.)
+                .top(y)
                 .left(self.item_area_left() + (self.item_area_width() - diameter) / 2.)
                 .size(diameter)
                 .rounded_full()
@@ -659,13 +622,9 @@ impl TimelineView {
         )
     }
 
-    pub(super) fn render_backdrop(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let previous_pixel_duration = self.pixel_duration;
-        let previous_now = self.item_geometry_now;
+    pub(super) fn update_geometry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let scroll_anchor = self.geometry.time_at_y(self.center_relative().y);
+        let previous_anchor_y = self.geometry.y(self.geometry.offset(scroll_anchor));
         let zoom_transition = window.keyed_transition("timeline-zoom", cx, ZOOM, || {
             self.pixel_duration.as_seconds_f32()
         });
@@ -674,13 +633,6 @@ impl TimelineView {
         }
         let ns = zoom_transition.animate(window, cx) * 1_000_000_000.;
         self.pixel_duration = ChronoDuration::nanoseconds(ns as i64);
-        (self.item_y_scale, self.item_y_offset) = timeline_y_rebase(
-            previous_now,
-            self.now,
-            previous_pixel_duration,
-            self.pixel_duration,
-        );
-        self.item_geometry_now = self.now;
 
         let scroll_offset_secs = self.scroll_offset.as_f32() * self.pixel_duration.as_seconds_f32();
         let scroll_transition =
@@ -709,21 +661,6 @@ impl TimelineView {
 
         if let Some(speed) = self.edge_scroll_speed {
             self.scroll_by_px(speed, cx);
-            let pointer = window.mouse_position();
-            if self.marquee.is_active() {
-                self.marquee.scrolled_by(point(px(0.), speed));
-                self.marquee.drag_to(pointer, cx);
-            }
-            if self.force_create.is_some() {
-                self.update_force_create(pointer, cx);
-            } else if self.active_resize.is_some() {
-                self.update_resize_preview_at(pointer, cx);
-            } else if self.active_drop.is_some()
-                && !self.marquee.is_active()
-                && self.drop_dragged.is_some()
-            {
-                self.retarget_drop_preview_at(pointer, cx);
-            }
         }
 
         if let Some(anchor_time) = self.zoom_anchor
@@ -745,6 +682,43 @@ impl TimelineView {
             self.zoom_anchor_since = None;
         }
 
+        self.item_y_scale = self
+            .geometry
+            .update(
+                self.now,
+                self.pixel_duration,
+                self.scroll_offset,
+                self.center_relative().y,
+                window.scale_factor(),
+            )
+            .0;
+        self.display_scroll_delta =
+            self.geometry.y(self.geometry.offset(scroll_anchor)) - previous_anchor_y;
+        let pointer = window.mouse_position();
+        if self.marquee.is_active() {
+            self.marquee
+                .scrolled_by(point(px(0.), self.display_scroll_delta));
+            self.marquee.drag_to(pointer, cx);
+        }
+        if self.edge_scroll_speed.is_some() {
+            if self.force_create.is_some() {
+                self.update_force_create(pointer, cx);
+            } else if self.active_resize.is_some() {
+                self.update_resize_preview_at(pointer, cx);
+            } else if self.active_drop.is_some()
+                && !self.marquee.is_active()
+                && self.drop_dragged.is_some()
+            {
+                self.retarget_drop_preview_at(pointer, cx);
+            }
+        }
+    }
+
+    pub(super) fn render_backdrop(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let horizon_secs =
             (self.bounds.unwrap_or_default().size.height + EDGE_HORIZON * 2.).as_f32() / 2.
                 * self.pixel_duration.as_seconds_f32();
@@ -753,6 +727,7 @@ impl TimelineView {
         let start = scroll_position - horizon;
         let end = scroll_position + horizon;
         let base_division = self.current_division_state().base_division;
+        let outer_label_layout = self.outer_label_layout(window);
         let floor = base_division.floor_boundary(start);
 
         let num_divisions =
@@ -831,8 +806,7 @@ impl TimelineView {
                 }
             }))
             .children(slots.into_iter().map(|(slot_start, slot_end)| {
-                let y =
-                    self.time_to_offset(slot_start) + self.scroll_offset + self.center_relative().y;
+                let y = self.geometry.y(self.time_to_offset(slot_start));
                 let height = self.duration_to_height(slot_end - slot_start);
                 let key = slot_start.timestamp() as u64;
                 let create = entity.clone();
@@ -881,13 +855,13 @@ impl TimelineView {
                 let hover_divider = cx.theme().colors.hairline_strong;
                 let base_end = base_division.next_boundary(time);
                 let fit_base = entity.clone();
-                let fit_outer = entity.clone();
+
                 let period_hover = cx.theme().colors.hover.alpha(0.3);
-                let text_muted = cx.theme().colors.text_muted;
 
                 let sub_divisions = self.sub_divisions(time);
-                let y = self.time_to_offset(time) + self.scroll_offset + self.center_relative().y
-                    - HOUR_DIVIDER_HEIGHT / 2.;
+                let y = self
+                    .geometry
+                    .y(self.time_to_offset(time) - HOUR_DIVIDER_HEIGHT / 2.);
                 div()
                     .row()
                     .absolute()
@@ -923,31 +897,8 @@ impl TimelineView {
                                 .stroke(px(2.))
                                 .when(is_hovered_divider, |divider| divider.color(hover_divider)),
                         )
-                        .when_some(outer_period, move |this, period| {
-                            let start = period.start;
-                            let end = period.end;
-                            this.child(
-                                div()
-                                    .id((
-                                        "timeline-fit-outer-period",
-                                        period.start.timestamp() as u64,
-                                    ))
-                                    .px_1()
-                                    .mr_2()
-                                    .rounded_sm()
-                                    .cursor_pointer()
-                                    .block_mouse_except_scroll()
-                                    .hover(move |style| style.bg(period_hover))
-                                    .on_click(move |_: &ClickEvent, _window, cx| {
-                                        cx.stop_propagation();
-                                        fit_outer.update(cx, |view, cx| {
-                                            view.zoom_to_span(start, end, cx)
-                                        });
-                                    })
-                                    .child(
-                                        Label::new(period.text).text_color(text_muted).text_xl(),
-                                    ),
-                            )
+                        .when_some(outer_period, |this, period| {
+                            this.child(outer_label_layout.spacer(&period.text, window))
                         })
                     })
                     .when(!is_outer, |this| {
@@ -963,9 +914,10 @@ impl TimelineView {
                             self.current_division_state().current_subdivision().unwrap();
 
                         this.children(sub_divisions.iter().copied().map(|sub_time| {
-                            let offset_duration = sub_time - time;
-                            let base_offset = px(offset_duration.as_seconds_f32()
-                                / self.pixel_duration.as_seconds_f32());
+                            let base_offset = self
+                                .geometry
+                                .y(self.time_to_offset(sub_time) - HOUR_DIVIDER_HEIGHT / 2.)
+                                - y;
                             let label = subdivision
                                 .style()
                                 .label(sub_time, true, cx)
@@ -1011,63 +963,6 @@ impl TimelineView {
                         }))
                     })
             }))
-    }
-
-    pub(super) fn render_sticky_outer_label(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
-        let division = self.current_division_state().base_division;
-        let bounds = self.bounds?;
-        let center_y = bounds.size.center().y;
-        let compact = bounds.size.width < px(560.);
-
-        let sample_y = sticky_outer_label_handoff_y();
-        let sample_time = self.position_to_time(sample_y - center_y);
-        let period = division.outer_period_label_at(sample_time)?;
-        let outer_start = period.start;
-        let outer_end = period.end;
-        let (primary_label, secondary_label) = match period.text.split_once(' ') {
-            Some((primary, secondary)) => (primary.to_string(), Some(secondary.to_string())),
-            None => (period.text, None),
-        };
-
-        let next_boundary_center_y = self.time_to_offset(outer_end) + self.scroll_offset + center_y;
-
-        let y = sticky_outer_label_top(next_boundary_center_y);
-
-        Some(
-            div()
-                .row()
-                .absolute()
-                .top(y)
-                .right(STICKY_OUTER_LABEL_INSET)
-                .h(STICKY_OUTER_LABEL_HEIGHT)
-                .items_center()
-                .child(
-                    Button::new(("timeline-fit-sticky-period", outer_start.timestamp() as u64))
-                        .glass_pill()
-                        .h_10()
-                        .px_4()
-                        .when(compact, |this| this.h_8().px_2())
-                        .block_mouse_except_scroll()
-                        .gap_1()
-                        .child(
-                            Label::new(primary_label)
-                                .text_2xl()
-                                .when(compact, |this| this.text_base()),
-                        )
-                        .when_some(secondary_label, |this, secondary| {
-                            this.child(
-                                Label::new(secondary)
-                                    .text_2xl()
-                                    .when(compact, |this| this.text_base())
-                                    .font_weight(FontWeight::EXTRA_LIGHT),
-                            )
-                        })
-                        .on_click(cx.listener(move |view, _: &ClickEvent, _window, cx| {
-                            cx.stop_propagation();
-                            view.zoom_to_span(outer_start, outer_end, cx);
-                        })),
-                ),
-        )
     }
 
     pub(super) fn render_now_shortcut(

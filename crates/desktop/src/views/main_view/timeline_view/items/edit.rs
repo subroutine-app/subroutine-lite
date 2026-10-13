@@ -19,7 +19,7 @@ use crate::views::TOP_EDGE_INSET;
 use super::super::{EDGE_HORIZON, TimelineView};
 use super::{
     ItemNavigation, Lane, NavigationHandoffs, SIGNAL_CARD_HEIGHT, TimelineItem, TimelineSlot,
-    TransitionState, item_timeline_span, visual_duration_at,
+    TransitionState, item_timeline_span,
 };
 
 #[derive(Clone)]
@@ -227,10 +227,9 @@ impl TimelineView {
             .bounds
             .map(|bounds| bounds.size.height)
             .unwrap_or_default();
-        let scroll_y = self.scroll_offset + self.center_relative().y;
         let is_mounted = |top: Pixels, bottom: Pixels, margin| {
-            let top = top + scroll_y;
-            let bottom = bottom + scroll_y;
+            let top = self.geometry.y(top);
+            let bottom = self.geometry.y(bottom);
             bottom + margin >= px(0.) && top - margin <= viewport_height
         };
         let independently_drawn: HashSet<usize> = self
@@ -410,20 +409,17 @@ impl TimelineView {
             return false;
         }
 
-        let scroll_y = self.scroll_offset + self.center_relative().y;
-        let top = target.visual_top + scroll_y;
-        let bottom = target.visual_bottom + scroll_y;
+        let top = self.geometry.y(target.visual_top);
+        let bottom = self.geometry.y(target.visual_bottom);
         let visible_top = TOP_EDGE_INSET;
         let visible_bottom = self
             .bounds
             .map(|bounds| bounds.size.height)
             .unwrap_or_default();
         if bottom <= visible_top || top >= visible_bottom {
-            let target_time = self.now
-                + visual_duration_at(
-                    self.pixel_duration,
-                    (target.visual_top + target.visual_bottom) / 2.,
-                );
+            let target_time = self
+                .geometry
+                .time_at_offset((target.visual_top + target.visual_bottom) / 2.);
             self.scroll_to(target_time, cx);
         }
         target.mounted

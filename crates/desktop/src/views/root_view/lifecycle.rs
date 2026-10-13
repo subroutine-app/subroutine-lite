@@ -62,7 +62,7 @@ impl RootView {
         )
         .detach();
         let inspector = cx.new(|cx| ItemInspector::new(window, cx));
-        let main_view = cx.new(|cx| MainView::new(window, cx));
+        let main_view = cx.new(|cx| MainView::new(layout_state.clone(), window, cx));
         Self::observe_main_focus(&main_view, window, cx);
         let source_search = cx.new(|cx| {
             SearchInput::new("workspace.search", window, cx)

@@ -7,20 +7,92 @@ use gpui::{
     prelude::FluentBuilder as _, px, relative, size,
 };
 use gpui::{InteractiveElement, StatefulInteractiveElement};
-use subroutine_core::{AnyItem, Marker, SchedulePoint};
+use subroutine_core::{AnyItem, Marker, Recurrence, SchedulePoint};
 use uuid::Uuid;
 
 use crate::{
-    components::{DragData, DraggedItems, ItemCard, ItemCardPosition, create_drag_data},
+    components::{
+        Button, ButtonVariants, DragData, DraggedItems, ItemCard, ItemCardPosition,
+        create_drag_data, menu::MenuBuilder,
+    },
     dates::InclusiveDateRange,
     item_manager::ItemManager,
     selection::{SelectionManager, SelectionOrder, SelectionScope},
 };
 
-use super::CalendarView;
+use super::{CalendarView, marker_resize::MarkerResizeEdge};
 
 pub(super) const MARKER_HEIGHT: Pixels = px(24.);
 pub(super) const MARKER_PITCH: Pixels = px(26.);
+const MARKER_CONTENT_GAP: Pixels = px(4.);
+
+pub(super) fn marker_content_height(lanes: usize) -> Pixels {
+    if lanes == 0 {
+        px(0.)
+    } else {
+        MARKER_PITCH * (lanes - 1) as f32 + MARKER_HEIGHT + MARKER_CONTENT_GAP
+    }
+}
+
+pub(super) fn marker_capacity(height: Pixels) -> usize {
+    ((height - MARKER_CONTENT_GAP + MARKER_PITCH - MARKER_HEIGHT) / MARKER_PITCH)
+        .floor()
+        .max(0.) as usize
+}
+
+#[derive(PartialEq, Eq)]
+struct MarkerGeometry {
+    start: NaiveDate,
+    end: Option<NaiveDate>,
+    recurrence: Option<Recurrence>,
+    lineage: Uuid,
+}
+
+#[derive(Default)]
+pub(super) struct MarkerLanes {
+    positions: HashMap<Uuid, usize>,
+    geometry: HashMap<Uuid, MarkerGeometry>,
+}
+
+impl MarkerLanes {
+    fn reconcile(&mut self, entries: &[(Marker, bool)]) {
+        let geometry = entries
+            .iter()
+            .filter(|(_, projected)| !projected)
+            .map(|(marker, _)| {
+                (
+                    marker.id,
+                    MarkerGeometry {
+                        start: marker.date,
+                        end: marker.end_date,
+                        recurrence: marker.recurrence,
+                        lineage: marker.lineage_id,
+                    },
+                )
+            })
+            .collect();
+        // Scrolling changes projected occurrences, not their stored sources.
+        if self.geometry != geometry {
+            self.geometry = geometry;
+            self.positions.clear();
+        }
+    }
+
+    pub(super) fn lane(&self, id: Uuid) -> Option<usize> {
+        self.positions.get(&id).copied()
+    }
+
+    pub(super) fn promote(&mut self, id: Uuid) {
+        let Some(lane) = self.lane(id) else { return };
+        for current in self.positions.values_mut() {
+            if *current == lane {
+                *current = 0;
+            } else if *current == 0 {
+                *current = lane;
+            }
+        }
+    }
+}
 const END_INSET: Pixels = px(4.);
 
 pub(super) struct CalendarMarker {
@@ -58,12 +130,34 @@ impl LaneOccupancy {
     }
 }
 
+impl MarkerSpan<'_> {
+    pub(super) fn is_visible(&self, capacity: usize) -> bool {
+        self.entry.lane < capacity
+    }
+}
+
 impl MarkerLayout {
+    pub(super) fn promote(&mut self, id: Uuid, cache: &mut MarkerLanes) {
+        cache.promote(id);
+        for entry in &mut self.markers {
+            entry.lane = cache.positions[&entry.marker.id];
+        }
+    }
+
+    pub(super) fn hidden_on(&self, date: NaiveDate, capacity: usize) -> Vec<Marker> {
+        self.markers
+            .iter()
+            .filter(|entry| entry.lane >= capacity && entry.marker.covers(date))
+            .map(|entry| entry.marker.clone())
+            .collect()
+    }
+
     pub(super) fn new(
         entries: impl IntoIterator<Item = (Marker, bool)>,
-        cache: &mut HashMap<Uuid, usize>,
+        cache: &mut MarkerLanes,
     ) -> Self {
         let mut entries: Vec<_> = entries.into_iter().collect();
+        cache.reconcile(&entries);
         entries.sort_by_key(|(marker, projected)| {
             (
                 marker.date,
@@ -81,8 +175,7 @@ impl MarkerLayout {
                 continue;
             }
             if let Some(lane) = cache
-                .get(&marker.id)
-                .copied()
+                .lane(marker.id)
                 .filter(|lane| lanes.reserve(*lane, &marker))
             {
                 markers.push(CalendarMarker {
@@ -106,8 +199,10 @@ impl MarkerLayout {
             });
         }
         markers.sort_by_key(|entry| (entry.lane, entry.marker.date, entry.marker.id));
-        cache.retain(|id, _| seen.contains(id));
-        cache.extend(markers.iter().map(|entry| (entry.marker.id, entry.lane)));
+        cache.positions.retain(|id, _| seen.contains(id));
+        cache
+            .positions
+            .extend(markers.iter().map(|entry| (entry.marker.id, entry.lane)));
         Self { markers }
     }
 
@@ -145,22 +240,10 @@ impl MarkerLayout {
         )
     }
 
-    pub(super) fn lanes_on(&self, date: NaiveDate) -> usize {
+    pub(super) fn visible_lanes_on(&self, date: NaiveDate, capacity: usize) -> usize {
         self.markers
             .iter()
-            .filter(|entry| entry.marker.covers(date))
-            .map(|entry| entry.lane + 1)
-            .max()
-            .unwrap_or(0)
-    }
-
-    pub(super) fn lanes_between(&self, start: NaiveDate, end: NaiveDate) -> usize {
-        self.markers
-            .iter()
-            .filter(|entry| {
-                entry.marker.date <= end
-                    && entry.marker.end_date.unwrap_or(entry.marker.date) >= start
-            })
+            .filter(|entry| entry.lane < capacity && entry.marker.covers(date))
             .map(|entry| entry.lane + 1)
             .max()
             .unwrap_or(0)
@@ -247,6 +330,11 @@ impl CalendarView {
         let manager = ItemManager::global(cx);
         let is_draft = manager.read(cx).is_draft(marker.id);
         let is_editing = manager.read(cx).is_being_edited(marker.id);
+        let is_resizing = self
+            .marker_resize
+            .as_ref()
+            .is_some_and(|resize| resize.item_id == marker.id);
+        let can_resize = !projected && !is_draft && !is_editing && self.marker_resize.is_none();
         let item = AnyItem::Marker(marker.clone());
         let edit_marker = marker.clone();
         let card = ItemCard::new_with_id(
@@ -295,7 +383,8 @@ impl CalendarView {
                     }
                 },
             ));
-        let drag_regions = if !projected && !is_draft && !is_editing {
+        let drag_regions = if !projected && !is_draft && !is_editing && self.marker_resize.is_none()
+        {
             marker_drag_regions(span.dates, day_width, left_inset, right_inset)
         } else {
             Vec::new()
@@ -310,12 +399,15 @@ impl CalendarView {
             .h(MARKER_HEIGHT)
             .pl(left_inset)
             .pr(right_inset)
-            .when(!projected && !is_draft && !is_editing, |band| {
-                band.capture_any_mouse_down(move |_, window, cx| {
-                    SelectionManager::claim_press(cx);
-                    focus.focus(window, cx);
-                })
-            })
+            .when(
+                !projected && !is_draft && !is_editing && !is_resizing,
+                |band| {
+                    band.capture_any_mouse_down(move |_, window, cx| {
+                        SelectionManager::claim_press(cx);
+                        focus.focus(window, cx);
+                    })
+                },
+            )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, _, cx| {
                 if event.button == MouseButton::Left {
@@ -358,7 +450,73 @@ impl CalendarView {
                         },
                     ))
             }))
+            .when(can_resize && !continues_before, |band| {
+                band.child(Self::render_marker_resize_handle(
+                    marker.id,
+                    MarkerResizeEdge::Start,
+                    cx,
+                ))
+            })
+            .when(can_resize && !continues_after, |band| {
+                band.child(Self::render_marker_resize_handle(
+                    marker.id,
+                    MarkerResizeEdge::End,
+                    cx,
+                ))
+            })
             .into_any_element()
+    }
+
+    pub(super) fn render_marker_overflow(
+        &self,
+        date: NaiveDate,
+        hidden: Vec<Marker>,
+        cx: &Context<Self>,
+    ) -> Button {
+        Button::new(("calendar-marker-overflow", date.num_days_from_ce() as u32))
+            .ghost()
+            .compact()
+            .h(MARKER_HEIGHT)
+            .min_w_0()
+            .px_1()
+            .label(if self.day_width() < px(80.) {
+                format!("+{}", hidden.len())
+            } else {
+                format!("+{} markers", hidden.len())
+            })
+            .tooltip("Show hidden markers")
+            .aria_label(format!(
+                "Show {} hidden markers on {}",
+                hidden.len(),
+                date.format("%B %-d")
+            ))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                SelectionManager::claim_press(cx);
+                cx.stop_propagation();
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |view, _, _, cx| {
+                    view.finish_date_range_drag(date, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_pressure(|_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |_, event: &ClickEvent, window, cx| {
+                cx.stop_propagation();
+                let mut menu = MenuBuilder::new().label("Hidden markers");
+                for marker in &hidden {
+                    let id = marker.id;
+                    let view = cx.entity();
+                    menu = menu.item(marker.title.clone(), move |_, cx| {
+                        view.update(cx, |view, cx| {
+                            view.marker_lanes.promote(id);
+                            cx.notify();
+                        });
+                    });
+                }
+                crate::components::menu::open_context_menu(menu, event.position(), window, cx);
+            }))
     }
 }
 
@@ -379,6 +537,57 @@ mod tests {
             .lane
     }
 
+    #[test]
+    fn marker_budget_reserves_a_gap_for_both_previews_and_footer_controls() {
+        assert_eq!(marker_content_height(0), px(0.));
+        assert_eq!(marker_content_height(1), MARKER_HEIGHT + px(4.));
+        assert_eq!(
+            marker_content_height(3),
+            MARKER_PITCH * 2. + MARKER_HEIGHT + px(4.)
+        );
+        for height in [0., 27., 28., 29., 53., 54., 99.] {
+            let capacity = marker_capacity(px(height));
+            assert!(marker_content_height(capacity) <= px(height));
+            assert!(marker_content_height(capacity + 1) > px(height));
+        }
+    }
+
+    #[test]
+    fn fixed_capacity_collapses_markers_and_can_reveal_a_hidden_one() {
+        let entries: Vec<_> = (0..5)
+            .map(|index| {
+                (
+                    Marker::new(format!("Marker {index}"), date(11)).with_end_date(date(15)),
+                    false,
+                )
+            })
+            .collect();
+        let mut cache = MarkerLanes::default();
+        let mut layout = MarkerLayout::new(entries, &mut cache);
+        let capacity = marker_capacity(px(29.));
+        assert_eq!(capacity, 1);
+        assert_eq!(marker_capacity(px(99.)), 3);
+        assert_eq!(marker_capacity(px(0.)), 0);
+        assert_eq!(
+            layout
+                .week(date(11))
+                .iter()
+                .filter(|span| span.is_visible(capacity))
+                .count(),
+            1
+        );
+        assert_eq!(layout.hidden_on(date(13), capacity).len(), 4);
+        let hidden = layout.hidden_on(date(13), capacity)[0].id;
+        layout.promote(hidden, &mut cache);
+        assert_eq!(lane(&layout, hidden), 0);
+        assert_eq!(layout.hidden_on(date(13), capacity).len(), 4);
+        assert_eq!(layout.visible_lanes_on(date(13), capacity), 1);
+        assert_no_overlap(&layout);
+        for span in layout.week(date(11)) {
+            assert_eq!(span.dates, InclusiveDateRange::new(date(11), date(15)));
+        }
+    }
+
     fn assert_no_overlap(layout: &MarkerLayout) {
         for (index, entry) in layout.markers.iter().enumerate() {
             for other in &layout.markers[index + 1..] {
@@ -396,7 +605,7 @@ mod tests {
     #[test]
     fn drag_regions_register_the_pressed_day_across_week_boundaries() {
         let marker = Marker::new("Trip", date(10)).with_end_date(date(13));
-        let layout = MarkerLayout::new([(marker.clone(), false)], &mut HashMap::new());
+        let layout = MarkerLayout::new([(marker.clone(), false)], &mut MarkerLanes::default());
         let first = marker_drag_regions(layout.week(date(4))[0].dates, px(100.), END_INSET, px(0.));
         assert_eq!(
             (first[0].date, first[0].left, first[0].width),
@@ -447,7 +656,7 @@ mod tests {
         let projected = Marker::new("Occurrence", date(5)).with_end_date(date(6));
         let marker = Marker::new("Long marker", date(6)).with_end_date(date(20));
         let next = Marker::new("Next occurrence", date(12)).with_end_date(date(13));
-        let mut cache = HashMap::new();
+        let mut cache = MarkerLanes::default();
         let first = MarkerLayout::new(
             [(projected.clone(), true), (marker.clone(), false)],
             &mut cache,
@@ -458,7 +667,7 @@ mod tests {
             MarkerLayout::new([(marker.clone(), false), (next.clone(), true)], &mut cache);
         assert_eq!(lane(&scrolled, marker.id), lane(&first, marker.id));
         assert_eq!(lane(&scrolled, next.id), 0);
-        assert!(!cache.contains_key(&projected.id));
+        assert!(cache.lane(projected.id).is_none());
         assert_no_overlap(&scrolled);
 
         let returned = MarkerLayout::new(
@@ -475,11 +684,58 @@ mod tests {
     }
 
     #[test]
-    fn cached_lanes_are_repaired_before_new_markers_are_placed() {
+    fn hidden_markers_reappear_after_resize_move_deletion_and_undo() {
+        let blocker = Marker::new("Blocker", date(11)).with_end_date(date(17));
+        let hidden = Marker::new("Hidden", date(12)).with_end_date(date(13));
+        let mut cache = MarkerLanes::default();
+        let original = [(blocker.clone(), false), (hidden.clone(), false)];
+        let initial = MarkerLayout::new(original.clone(), &mut cache);
+        assert_eq!(initial.hidden_on(date(12), 1)[0].id, hidden.id);
+
+        let resized = blocker.clone().with_end_date(date(11));
+        let moved = blocker.clone().with_date(date(20)).with_end_date(date(26));
+        for changed in [
+            vec![(resized, false), (hidden.clone(), false)],
+            vec![(moved, false), (hidden.clone(), false)],
+            vec![(hidden.clone(), false)],
+        ] {
+            let layout = MarkerLayout::new(changed, &mut cache);
+            assert_eq!(lane(&layout, hidden.id), 0);
+            assert!(layout.hidden_on(date(12), 1).is_empty());
+            assert_no_overlap(&layout);
+
+            let restored = MarkerLayout::new(original.clone(), &mut cache);
+            assert_eq!(restored.hidden_on(date(12), 1)[0].id, hidden.id);
+            assert_no_overlap(&restored);
+        }
+    }
+
+    #[test]
+    fn title_changes_preserve_manual_reveal_but_cancelled_drafts_release_lanes() {
+        let a = Marker::new("A", date(11)).with_end_date(date(17));
+        let mut b = Marker::new("B", date(12));
+        let mut cache = MarkerLanes::default();
+        let mut layout = MarkerLayout::new([(a.clone(), false), (b.clone(), false)], &mut cache);
+        layout.promote(b.id, &mut cache);
+        b.title = "Renamed".into();
+        let renamed = MarkerLayout::new([(a, false), (b.clone(), false)], &mut cache);
+        assert_eq!(lane(&renamed, b.id), 0);
+
+        let draft = Marker::new("", date(10)).with_end_date(date(16));
+        let drafting = MarkerLayout::new([(draft.clone(), false), (b.clone(), false)], &mut cache);
+        assert_eq!(drafting.hidden_on(date(12), 1)[0].id, b.id);
+        let cancelled = MarkerLayout::new([(b.clone(), false)], &mut cache);
+        assert_eq!(lane(&cancelled, b.id), 0);
+        assert!(cancelled.hidden_on(date(12), 1).is_empty());
+        assert!(cache.lane(draft.id).is_none());
+    }
+
+    #[test]
+    fn geometry_changes_repack_lanes_without_overlaps() {
         let a = Marker::new("A", date(5)).with_end_date(date(6));
         let b = Marker::new("B", date(8)).with_end_date(date(9));
         let c = Marker::new("C", date(6)).with_end_date(date(8));
-        let mut cache = HashMap::new();
+        let mut cache = MarkerLanes::default();
         let first = MarkerLayout::new(
             [(a.clone(), false), (b.clone(), false), (c.clone(), false)],
             &mut cache,
@@ -515,10 +771,10 @@ mod tests {
             ],
             &mut cache,
         );
-        for id in [a.id, b.id, c.id] {
-            assert_eq!(lane(&with_new, id), lane(&changed, id));
-        }
-        assert_eq!(lane(&with_new, added.id), 3);
+        assert_eq!(lane(&with_new, added.id), 0);
+        assert_eq!(lane(&with_new, a.id), 1);
+        assert_eq!(lane(&with_new, c.id), 2);
+        assert_eq!(lane(&with_new, b.id), 3);
         assert_no_overlap(&with_new);
     }
 
@@ -527,7 +783,7 @@ mod tests {
         let marker = Marker::new("Trip", date(9)).with_end_date(date(19));
         let layout = MarkerLayout::new(
             [(marker.clone(), false), (marker.clone(), false)],
-            &mut HashMap::new(),
+            &mut MarkerLanes::default(),
         );
         for (week, first, last) in [(4, 9, 10), (11, 11, 17), (18, 18, 19)] {
             let spans = layout.week(date(week));

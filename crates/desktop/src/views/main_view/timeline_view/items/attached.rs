@@ -120,13 +120,14 @@ fn sticky_content_spring(target: Pixels, playback: SpringPlayback) -> SpringAnim
 pub(super) enum SlotKind {
     Item,
     Bin,
+    ExpandedBin,
 }
 
 impl SlotKind {
     fn transition_keys(self) -> (&'static str, &'static str, &'static str, &'static str) {
         match self {
             SlotKind::Item => ("item-width", "item-height", "item-x", "item-y"),
-            SlotKind::Bin => ("bin-width", "bin-height", "bin-x", "bin-y"),
+            SlotKind::Bin | SlotKind::ExpandedBin => ("bin-width", "bin-height", "bin-x", "bin-y"),
         }
     }
 }
@@ -215,6 +216,12 @@ impl TimelineView {
         cx: &mut Context<Self>,
     ) -> Bounds<Pixels> {
         let (width_key, height_key, x_key, y_key) = kind.transition_keys();
+        let geometry =
+            window.use_keyed_state((ElementId::from((y_key, key)), "geometry"), cx, |_, _| {
+                self.geometry
+            });
+        let (y_scale, y_offset) = self.geometry.rebase_from(*geometry.read(cx));
+        geometry.update(cx, |geometry, _| *geometry = self.geometry);
 
         let width_transition =
             attach_transition((width_key, key), target.size.width, RESCHEDULE, window, cx);
@@ -236,12 +243,15 @@ impl TimelineView {
             return target;
         }
 
-        let vertical_space_changed = self.item_y_scale != 1.0 || self.item_y_offset != px(0.);
-        let zoomed_this_frame = self.item_y_scale != 1.0;
+        let vertical_space_changed = y_scale != 1.0 || y_offset != px(0.);
+        let zoomed_this_frame = y_scale != 1.0;
 
         if vertical_space_changed {
-            y_transition.scale_by(self.item_y_scale, cx);
-            y_transition.offset_by(self.item_y_offset, cx);
+            y_transition.scale_by(y_scale, cx);
+            y_transition.offset_by(y_offset, cx);
+        }
+        if matches!(kind, SlotKind::ExpandedBin) && self.display_scroll_delta != px(0.) {
+            y_transition.snap(target.origin.y, cx);
         }
 
         if zoomed_this_frame {
@@ -281,14 +291,13 @@ impl TimelineView {
         let event_step = SKELETON_EVENT_DURATION.max(min_span);
 
         let actions_start = self.current_division_state().auto_floor_boundary(self.now);
-        let scroll_y = self.scroll_offset + self.center_relative().y;
         let action_skeletons = (0..N_ACTIONS)
             .map(|i| {
                 let time = actions_start + action_step * i;
                 let bounds = self.create_bounds(time, SKELETON_ACTION_DURATION);
                 div()
                     .absolute()
-                    .top(bounds.top() + scroll_y)
+                    .top(self.geometry.y(bounds.top()))
                     .left(bounds.left())
                     .h(bounds.size.height)
                     .w(bounds.size.width)
@@ -307,7 +316,7 @@ impl TimelineView {
                 let bounds = self.create_bounds(time, SKELETON_EVENT_DURATION);
                 div()
                     .absolute()
-                    .top(bounds.top() + scroll_y)
+                    .top(self.geometry.y(bounds.top()))
                     .left(bounds.left())
                     .h(bounds.size.height)
                     .w(bounds.size.width)
@@ -450,12 +459,10 @@ impl TimelineView {
             return None;
         }
 
-        let anim = current_bounds + point(px(0.), self.scroll_offset + self.center_relative().y);
-
-        let y = anim.top();
-        let h = anim.size.height;
-        let item_left = anim.left();
-        let item_w = anim.size.width;
+        let y = self.geometry.y(current_bounds.top());
+        let h = current_bounds.size.height;
+        let item_left = current_bounds.left();
+        let item_w = current_bounds.size.width;
         let details_open = self.item_details.is_open(item_id);
         let details_height = item_details_height().min(h);
         let details_top = sticky_item_details_top(y, y + h, details_height);
@@ -570,8 +577,10 @@ impl TimelineView {
             .bg(cx.theme().colors.panel)
             .draggable(true, None);
         let card = self.wire_timeline_item_card(card, &item, cx);
-        let sticky_playback =
-            sticky_content_playback(self.item_y_scale, self.bounds_changed || details_open);
+        let sticky_playback = sticky_content_playback(
+            self.item_y_scale,
+            self.bounds_changed || details_open || self.display_scroll_delta != px(0.),
+        );
         let card = if is_timed {
             card.with_spring(
                 (ElementId::Uuid(item_id), "sticky-content"),
@@ -680,7 +689,6 @@ impl TimelineView {
         let Some(bounds) = self.bounds else {
             return Vec::new();
         };
-        let scroll_y = self.scroll_offset + self.center_relative().y;
         let left = self.item_area_left();
         let width = self.item_area_width().min(MAX_ITEM_WIDTH);
 
@@ -693,7 +701,7 @@ impl TimelineView {
                     .map(|duration| measure_from(start, duration))
                     .filter(|duration| *duration > ChronoDuration::zero())
                     .unwrap_or(FALLBACK_ITEM_DURATION);
-                let top = self.time_to_offset(start) + scroll_y;
+                let top = self.geometry.y(self.time_to_offset(start));
                 let height = self.duration_to_height(duration).max(px(1.));
                 if top + height < px(0.) || top > bounds.size.height {
                     return None;
@@ -744,7 +752,6 @@ impl TimelineView {
 
         let viewport_height = self.bounds.map(|b| b.size.height).unwrap_or(px(800.));
         let cull_margin = px(200.);
-        let scroll_y = self.scroll_offset + self.center_relative().y;
         let on_screen = |top: Pixels, height: Pixels| {
             top + height + cull_margin >= px(0.) && top - cull_margin <= viewport_height
         };
@@ -775,7 +782,7 @@ impl TimelineView {
                         .map(|resize| (resize.new_time, resize.new_end - resize.new_time))
                         .unwrap_or((stored_time, stored_duration));
                     let bounds = self.item_bounds(&entry.item, time, duration, lane);
-                    if !on_screen(bounds.top() + scroll_y, bounds.size.height)
+                    if !on_screen(self.geometry.y(bounds.top()), bounds.size.height)
                         && !self.item_details.is_open(entry.item.id())
                         && !self.is_being_edited(entry.item.id(), cx)
                     {
@@ -816,7 +823,7 @@ impl TimelineView {
                 TimelineSlot::Bin(bin) => {
                     let expanded = self.bin_is_expanded(&bin);
                     let bounds = self.lane_bounds(bin.start, ChronoDuration::zero(), bin.lane);
-                    let screen_top = bounds.top() + scroll_y;
+                    let screen_top = self.geometry.y(bounds.top());
                     if !expanded && !on_screen(screen_top, bounds.size.height) {
                         continue;
                     }

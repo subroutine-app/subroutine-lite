@@ -2569,7 +2569,7 @@ dependencies = [
 [[package]]
 name = "gpui-box"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2655,7 +2655,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-collections"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "gpui-box-util",
  "indexmap",
@@ -2665,7 +2665,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-http-client"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -2685,7 +2685,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-kit"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "alacritty_terminal",
  "chrono",
@@ -2707,7 +2707,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-kit-assets"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "gpui-box",
  "tracing",
@@ -2716,7 +2716,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-kit-semantics"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "gpui-box",
  "serde",
@@ -2725,7 +2725,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-kit-theme"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "gpui-box",
  "gpui-box-kit-tokens",
@@ -2734,7 +2734,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-kit-tokens"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "serde",
  "serde_json",
@@ -2744,7 +2744,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-linux"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2796,7 +2796,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-macos"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2845,7 +2845,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-macros"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2856,7 +2856,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-media"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -2875,7 +2875,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-refineable"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "gpui-box-refineable-derive",
 ]
@@ -2883,7 +2883,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-refineable-derive"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2893,7 +2893,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-scheduler"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "async-task",
  "backtrace",
@@ -2908,7 +2908,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-shared-string"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "schemars",
  "serde",
@@ -2918,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-sum-tree"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "heapless",
  "log",
@@ -2929,7 +2929,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-util"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "anyhow",
  "log",
@@ -2939,7 +2939,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-util-macros"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -2948,7 +2948,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-wgpu"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2978,7 +2978,7 @@ dependencies = [
 [[package]]
 name = "gpui-box-windows"
 version = "0.2.0"
-source = "git+https://github.com/subroutine-app/gpui-box.git#a8238a48fdf8d64c98dbbbc62941cd733fae537a"
+source = "git+https://github.com/subroutine-app/gpui-box.git#27103c3e33e8e6de9367ca0d8b6c51daed0c62da"
 dependencies = [
  "accesskit",
  "accesskit_windows",

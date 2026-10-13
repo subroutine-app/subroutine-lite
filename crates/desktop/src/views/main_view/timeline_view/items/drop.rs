@@ -406,7 +406,7 @@ impl TimelineView {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let color = cx.theme().colors.focus;
-        let scroll_y = self.scroll_offset + self.center_relative().y;
+
         let container = div().absolute().inset_0();
 
         match drop_info.shape {
@@ -425,7 +425,7 @@ impl TimelineView {
                 container.child(
                     div()
                         .absolute()
-                        .top(bounds.top() + scroll_y)
+                        .top(self.geometry.y(bounds.top()))
                         .left(bounds.left())
                         .w(bounds.size.width)
                         .h(bounds.size.height)
@@ -441,7 +441,8 @@ impl TimelineView {
                 )
             }
             DropShape::Moment { offset } => {
-                let y = self.time_to_offset(drop_info.drop_time + offset) + scroll_y;
+                let anchor = self.time_to_offset(drop_info.drop_time + offset);
+                let y = self.geometry.y(anchor);
                 container
                     .child(
                         div()
@@ -455,7 +456,7 @@ impl TimelineView {
                     .child(
                         div()
                             .absolute()
-                            .top(y - SIGNAL_CARD_HEIGHT / 2.)
+                            .top(self.geometry.y(anchor - SIGNAL_CARD_HEIGHT / 2.))
                             .left(self.chip_left())
                             .w(self.chip_width())
                             .h(SIGNAL_CARD_HEIGHT)
@@ -468,9 +469,10 @@ impl TimelineView {
                     )
             }
             DropShape::Days { start, end } => {
-                let top = self.time_to_offset(day_start(start)) + scroll_y;
-                let bottom =
-                    self.time_to_offset(day_start(end + ChronoDuration::days(1))) + scroll_y;
+                let top = self.geometry.y(self.time_to_offset(day_start(start)));
+                let bottom = self
+                    .geometry
+                    .y(self.time_to_offset(day_start(end + ChronoDuration::days(1))));
                 let label = if start == end {
                     start.format("%a %b %-d").to_string()
                 } else {

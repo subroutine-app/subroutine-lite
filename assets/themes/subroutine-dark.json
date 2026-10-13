@@ -525,13 +525,13 @@
         "y": 1,
         "blur": 3,
         "spread": 0,
-        "color": "{neutral.0}/35"
+        "color": "{neutral.0}/1b"
       },
       {
         "y": 2,
         "blur": 6,
         "spread": -1,
-        "color": "{neutral.0}/59"
+        "color": "{neutral.0}/2d"
       }
     ],
     "overlay": [
@@ -539,13 +539,13 @@
         "y": 2,
         "blur": 6,
         "spread": -1,
-        "color": "{neutral.0}/3d"
+        "color": "{neutral.0}/1f"
       },
       {
         "y": 8,
         "blur": 24,
         "spread": -4,
-        "color": "{neutral.0}/66"
+        "color": "{neutral.0}/33"
       }
     ],
     "modal": [
@@ -553,13 +553,13 @@
         "y": 4,
         "blur": 12,
         "spread": -2,
-        "color": "{neutral.0}/54"
+        "color": "{neutral.0}/2a"
       },
       {
         "y": 16,
         "blur": 48,
         "spread": -8,
-        "color": "{neutral.0}/8c"
+        "color": "{neutral.0}/46"
       }
     ]
   },

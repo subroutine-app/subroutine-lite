@@ -153,6 +153,15 @@ impl UpcomingSections {
         self.states.get(&section).is_none_or(|state| state.expanded)
     }
 
+    pub fn add_in_header(&self, agenda: &Agenda, date: NaiveDate) -> bool {
+        let section = UpcomingSection::Day(date);
+        !self.is_expanded(section)
+            || !agenda
+                .rows
+                .iter()
+                .any(|row| row.section() == section && !row.is_heading())
+    }
+
     pub fn set_expanded(&mut self, section: UpcomingSection, expanded: bool) {
         let Some(state) = self.states.get_mut(&section) else {
             return;
@@ -223,12 +232,16 @@ mod tests {
         assert_eq!(sections.layout_state(day), (true, 1.));
         assert_eq!(sections.layout_state(next_day), (false, 0.));
         assert_eq!(sections.layout_state(UpcomingSection::Missed), (false, 0.));
+        assert!(!sections.add_in_header(&agenda, today));
+        assert!(sections.add_in_header(&agenda, tomorrow));
 
         sections.set_expanded(day, false);
         sections.set_expanded(next_day, true);
         sections.sync(&agenda, today);
         assert!(!sections.is_expanded(day));
         assert!(sections.is_expanded(next_day));
+        assert!(sections.add_in_header(&agenda, today));
+        assert!(!sections.add_in_header(&agenda, tomorrow));
     }
 
     #[test]

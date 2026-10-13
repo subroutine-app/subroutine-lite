@@ -133,6 +133,7 @@ pub struct DeleteItem {
 }
 
 use crate::{
+    components::panel_group::PanelGroupState,
     item_manager::ItemManager,
     notifications,
     selection::{SelectionManager, SelectionScope},
@@ -198,12 +199,16 @@ pub struct MainView {
 }
 
 impl MainView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        layout_state: Entity<PanelGroupState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         let queue = Vec::new();
 
         let timeline_view = cx.new(|cx| TimelineView::new(window, cx));
-        let calendar_view = cx.new(|cx| CalendarView::new(window, cx));
+        let calendar_view = cx.new(|cx| CalendarView::new(layout_state, window, cx));
         let upcoming_view = cx.new(|cx| UpcomingView::new(window, cx));
         let queue_view = cx.new(|cx| QueueView::new(window, cx));
         let focus_view = cx.new(FocusView::new);

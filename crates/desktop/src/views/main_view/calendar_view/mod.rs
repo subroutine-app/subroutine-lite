@@ -27,6 +27,7 @@ use subroutine_core::{Action, AnyItem, Event, ItemType, Marker, SchedulePoint, S
 mod borders;
 mod grid;
 mod inspector_list;
+mod marker_resize;
 mod markers;
 
 use inspector_list::{CalendarInspectorDelegate, CalendarInspectorEntry};
@@ -36,6 +37,7 @@ use crate::{
     components::{
         DragData, DraggedItems, DropZone, DynamicList, DynamicListEvent, DynamicListState,
         MarqueeSelection, MarqueeView, MonthSelect, MonthSelectEvent, MonthSelectState, marquee,
+        panel_group::PanelGroupState,
     },
     dates::InclusiveDateRange,
     item_manager::{DraftView, ItemManager},
@@ -354,7 +356,8 @@ pub struct CalendarView {
     items: Vec<AnyItem>,
 
     markers: Vec<Marker>,
-    marker_lanes: HashMap<uuid::Uuid, usize>,
+    marker_lanes: markers::MarkerLanes,
+    marker_resize: Option<marker_resize::MarkerResize>,
     signals: Vec<Signal>,
     current_date: NaiveDate,
     current_weekday: u32,
@@ -366,8 +369,10 @@ pub struct CalendarView {
     scroll_offset: Pixels,
 
     week_height: Pixels,
-    marker_min_week_height: Pixels,
+
     bounds: Option<Bounds<Pixels>>,
+    layout_state: Entity<PanelGroupState>,
+    day_button_layouts: HashMap<NaiveDate, Bounds<Pixels>>,
 
     month_selector_open: bool,
     month_select: Entity<MonthSelectState>,
@@ -397,7 +402,11 @@ pub struct CalendarView {
 }
 
 impl CalendarView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        layout_state: Entity<PanelGroupState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let now = Local::now();
 
         let refresh_interval = Duration::from_secs_f64(1.0 / REFRESH_RATE);
@@ -433,6 +442,7 @@ impl CalendarView {
         cx.observe_window_activation(window, |view, window, cx| {
             if !window.is_window_active() {
                 view.hovered_date = None;
+                view.cancel_marker_resize(cx);
                 view.deselect_dates(cx);
             }
         })
@@ -506,7 +516,8 @@ impl CalendarView {
             items: Vec::new(),
 
             markers: Vec::new(),
-            marker_lanes: HashMap::new(),
+            marker_lanes: markers::MarkerLanes::default(),
+            marker_resize: None,
             signals: Vec::new(),
             current_date: now.date_naive(),
             current_weekday: now.weekday().num_days_from_sunday(),
@@ -518,8 +529,10 @@ impl CalendarView {
             scroll_offset: px(0.),
 
             week_height: MAX_WEEK_HEIGHT,
-            marker_min_week_height: px(0.),
+
             bounds: None,
+            layout_state,
+            day_button_layouts: HashMap::new(),
 
             month_selector_open: false,
             month_select,
@@ -679,11 +692,11 @@ impl CalendarView {
             self.set_date_selection(range.start(), range.end());
         }
         self.sync_inspector_list(range, cx);
-        if let (Some(cell), Some(viewport)) = (self.day_bounds_for(anchor), self.bounds) {
-            self.inspector_expands_up = cell.origin.y + cell.size.height / 2.
+        if let (Some(button), Some(viewport)) = (self.day_button_bounds(anchor), self.bounds) {
+            self.inspector_expands_up = button.origin.y + button.size.height / 2.
                 > viewport.origin.y + viewport.size.height / 2.;
-            self.inspector_expands_left =
-                cell.origin.x + cell.size.width / 2. > viewport.origin.x + viewport.size.width / 2.;
+            self.inspector_expands_left = button.origin.x + button.size.width / 2.
+                > viewport.origin.x + viewport.size.width / 2.;
         }
         self.inspector_focus.focus(window, cx);
         cx.notify();
@@ -854,6 +867,10 @@ impl CalendarView {
     }
 
     fn retarget_edge_drag(&mut self, position: gpui::Point<Pixels>, cx: &mut Context<Self>) {
+        if self.marker_resize.is_some() {
+            self.update_marker_resize_at(position, cx);
+            return;
+        }
         let date = self.date_at_position(position);
         let mut changed = false;
 
@@ -907,9 +924,7 @@ impl CalendarView {
     }
 
     fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
-        let height = (bounds.size.width / 7. * 1.3)
-            .clamp(MIN_WEEK_HEIGHT, MAX_WEEK_HEIGHT)
-            .max(self.marker_min_week_height);
+        let height = (bounds.size.width / 7. * 1.3).clamp(MIN_WEEK_HEIGHT, MAX_WEEK_HEIGHT);
         if self.bounds.is_some_and(|previous| {
             height != self.week_height || previous.size.height != bounds.size.height
         }) {
@@ -922,24 +937,6 @@ impl CalendarView {
         }
         self.week_height = height;
         self.bounds = Some(bounds);
-    }
-
-    fn set_marker_min_week_height(&mut self, height: Pixels, cx: &mut Context<Self>) {
-        if self.marker_min_week_height == height {
-            return;
-        }
-        let target = self
-            .scroll_target
-            .map(|weeks| self.top_offset_weeks(self.week_height * weeks));
-        self.marker_min_week_height = height;
-        if let Some(bounds) = self.bounds {
-            self.set_bounds(bounds);
-            if let Some(anchor) = target {
-                let horizon = bounds.size.height / 2. + grid::EDGE_HORIZON;
-                let offset = self.visible_top() - horizon - self.week_height * anchor;
-                self.scroll_to_weeks(offset / self.week_height, cx);
-            }
-        }
     }
 
     fn day_width(&self) -> Pixels {
@@ -959,6 +956,23 @@ impl CalendarView {
             ),
             size: gpui::size(day_width, self.week_height),
         })
+    }
+
+    fn measure_day_button(&mut self, date: NaiveDate, bounds: Bounds<Pixels>) {
+        if let Some(cell) = self.day_bounds_for(date) {
+            self.day_button_layouts
+                .insert(date, Bounds::new(bounds.origin - cell.origin, bounds.size));
+        }
+    }
+
+    fn day_button_bounds(&self, date: NaiveDate) -> Option<Bounds<Pixels>> {
+        let cell = self.day_bounds_for(date)?;
+        let layout = self
+            .day_button_layouts
+            .get(&date)
+            // Keyboard/range opening may refer to a date outside the rendered rows.
+            .or_else(|| self.day_button_layouts.values().next())?;
+        Some(Bounds::new(cell.origin + layout.origin, layout.size))
     }
 
     fn clear_inspector_selection(&mut self, cx: &mut Context<Self>) {
@@ -1265,12 +1279,7 @@ impl CalendarView {
         cx.notify();
     }
 
-    fn reveal_grid_marker_edit(
-        &mut self,
-        content_top: Pixels,
-        resized: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn reveal_grid_marker_edit(&mut self, content_top: Pixels, cx: &mut Context<Self>) {
         let manager = ItemManager::global(cx);
         let marker =
             manager
@@ -1282,14 +1291,14 @@ impl CalendarView {
                     _ => None,
                 });
         let id = marker.map(|(id, _)| id);
-        if self.editing_marker_id == id && !resized {
+        if self.editing_marker_id == id {
             return;
         }
         self.editing_marker_id = id;
         let (Some((id, date)), Some(bounds)) = (marker, self.bounds) else {
             return;
         };
-        let lane = self.marker_lanes.get(&id).copied().unwrap_or(0);
+        let lane = self.marker_lanes.lane(id).unwrap_or(0);
         let current = self.scroll_target.unwrap_or_else(|| self.scroll_weeks());
         let top = self.week_to_offset(date.week(Weekday::Sun))
             + self.week_height * current
@@ -1732,10 +1741,10 @@ impl CalendarView {
         let inspector_list = self.inspector_list.read(cx);
         let inspector_order = inspector_list.delegate().order();
         let viewport = self.bounds?;
-        let cell = self.day_bounds_for(date)?;
+        let button = self.day_button_bounds(date)?;
         let available_width =
-            (viewport.size.width - DAY_INSPECTOR_VIEWPORT_INSET).max(cell.size.width);
-        let target_width = (cell.size.width * 2.5)
+            (viewport.size.width - DAY_INSPECTOR_VIEWPORT_INSET).max(button.size.width);
+        let target_width = (self.day_width() * 2.5)
             .max(DAY_INSPECTOR_MIN_WIDTH)
             .min(DAY_INSPECTOR_MAX_WIDTH)
             .min(available_width);
@@ -1747,7 +1756,7 @@ impl CalendarView {
         let visible_top = self.visible_top().min(viewport.size.height);
         let visible_height = (viewport.size.height - visible_top).max(px(0.));
         let available_height = (visible_height - DAY_INSPECTOR_VIEWPORT_INSET)
-            .max(cell.size.height)
+            .max(button.size.height)
             .min(visible_height);
         let target_height = desired_height
             .min(DAY_INSPECTOR_MAX_HEIGHT)
@@ -1760,21 +1769,21 @@ impl CalendarView {
         );
         transition.set(1.0, cx);
         let reveal = ease_in_out(transition.animate(window, cx));
-        let width = cell.size.width + (target_width - cell.size.width) * reveal;
-        let height =
-            (cell.size.height + (target_height - cell.size.height) * reveal).min(visible_height);
-        let cell_left = cell.origin.x - viewport.origin.x;
-        let cell_top = cell.origin.y - viewport.origin.y;
+        let width = button.size.width + (target_width - button.size.width) * reveal;
+        let height = (button.size.height + (target_height - button.size.height) * reveal)
+            .min(visible_height);
+        let button_left = button.origin.x - viewport.origin.x;
+        let button_top = button.origin.y - viewport.origin.y;
         let left = if self.inspector_expands_left {
-            cell_left + cell.size.width - width
+            button_left + button.size.width - width
         } else {
-            cell_left
+            button_left
         }
         .clamp(px(0.), (viewport.size.width - width).max(px(0.)));
         let top = if self.inspector_expands_up {
-            cell_top + cell.size.height - height
+            button_top + button.size.height - height
         } else {
-            cell_top
+            button_top
         }
         .clamp(
             visible_top,
@@ -2143,6 +2152,10 @@ impl MainViewTab for CalendarView {
     }
 
     fn dismissed(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.cancel_marker_resize(cx) {
+            cx.stop_active_drag(window);
+            return true;
+        }
         if self.inspector_date.is_some() {
             self.close_day_inspector(window, cx);
             return true;
@@ -2272,7 +2285,19 @@ impl CalendarView {
                 self.focus_handle.focus(window, cx);
             }
         }
-        let inspector = self.render_day_inspector(window, cx);
+        self.inspector_bounds = None;
+        let inspector_view = cx.entity();
+        let inspector = self.inspector_date.map(|_| {
+            container_query(move |_, window, cx| {
+                inspector_view.update(cx, |view, cx| {
+                    div()
+                        .size_full()
+                        .children(view.render_day_inspector(window, cx))
+                })
+            })
+            .absolute()
+            .inset_0()
+        });
         let calendar = div()
             .relative()
             .size_full()
@@ -2414,7 +2439,9 @@ impl Render for CalendarView {
                 view.move_date_selection(7, true, cx)
             }))
             .on_action(cx.listener(|view, _: &CloseOverlay, window, cx| {
-                if view.inspector_date.is_some() {
+                if view.cancel_marker_resize(cx) {
+                    cx.stop_active_drag(window);
+                } else if view.inspector_date.is_some() {
                     view.close_day_inspector(window, cx);
                 } else if view.clear_date_selection() {
                     cx.notify();
@@ -2434,6 +2461,7 @@ impl Render for CalendarView {
                     .overflow_hidden()
                     .child(calendar),
             )
+            .child(self.marker_resize_hook(cx))
             .child(
                 container_query(move |size, _, cx| {
                     if size.width <= px(0.) || size.height <= px(0.) {

@@ -153,7 +153,7 @@ impl TimelineView {
 
     fn open_bin(&mut self, bin: &TimelineBin, anchor: Uuid, cx: &mut Context<Self>) {
         let bounds = self.lane_bounds(bin.start, ChronoDuration::zero(), bin.lane);
-        let screen_top = bounds.top() + self.scroll_offset + self.center_relative().y;
+        let screen_top = self.geometry.y(bounds.top());
         let viewport = self
             .bounds
             .map_or(size(px(800.), px(800.)), |bounds| bounds.size);
@@ -229,7 +229,7 @@ impl TimelineView {
         {
             expanded.scroll.scroll_to_item(index);
         }
-        let top = self.time_to_offset(bin.start) + self.scroll_offset + self.center_relative().y;
+        let top = self.geometry.y(self.time_to_offset(bin.start));
         if self.bounds.is_some_and(|bounds| {
             top + HEADER_HEIGHT <= TOP_EDGE_INSET || top >= bounds.size.height
         }) {
@@ -295,8 +295,7 @@ impl TimelineView {
                 self.pending_item_focus = Some(id);
             }
             if let Some(start) = start {
-                let top =
-                    self.time_to_offset(start) + self.scroll_offset + self.center_relative().y;
+                let top = self.geometry.y(self.time_to_offset(start));
                 if self.bounds.is_some_and(|bounds| {
                     top < TOP_EDGE_INSET || top + HEADER_HEIGHT > bounds.size.height
                 }) {
@@ -379,7 +378,7 @@ impl TimelineView {
             || self.bin_focus_handles[&bin.key].clone(),
             |bin| bin.focus.clone(),
         );
-        let scroll_y = self.scroll_offset + self.center_relative().y;
+
         let collapsed = self.lane_bounds(bin.start, ChronoDuration::zero(), bin.lane);
         let mut target = collapsed;
         if let Some(expanded) = expanded {
@@ -391,17 +390,25 @@ impl TimelineView {
                         .height(self.items[*index].item.id(), SIDEBAR_ITEM_HEIGHT)
                 })
                 .sum::<Pixels>();
+            let mut screen_bounds = collapsed;
+            screen_bounds.origin.y = self.geometry.y(collapsed.top());
             target = expanded_bounds(
-                collapsed + point(px(0.), scroll_y),
+                screen_bounds,
                 self.bounds
                     .map_or(size(px(800.), px(800.)), |bounds| bounds.size),
                 content_height,
                 expanded.expands_left,
                 expanded.expands_up,
-            ) - point(px(0.), scroll_y);
+            );
+            target.origin.y = self.geometry.offset_at_y(target.top());
         }
-        let bounds = self.transition_bounds(SlotKind::Bin, bin.key, target, false, window, cx)
-            + point(px(0.), scroll_y);
+        let kind = if open {
+            SlotKind::ExpandedBin
+        } else {
+            SlotKind::Bin
+        };
+        let mut bounds = self.transition_bounds(kind, bin.key, target, false, window, cx);
+        bounds.origin.y = self.geometry.y(bounds.top());
         let accent = cx.theme().colors.focus;
         let muted = cx.theme().colors.text_muted;
         let hairline = cx.theme().colors.hairline;

@@ -430,7 +430,7 @@ impl UpcomingView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let expanded = self.sections.is_expanded(UpcomingSection::Day(date));
+        let inline_add = self.sections.add_in_header(&self.agenda, date);
         let header = &self.headers.days[&date];
         let marker_rows: Vec<_> = header
             .marker_rows
@@ -491,14 +491,14 @@ impl UpcomingView {
                 div()
                     .row()
                     .flex_none()
-                    .when(!expanded, |slot| slot.w(self.headers.side_width))
+                    .when(inline_add, |slot| slot.w(self.headers.side_width))
                     .child(self.section_label(
                         UpcomingSection::Day(date),
                         header.label.clone(),
                         cx,
                     )),
             )
-            .when(!expanded, |row| {
+            .when(inline_add, |row| {
                 row.child(self.add_button(date, true, window, cx).h(MARKER_HEIGHT))
             })
             .child(

@@ -770,7 +770,7 @@ impl TimelineView {
         let Some(bounds) = self.bounds else {
             return Vec::new();
         };
-        let scroll_y = self.scroll_offset + self.center_relative().y;
+
         let color = cx.theme().colors.hairline_strong;
         let neutral = cx.theme().colors.text_muted;
         let tick_left = ATTACHED_ITEM_LEFT;
@@ -789,13 +789,16 @@ impl TimelineView {
                 width: chip_width,
                 detail,
             } = layout;
-            let y = anchor + scroll_y;
-            let top = top + scroll_y;
+            let card_center = self.geometry.y(top + chip_height / 2.);
+            let connector_top = self.geometry.y(top + (chip_height - LINE_STROKE) / 2.);
+            let tick_top = self.geometry.y(anchor - LINE_STROKE / 2.);
+            let y = self.geometry.y(anchor);
+            let top = self.geometry.y(top);
             let card_visible = signal_is_on_screen(top, chip_height, bounds.size.height);
             if !card_visible && !signal_is_on_screen(y, LINE_STROKE, bounds.size.height) {
                 continue;
             }
-            let card_center = top + chip_height / 2.;
+
             let item = AnyItem::Signal(signal.clone());
             let (line_opacity, card_opacity, compact_opacity) =
                 annotation_opacities(detail, is_projection);
@@ -804,7 +807,7 @@ impl TimelineView {
                 div()
                     .row()
                     .absolute()
-                    .top(y - LINE_STROKE / 2.)
+                    .top(tick_top)
                     .left(tick_left)
                     .w((connector_left - tick_left).max(px(0.)))
                     .h(LINE_STROKE)
@@ -832,7 +835,7 @@ impl TimelineView {
                 div()
                     .absolute()
                     .left(connector_left)
-                    .top(card_center - LINE_STROKE / 2.)
+                    .top(connector_top)
                     .w(ANNOTATION_CHIP_GAP)
                     .h(LINE_STROKE)
                     .bg(color)

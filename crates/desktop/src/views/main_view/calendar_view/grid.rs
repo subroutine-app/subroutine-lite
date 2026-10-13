@@ -9,13 +9,14 @@ use gpui::{
 };
 use gpui_kit::foundation::StyledExt as _;
 use gpui_kit_theme::ActiveTheme;
-use subroutine_core::{AnyItem, SchedulePoint};
+use subroutine_core::{AnyItem, Marker, SchedulePoint};
 
 use crate::{
     AppIcon,
     color::ColorExt,
     components::{
         Button, ButtonVariants, DragData, Draggable, DraggedItems, Label, create_drag_data,
+        ext::ElementExt as _,
         item_context_menu, item_icon,
         transition::{self, WindowTransitionExt as _},
     },
@@ -29,10 +30,10 @@ use crate::{
 
 use super::super::{format_item_time, is_calendar_item_on};
 use super::{
-    CalendarView, GridCreation, MAX_WEEK_HEIGHT, MIN_WEEK_HEIGHT,
+    CalendarView, GridCreation,
     borders::GridBorders,
     date_context_menu, date_range_context_menu,
-    markers::{MARKER_PITCH, MarkerLayout, marker_preview},
+    markers::{MarkerLayout, marker_capacity, marker_content_height, marker_preview},
 };
 
 pub(super) const EDGE_HORIZON: Pixels = px(200.);
@@ -385,6 +386,7 @@ impl CalendarView {
         &self,
         date: NaiveDate,
         visible: bool,
+        hidden_markers: Vec<Marker>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let row = div()
@@ -395,8 +397,12 @@ impl CalendarView {
             .items_center()
             .justify_center();
 
-        row.children(visible.then(|| self.render_grid_create_button(date, cx)))
-            .into_any_element()
+        let button = if hidden_markers.is_empty() {
+            visible.then(|| self.render_grid_create_button(date, cx))
+        } else {
+            Some(self.render_marker_overflow(date, hidden_markers, cx))
+        };
+        row.children(button).into_any_element()
     }
 
     fn render_grid_create_button(&self, date: NaiveDate, cx: &Context<Self>) -> Button {
@@ -431,6 +437,7 @@ impl CalendarView {
     }
 
     pub fn render_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.validate_marker_resize(cx);
         self.apply_scroll_transition(window, cx);
         self.apply_edge_scroll(window, cx);
         self.sync_month_in_view(cx);
@@ -439,45 +446,7 @@ impl CalendarView {
         let day_width = self.day_width();
         let narrow = day_width < px(60.);
         let horizon = bounds.size.height / 2. + EDGE_HORIZON;
-        let base_height = (day_width * 1.3).clamp(MIN_WEEK_HEIGHT, MAX_WEEK_HEIGHT);
-        let candidate_row = (self.top_offset_weeks(self.scroll_offset)
-            - self.visible_top() / base_height)
-            .floor() as i64;
-        let candidate_start = self.week_at_row(candidate_row).first_day();
-        let candidate_weeks = ((horizon * 2. / base_height).ceil() as usize + 2).min(100);
-        let candidate_end = candidate_start + chrono::Duration::weeks(candidate_weeks as i64);
-        let manager = ItemManager::global(cx);
-        let draft = match manager.read(cx).view_draft(DraftView::Calendar) {
-            Some(AnyItem::Marker(marker)) => Some(marker.clone()),
-            _ => None,
-        };
-        let marker_entries = self
-            .stored_markers()
-            .cloned()
-            .map(|marker| (marker, false))
-            .chain(
-                self.projected_markers(candidate_start, candidate_end)
-                    .into_iter()
-                    .map(|marker| (marker, true)),
-            )
-            .chain(draft.into_iter().map(|marker| (marker, false)))
-            .map(|(marker, projected)| (marker_preview(marker, cx), projected))
-            .collect::<Vec<_>>();
-        let markers = MarkerLayout::new(marker_entries, &mut self.marker_lanes);
-        let content_top = window.line_height() + px(10.) + px(cx.theme().effects.focus_ring_width);
-        let lanes = markers.lanes_between(candidate_start, candidate_end);
-        let marker_min_height = if lanes == 0 {
-            px(0.)
-        } else {
-            content_top
-                + MARKER_PITCH * lanes as f32
-                + px(22.)
-                + CREATE_ROW_HEIGHT
-                + px(cx.theme().effects.focus_ring_width + 4.)
-        };
-        let previous_height = self.week_height;
-        self.set_marker_min_week_height(marker_min_height, cx);
-        self.reveal_grid_marker_edit(content_top, self.week_height != previous_height, cx);
+
         let scroll_position = self.scroll_offset * -1.;
         let start = scroll_position - horizon;
         let end = scroll_position + horizon;
@@ -492,6 +461,56 @@ impl CalendarView {
 
         let range_start = start_week.first_day();
         let range_end = range_start + chrono::Duration::weeks(num_weeks as i64);
+        self.day_button_layouts
+            .retain(|date, _| range_start <= *date && *date < range_end);
+        let content_top = window.line_height() + px(10.) + px(cx.theme().effects.focus_ring_width);
+        let preview_height = interval
+            - window.line_height()
+            - px(11.)
+            - px(cx.theme().effects.focus_ring_width * 2.)
+            - CREATE_ROW_HEIGHT;
+        let marker_limit = marker_capacity(preview_height);
+        let manager = ItemManager::global(cx);
+        let draft = match manager.read(cx).view_draft(DraftView::Calendar) {
+            Some(AnyItem::Marker(marker)) => Some(marker.clone()),
+            _ => None,
+        };
+        let preferred =
+            self.marker_resize
+                .as_ref()
+                .map(|resize| resize.item_id)
+                .or_else(|| {
+                    manager.read(cx).editing_item.as_ref().and_then(|editing| {
+                        match &editing.original {
+                            crate::item_subject::ItemSubject::Live(AnyItem::Marker(marker)) => {
+                                Some(marker.id)
+                            }
+                            _ => None,
+                        }
+                    })
+                });
+        let marker_entries = self
+            .stored_markers()
+            .cloned()
+            .map(|marker| (self.resizing_marker(marker), false))
+            .chain(
+                self.projected_markers(range_start, range_end)
+                    .into_iter()
+                    .map(|marker| (marker, true)),
+            )
+            .chain(draft.into_iter().map(|marker| (marker, false)))
+            .map(|(marker, projected)| (marker_preview(marker, cx), projected))
+            .collect::<Vec<_>>();
+        let mut markers = MarkerLayout::new(marker_entries, &mut self.marker_lanes);
+        if let Some(id) = preferred
+            && self
+                .marker_lanes
+                .lane(id)
+                .is_some_and(|lane| lane >= marker_limit)
+        {
+            markers.promote(id, &mut self.marker_lanes);
+        }
+        self.reveal_grid_marker_edit(content_top, cx);
         let marker_order = markers.order(range_start, range_end, cx);
 
         let projected_items = self.projected_items(range_start, range_end);
@@ -523,16 +542,12 @@ impl CalendarView {
             && AppDatabaseStore::global(cx).read(cx).workspace_content() == WorkspaceContent::Ready
             && !manager.read(cx).is_editing()
             && !self.item_drag_active
+            && self.marker_resize.is_none()
             && !cx.has_active_drag()
             && self.date_range_drag.is_none()
             && !self.marquee.is_active()
             && self.inspector_date.is_none()
             && !self.month_selector_open;
-        let preview_height = interval
-            - window.line_height()
-            - px(11.)
-            - px(cx.theme().effects.focus_ring_width * 2.)
-            - CREATE_ROW_HEIGHT;
 
         let empty_create_inset =
             (interval * 0.45 - content_top - CREATE_ROW_HEIGHT / 2.).max(px(0.));
@@ -580,7 +595,8 @@ impl CalendarView {
                         let selected = selected_range.is_some_and(|range| range.contains(date));
                         let drop_active = self.drop_target == Some(date);
                         let id: ElementId = format!("calendar-{}", date.format("%Y-%m-%d")).into();
-                        let marker_height = MARKER_PITCH * markers.lanes_on(date) as f32;
+                        let marker_height =
+                            marker_content_height(markers.visible_lanes_on(date, marker_limit));
                         let preview_rows =
                             ((preview_height - marker_height) / px(22.)).floor().max(0.) as usize;
                         let entries: Vec<(AnyItem, bool)> = self
@@ -637,7 +653,12 @@ impl CalendarView {
                             && selected_range
                                 .filter(|range| range.day_count() > 1)
                                 .is_none_or(|range| range.contains(date));
-                        let create_row = self.render_grid_create(date, show_create, cx);
+                        let create_row = self.render_grid_create(
+                            date,
+                            show_create,
+                            markers.hidden_on(date, marker_limit),
+                            cx,
+                        );
                         let theme = cx.theme();
                         let mut bg_color = theme.colors.canvas.alpha(0.0);
                         let tint = month_tints[&date.with_day(1).unwrap()];
@@ -805,11 +826,21 @@ impl CalendarView {
                                         .ghost()
                                         .compact()
                                         .h_auto()
+                                        .w_full()
                                         .p_0()
+                                        .justify_end()
                                         .min_w_0()
                                         .max_w_full()
-                                        .rounded_full()
+                                        .rounded_md()
                                         .child(date_label)
+                                        .on_prepaint({
+                                            let entity = entity.clone();
+                                            move |bounds, _, cx| {
+                                                entity.update(cx, |view, _| {
+                                                    view.measure_day_button(date, bounds)
+                                                });
+                                            }
+                                        })
                                         .role(gpui::Role::Button)
                                         .aria_label(format!(
                                             "Open {}",
@@ -856,7 +887,7 @@ impl CalendarView {
                                             .min_h_0()
                                             .flex_shrink_1()
                                             .overflow_hidden()
-                                            .when(has_entries, |this| {
+                                            .when(has_entries && preview_rows > 0, |this| {
                                                 this.child(
                                                     Button::new((
                                                         "calendar-entries",
@@ -958,13 +989,19 @@ impl CalendarView {
                             )
                     }))
             }))
-            .child(borders.render(first_row_top, interval, cx))
+            .child(borders.render(
+                first_row_top,
+                interval,
+                self.layout_state.read(cx).left_panel_right(),
+                cx,
+            ))
             .children((0..num_weeks).flat_map(|row| {
                 let week = range_start + chrono::Duration::weeks(row as i64);
                 let top = first_row_top + interval * row as f32 + content_top;
                 markers
                     .week(week)
                     .into_iter()
+                    .filter(|span| span.is_visible(marker_limit))
                     .map(|span| {
                         self.render_marker_span(span, &marker_order, top, day_width, window, cx)
                     })

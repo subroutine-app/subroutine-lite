@@ -2,19 +2,19 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use gpui::{
     AnyElement, App, Context, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MousePressureEvent, ParentElement, Pixels, Styled, WeakEntity, Window, div,
+    MouseDownEvent, MousePressureEvent, Pixels, Styled, WeakEntity, Window,
     prelude::FluentBuilder as _,
 };
-use gpui_kit_theme::ActiveTheme;
+use gpui_kit::foundation::Disableable as _;
 use subroutine_core::AnyItem;
 use uuid::Uuid;
 
 use crate::{
     components::{
-        DynamicListCardStates, DynamicListDelegate, DynamicListState, ItemCard, Label,
-        SIDEBAR_ITEM_HEIGHT,
+        DynamicListCardStates, DynamicListDelegate, DynamicListState, ItemCard, SIDEBAR_ITEM_HEIGHT,
     },
-    selection::SelectionOrder,
+    selection::{SelectionManager, SelectionOrder},
+    stores::{AppDatabaseStore, WorkspaceContent},
 };
 
 use super::CalendarView;
@@ -212,17 +212,21 @@ impl DynamicListDelegate for CalendarInspectorDelegate {
         _window: &mut Window,
         cx: &mut Context<DynamicListState<Self>>,
     ) -> impl IntoElement {
-        div()
-            .flex()
-            .size_full()
-            .rounded_xl()
-            .bg(cx.theme().colors.raised)
-            .items_center()
-            .justify_center()
-            .child(
-                Label::new("No items on these dates")
-                    .text_sm()
-                    .text_color(cx.theme().colors.text_muted),
-            )
+        let view = self.view.clone();
+        let ready =
+            AppDatabaseStore::global(cx).read(cx).workspace_content() == WorkspaceContent::Ready;
+        ItemCard::create_slot("calendar-inspector-create", "New event or action", cx)
+            .h(SIDEBAR_ITEM_HEIGHT)
+            .tooltip("New item")
+            .disabled(!ready)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                SelectionManager::claim_press(cx);
+                cx.stop_propagation();
+            })
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = view.update(cx, |view, cx| view.begin_inspector_draft(window, cx));
+            })
     }
 }

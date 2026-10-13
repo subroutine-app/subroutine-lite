@@ -31,6 +31,7 @@ pub struct PanelGroupState {
     bounds: Bounds<Pixels>,
     prev_container_width: Pixels,
     pub animated_left_px: Pixels,
+    left_panel_right: Option<Pixels>,
     left_content_px: Pixels,
     left_animation_seed: Option<Pixels>,
 }
@@ -98,6 +99,10 @@ impl PanelGroupState {
 
     pub fn left_open_width(&self) -> Pixels {
         self.widths(0.25).left_content
+    }
+
+    pub fn left_panel_right(&self) -> Option<Pixels> {
+        self.left_panel_right
     }
 
     pub fn animate_left_from(&mut self, width: Pixels) {
@@ -325,6 +330,15 @@ impl RenderOnce for PanelGroup {
                     .h_full()
                     .min_w_0()
                     .overflow_hidden()
+                    .on_prepaint({
+                        let state = state.clone();
+                        move |bounds, _, cx| {
+                            // Publish GPUI's snapped boundary before rendering the center content.
+                            state.update(cx, |state, _| {
+                                state.left_panel_right = left_visible.then_some(bounds.left());
+                            });
+                        }
+                    })
                     .child(center),
             )
             .into_any_element();
