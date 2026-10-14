@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::settings::{AppearancePreference, Settings};
 
+mod validation;
+
+pub(crate) use validation::FILL_TEXT_MINIMUM;
+
 const STATE_FILE: &str = "theme-state.json";
 
 fn state_path() -> Option<PathBuf> {
@@ -308,7 +312,7 @@ fn register_theme_json(json: &str, source: &str, catalog: &mut ThemeCatalog, cx:
         .as_ref()
         .and_then(read_meta);
     let registered = ThemeRegistry::update_global(cx, |registry, _| {
-        TokenDocument::parse(json).map(|tokens| registry.register(platform_theme(tokens)))
+        validation::parse(json).map(|tokens| registry.register(platform_theme(tokens)))
     });
 
     match (registered, meta) {

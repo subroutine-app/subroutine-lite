@@ -260,8 +260,9 @@
         "stable": "#98AB83",
         "critical": "#D98493",
         "currentTime": "#DC3540",
-        "primaryFill": "#C0524E",
-        "onPrimaryFill": "#FFFFFC"
+        "onCurrentTime": "#080607",
+        "primaryFill": "#C65B57",
+        "onPrimaryFill": "#080607"
       },
       "recognition": {
         "fill": "#88ABAC47",
@@ -320,10 +321,10 @@
       "hover": "#DEDCDA12",
       "active": "{brandUi.brick}/24",
       "selected": "{brandUi.brick}/2E",
-      "hairline": "#746D6AA0",
+      "hairline": "{neutral.900}/14",
       "hairlineStrong": "#C8C0BE88",
       "track": "#C8C0BE88",
-      "divider": "#746D6A80",
+      "divider": "{neutral.900}/10",
             "choiceIndicator": "{neutral.700}",
       "controlHairline": "#C8C0BE24",
       "controlHighlight": "#FFFFFC14",

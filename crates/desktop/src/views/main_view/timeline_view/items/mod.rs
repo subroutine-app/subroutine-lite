@@ -16,6 +16,8 @@ mod drop;
 mod edit;
 mod force_create;
 mod layout;
+mod marker_panel;
+mod markers;
 mod resize;
 
 pub(super) use annotations::*;
@@ -24,6 +26,8 @@ pub(super) use details::DetailsAnchor;
 pub(super) use drop::*;
 pub(super) use force_create::*;
 pub(super) use layout::*;
+pub(super) use marker_panel::MarkerPanel;
+
 pub(super) use resize::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

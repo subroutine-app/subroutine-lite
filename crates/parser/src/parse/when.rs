@@ -24,6 +24,7 @@ pub(super) fn try_nl_when(
     now: DateTime<Utc>,
     today: NaiveDate,
     granularity: Duration,
+    default_date: Option<NaiveDate>,
 ) -> Result<Option<(WhenSpec, usize)>, ParseError> {
     if kind.is_template() {
         return Ok(None);
@@ -33,8 +34,7 @@ pub(super) fn try_nl_when(
     };
     let lower = token.text.to_ascii_lowercase();
 
-    if matches!(token.token, Token::Time12 | Token::Time24)
-        && let Some((time, time_len)) = try_time_token(tokens, i)
+    if let Some((time, time_len)) = try_nl_time(tokens, i)
         && let Some((date, date_len)) = try_date_anchor(tokens, i + time_len, today)?
     {
         return Ok(Some((
@@ -43,36 +43,25 @@ pub(super) fn try_nl_when(
         )));
     }
 
-    if let Some((amount, unit, len)) = try_relative_amount(tokens, i)? {
-        let spec = match unit.as_str() {
-            "hour" | "hours" | "hr" | "hrs" | "minute" | "minutes" | "min" | "mins" => {
-                let amount = i64::try_from(amount).map_err(|_| {
-                    ParseError::date(&token.text, "relative offset is out of range")
-                })?;
-                let duration = if matches!(unit.as_str(), "hour" | "hours" | "hr" | "hrs") {
-                    Duration::try_hours(amount)
-                } else {
-                    Duration::try_minutes(amount)
-                };
-                let datetime = duration
-                    .and_then(|duration| now.checked_add_signed(duration))
-                    .ok_or_else(|| {
-                        ParseError::date(&token.text, "resulting date and time is out of range")
-                    })?;
-                WhenSpec::DateTime(datetime)
-            }
-            _ => {
-                let days = if matches!(unit.as_str(), "week" | "weeks") {
-                    amount.checked_mul(7).ok_or_else(|| {
-                        ParseError::date(&token.text, "week offset is out of range")
-                    })?
-                } else {
-                    amount
-                };
-                date_spec(&kind, add_days(today, days)?)?
-            }
+    if let Some((amount, unit, len)) = try_relative_amount(tokens, i)?
+        && matches!(
+            unit.as_str(),
+            "hour" | "hours" | "hr" | "hrs" | "minute" | "minutes" | "min" | "mins"
+        )
+    {
+        let amount = i64::try_from(amount)
+            .map_err(|_| ParseError::date(&token.text, "relative offset is out of range"))?;
+        let duration = if matches!(unit.as_str(), "hour" | "hours" | "hr" | "hrs") {
+            Duration::try_hours(amount)
+        } else {
+            Duration::try_minutes(amount)
         };
-        return Ok(Some((spec, len)));
+        let datetime = duration
+            .and_then(|duration| now.checked_add_signed(duration))
+            .ok_or_else(|| {
+                ParseError::date(&token.text, "resulting date and time is out of range")
+            })?;
+        return Ok(Some((WhenSpec::DateTime(datetime), len)));
     }
 
     if lower == "this"
@@ -104,7 +93,10 @@ pub(super) fn try_nl_when(
     }
 
     if let Some((time, len)) = try_nl_time(tokens, i) {
-        return Ok(Some((WhenSpec::DateTime(date_at(today, time)?), len)));
+        return Ok(Some((
+            WhenSpec::DateTime(date_at(default_date.unwrap_or(today), time)?),
+            len,
+        )));
     }
 
     if token.token == Token::Rfc3339 {
@@ -121,23 +113,14 @@ pub(super) fn try_nl_when(
     );
     if let Some((date, len)) = try_date_anchor(tokens, i + intro, today)? {
         let len = len + intro;
-        if let Some((time, extra)) = try_time_suffix(tokens, i + len) {
+        if let Some((time, extra)) = try_nl_time(tokens, i + len) {
             return Ok(Some((
                 WhenSpec::DateTime(date_at(date, time)?),
                 len + extra,
             )));
         }
-        return Ok(Some((date_spec(&kind, date)?, len)));
+        return Ok(Some((WhenSpec::NaiveDate(date), len)));
     }
 
     Ok(None)
-}
-
-fn date_spec(kind: &EntityKind, date: NaiveDate) -> Result<WhenSpec, ParseError> {
-    match kind {
-        EntityKind::Event | EntityKind::Signal => {
-            Ok(WhenSpec::DateTime(date_at(date, default_time())?))
-        }
-        _ => Ok(WhenSpec::NaiveDate(date)),
-    }
 }

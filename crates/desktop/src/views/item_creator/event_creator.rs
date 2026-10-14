@@ -23,10 +23,13 @@ impl ItemCreator {
     pub(super) fn event_summary(&self) -> String {
         let schedule = &self.draft.schedule;
         let (Some(date), Some(start)) = (schedule.date, schedule.time) else {
-            return schedule.date.map(format_date).unwrap_or_default();
+            return match schedule.date {
+                Some(date) => format!("{} · Time required", format_date(date)),
+                None => "Date and time required".into(),
+            };
         };
 
-        let mut summary = match self.draft.duration {
+        let mut summary = match self.draft.duration_for(self.mode) {
             Some(duration) => format!(
                 "{}, {} – {} ({})",
                 format_date(date),

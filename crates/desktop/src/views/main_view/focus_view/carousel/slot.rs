@@ -1,4 +1,3 @@
-use chrono::Utc;
 use gpui::{
     AnyElement, Context, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
@@ -6,7 +5,7 @@ use gpui::{
 use gpui_kit::{foundation::StyledExt as _, overlay::Tooltip};
 use gpui_kit_semantics::{NodeSpec, Role, Semantic as _};
 use gpui_kit_theme::ActiveTheme as _;
-use subroutine_core::{Action, AnyItem, Event};
+use subroutine_core::{Action, AnyItem};
 
 use crate::{
     AppIcon,
@@ -78,19 +77,18 @@ impl FocusView {
         if manager.read(cx).is_editing() {
             return;
         }
-        let item = match self.mode {
-            FocusMode::Action => AnyItem::Action(Action::new("").with_queued(true)),
-            FocusMode::Event => {
-                AnyItem::Event(Event::new("", Utc::now(), chrono::Duration::hours(1)))
-            }
-        };
+
         SelectionManager::clear_global(cx);
         self.reset_wheel();
         self.carousel_overscroll.reset();
         self.restore_focus = false;
         self.focus_handle.focus(window, cx);
-        manager.update(cx, |manager, cx| {
-            manager.begin_view_draft(&item, DraftView::Focus, None, window, cx);
+        manager.update(cx, |manager, cx| match self.mode {
+            FocusMode::Action => {
+                let item = AnyItem::Action(Action::new("").with_queued(true));
+                manager.begin_view_draft(&item, DraftView::Focus, None, window, cx);
+            }
+            FocusMode::Event => manager.begin_event_draft(None, DraftView::Focus, window, cx),
         });
         self.inline_card_id = manager
             .read(cx)

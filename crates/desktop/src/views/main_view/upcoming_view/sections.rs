@@ -224,7 +224,7 @@ mod tests {
                     .with_start(Some(SchedulePoint::Date(date))),
             )
         });
-        let agenda = Agenda::build_revealing(&items, &[], &[], &[], today, &BTreeSet::new());
+        let agenda = Agenda::build_revealing(&items, &[], &[], &[], today, &BTreeSet::new(), true);
         let day = UpcomingSection::Day(today);
         let next_day = UpcomingSection::Day(tomorrow);
         let mut sections = UpcomingSections::default();
@@ -259,6 +259,7 @@ mod tests {
                 &[],
                 today,
                 &BTreeSet::new(),
+                true,
             )
         };
         let mut sections = UpcomingSections::default();

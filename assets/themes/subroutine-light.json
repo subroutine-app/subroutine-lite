@@ -260,6 +260,7 @@
         "stable": "#536342",
         "critical": "#A4031F",
         "currentTime": "#CE2738",
+        "onCurrentTime": "#FFFFFC",
         "primaryFill": "#B0413E",
         "onPrimaryFill": "#FFFFFC"
       },
@@ -313,17 +314,17 @@
       "faint": "#656062",
       "placeholder": "#77716E",
       "disabled": "#88817E",
-      "onAccent": "#FFFFFC",
+      "onAccent": "{brandUi.onPrimaryFill}",
       "onPrimaryFill": "{brandUi.onPrimaryFill}"
     },
     "interactive": {
       "hover": "{brand.charcoal}/0F",
       "active": "{brand.brick}/1C",
       "selected": "{brand.brick}/20",
-      "hairline": "#BDB7B570",
+      "hairline": "{brand.charcoal}/1A",
       "hairlineStrong": "#514E4FA8",
       "track": "#514E4FA8",
-      "divider": "#BDB7B570",
+      "divider": "{brand.charcoal}/14",
             "choiceIndicator": "{neutral.700}",
       "controlHairline": "#514E4F24",
       "controlHighlight": "#FFFFFCCC",

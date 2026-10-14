@@ -50,7 +50,7 @@ impl ItemCreator {
 
     pub(super) fn marker_summary(&self) -> String {
         let Some(date) = self.draft.schedule.date else {
-            return String::new();
+            return "Date required".into();
         };
 
         let mut summary = match self.draft.marker_end_date() {

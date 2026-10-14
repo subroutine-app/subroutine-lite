@@ -327,7 +327,14 @@ impl ItemCard {
         let leading = draft_picker
             .or_else(|| self.completion_checkbox(cx))
             .unwrap_or_else(|| {
-                let icon = item_icon(self.item.item_type()).text_color(colors.fg);
+                let manager = ItemManager::global(cx);
+                let item_type = manager
+                    .read(cx)
+                    .editing_item
+                    .as_ref()
+                    .filter(|editing| editing.id() == self.item.id())
+                    .map_or_else(|| self.item.item_type(), |editing| editing.item_type());
+                let icon = item_icon(item_type).text_color(colors.fg);
                 match self.title_scale {
                     ItemCardTitleScale::Small | ItemCardTitleScale::Standard => icon.size_4(),
                     ItemCardTitleScale::Large => icon.size_5(),

@@ -324,9 +324,6 @@ impl RootView {
                 self.navigation_drawer != NavigationDrawer::Compact,
                 |button| button.current(active == id),
             )
-            .when(active == id, |button| {
-                button.font_weight(gpui::FontWeight::SEMIBOLD)
-            })
             .when(is_scheduler(view), |button| {
                 let measured = root.downgrade();
                 button
@@ -403,9 +400,6 @@ impl RootView {
                     && self.navigation_drawer != NavigationDrawer::Compact,
                 |button| button.current(active == id),
             )
-            .when(active == id, |button| {
-                button.font_weight(gpui::FontWeight::SEMIBOLD)
-            })
             .when_some(LibraryDropTarget::from_id(id), |button, target| {
                 button
                     .tooltip(target.drop_hint())

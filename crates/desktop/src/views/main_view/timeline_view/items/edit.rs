@@ -6,7 +6,7 @@ use gpui::{App, Context, FocusHandle, Pixels, Window, px};
 use subroutine_core::{Action, AnyItem, Event, Marker, SchedulePoint, Signal};
 use uuid::Uuid;
 
-use crate::item_manager::{DraftView, ItemManager, next_batch_draft};
+use crate::item_manager::{DraftDuration, DraftView, ItemManager, next_batch_draft};
 use crate::selection::{
     CompletionFocus, SelectionManager, SelectionOrder, SelectionScope, focus_item,
     focus_item_extending,
@@ -82,7 +82,13 @@ impl TimelineView {
     ) -> Uuid {
         let action = draft_action(time, duration);
         let id = action.id;
-        self.edit_draft(AnyItem::Action(action), None, window, cx);
+        self.edit_draft(
+            AnyItem::Action(action),
+            None,
+            DraftDuration::Explicit,
+            window,
+            cx,
+        );
         id
     }
 
@@ -106,7 +112,14 @@ impl TimelineView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.add_draft_event_with_duration(time, chrono::Duration::minutes(60), window, cx);
+        let event = Event::new("", time.with_timezone(&Utc), chrono::Duration::hours(1));
+        self.edit_draft(
+            AnyItem::Event(event),
+            None,
+            DraftDuration::Suggested,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn add_draft_event_with_duration(
@@ -118,13 +131,20 @@ impl TimelineView {
     ) {
         let time_utc = time.with_timezone(&chrono::Utc);
         let event = Event::new("", time_utc, duration);
-        self.edit_draft(AnyItem::Event(event), None, window, cx);
+        self.edit_draft(
+            AnyItem::Event(event),
+            None,
+            DraftDuration::Explicit,
+            window,
+            cx,
+        );
     }
 
     fn edit_draft(
         &mut self,
         item: AnyItem,
         cursor: Option<DateTime<Utc>>,
+        duration: DraftDuration,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -141,7 +161,14 @@ impl TimelineView {
             .sort_by_key(|entry| entry.item.start().map(|start| start.timestamp()));
         self.focus_handle.focus(window, cx);
         manager.update(cx, |manager, cx| {
-            manager.begin_view_draft(&item, DraftView::Timeline, cursor, window, cx);
+            manager.begin_view_draft_with_duration(
+                &item,
+                DraftView::Timeline,
+                cursor,
+                duration,
+                window,
+                cx,
+            );
         });
         cx.notify();
     }
@@ -181,7 +208,7 @@ impl TimelineView {
             return;
         };
         self.scroll_to(start, cx);
-        self.edit_draft(draft, cursor, window, cx);
+        self.edit_draft(draft, cursor, DraftDuration::Suggested, window, cx);
     }
 
     pub(crate) fn add_draft_marker(
@@ -192,11 +219,18 @@ impl TimelineView {
     ) {
         let marker = Marker::new("", time.date_naive());
         let any_item = AnyItem::Marker(marker.clone());
-        self.marker_panel_draft = Some(marker.id);
-        self.marker_panel_scroll
-            .set_offset(gpui::point(px(0.), px(0.)));
+        if !self.open_marker_panel(
+            vec![(marker.clone(), false)],
+            self.marker_anchor(time),
+            window,
+            cx,
+        ) {
+            return;
+        }
+        if let Some(panel) = &mut self.marker_panel {
+            panel.draft = Some(marker.id);
+        }
         self.draft_markers.push(marker);
-        self.marker_panel_date = Some(time.date_naive());
         self.invalidate_annotations();
         ItemManager::global(cx).update(cx, |h, cx| {
             h.begin_edit(&any_item, true, window, cx);

@@ -39,8 +39,7 @@ impl Schedule {
     }
 
     pub fn datetime(&self) -> Option<DateTime<Utc>> {
-        let date = self.date?;
-        to_utc(date, self.time.unwrap_or(MIDNIGHT))
+        to_utc(self.date?, self.time?)
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -51,24 +50,6 @@ impl Schedule {
             return Err("This time does not exist in the local timezone. Choose another time.");
         }
         Ok(())
-    }
-
-    fn set_from_when(&mut self, when: Option<&WhenSpec>) {
-        match when {
-            Some(WhenSpec::DateTime(dt)) => {
-                let local = dt.with_timezone(&Local);
-                self.date = Some(local.date_naive());
-                self.time = Some(local.time());
-            }
-            Some(WhenSpec::NaiveDate(date)) => {
-                self.date = Some(*date);
-                self.time = None;
-            }
-            None => {
-                self.date = None;
-                self.time = None;
-            }
-        }
     }
 
     pub fn shift_days(&mut self, days: i64) {
@@ -166,7 +147,6 @@ struct Reading {
     recurrence: Option<Recurrence>,
     recurrence_end_date: Option<NaiveDate>,
     recurrence_remaining: Option<u32>,
-    when_may_be_recurrence_end: bool,
 }
 
 impl Reading {
@@ -177,13 +157,6 @@ impl Reading {
             recurrence: recurrence_to_rule(draft.recurrence.as_ref())?,
             recurrence_end_date: draft.recurrence_end_date,
             recurrence_remaining: draft.recurrence_remaining,
-            when_may_be_recurrence_end: draft.highlights.iter().any(|(range, kind)| {
-                *kind == HighlightKind::When
-                    && draft.raw[..range.start]
-                        .trim_end()
-                        .to_ascii_lowercase()
-                        .ends_with("until")
-            }),
         })
     }
 }
@@ -196,7 +169,8 @@ pub struct ItemDraft {
     pub queued: bool,
     pub pinned: bool,
     pub span_days: u32,
-    schedule_before_recurrence_bound: Option<(Schedule, bool)>,
+    suggested_duration: Option<Duration>,
+    schedule_before_parse: Option<(Schedule, bool)>,
     last_read: Reading,
 }
 
@@ -209,7 +183,8 @@ impl Default for ItemDraft {
             queued: false,
             pinned: false,
             span_days: 1,
-            schedule_before_recurrence_bound: None,
+            suggested_duration: None,
+            schedule_before_parse: None,
             last_read: Reading::default(),
         }
     }
@@ -270,7 +245,8 @@ impl ItemDraft {
             queued,
             pinned,
             span_days,
-            schedule_before_recurrence_bound: None,
+            suggested_duration: None,
+            schedule_before_parse: None,
             last_read: Reading::default(),
         })
     }
@@ -294,7 +270,8 @@ impl ItemDraft {
             queued: false,
             pinned: false,
             span_days: 1,
-            schedule_before_recurrence_bound: None,
+            suggested_duration: None,
+            schedule_before_parse: None,
             last_read: Reading::default(),
         })
     }
@@ -489,26 +466,23 @@ impl ItemDraft {
         let read = parsed.map(Reading::of).transpose()?.unwrap_or_default();
 
         if read.when != self.last_read.when {
-            let reclassified_as_bound = self.last_read.when_may_be_recurrence_end
-                && read.when.is_none()
-                && read.recurrence_end_date.is_some();
-            if reclassified_as_bound {
-                let (schedule, queued) = self
-                    .schedule_before_recurrence_bound
-                    .take()
-                    .unwrap_or_default();
-                self.schedule = schedule;
-                self.queued = queued;
-            } else {
-                if read.when_may_be_recurrence_end && !self.last_read.when_may_be_recurrence_end {
-                    self.schedule_before_recurrence_bound = Some((self.schedule, self.queued));
+            let (mut schedule, mut queued) = *self
+                .schedule_before_parse
+                .get_or_insert((self.schedule, self.queued));
+            match read.when.as_ref() {
+                Some(WhenSpec::DateTime(datetime)) => {
+                    let local = datetime.with_timezone(&Local);
+                    schedule = Schedule {
+                        date: Some(local.date_naive()),
+                        time: Some(local.time()),
+                    };
+                    queued = true;
                 }
-                self.schedule.set_from_when(read.when.as_ref());
-                self.queued = matches!(read.when, Some(WhenSpec::DateTime(_)));
+                Some(WhenSpec::NaiveDate(date)) => schedule.date = Some(*date),
+                None => self.schedule_before_parse = None,
             }
-        }
-        if !read.when_may_be_recurrence_end && read.recurrence_end_date.is_none() {
-            self.schedule_before_recurrence_bound = None;
+            self.schedule = schedule;
+            self.queued = queued;
         }
         if read.duration != self.last_read.duration {
             self.duration = read.duration;
@@ -549,13 +523,23 @@ impl ItemDraft {
         Ok(())
     }
 
+    pub(super) fn parse_date(&self) -> Option<NaiveDate> {
+        self.schedule_before_parse
+            .map(|(schedule, _)| schedule.date)
+            .unwrap_or(self.schedule.date)
+    }
+
     pub fn forget_reading(&mut self) {
         self.last_read = Reading::default();
+        self.schedule_before_parse = None;
     }
 
     pub fn disown(&mut self, clause: Clause) {
         match clause {
-            Clause::When => self.last_read.when = None,
+            Clause::When => {
+                self.last_read.when = None;
+                self.schedule_before_parse = None;
+            }
             Clause::Duration => self.last_read.duration = None,
             Clause::Recurrence => self.last_read.recurrence = None,
             Clause::RecurrenceEnd => self.last_read.recurrence_end_date = None,
@@ -564,33 +548,18 @@ impl ItemDraft {
     }
 
     pub fn apply_mode_defaults(&mut self, mode: ItemType) {
-        match mode {
-            ItemType::Action | ItemType::ActionTemplate | ItemType::Routine => {}
+        self.suggested_duration = match mode {
             ItemType::Event | ItemType::EventTemplate => {
-                if self.schedule.date.is_none() {
-                    self.schedule.date = Some(today());
-                }
-                if self.schedule.time.is_none() {
-                    self.schedule.time = Some(next_slot());
-                }
-                if self.duration.is_none() {
-                    self.duration = Some(Duration::minutes(DEFAULT_EVENT_MINUTES));
-                }
+                Some(Duration::minutes(DEFAULT_EVENT_MINUTES))
             }
-            ItemType::Signal => {
-                if self.schedule.date.is_none() {
-                    self.schedule.date = Some(today());
-                }
-                if self.schedule.time.is_none() {
-                    self.schedule.time = Some(next_slot());
-                }
-            }
-            ItemType::Marker => {
-                if self.schedule.date.is_none() {
-                    self.schedule.date = Some(today());
-                }
-                self.schedule.time = None;
-            }
+            _ => None,
+        };
+    }
+
+    pub(super) fn duration_for(&self, mode: ItemType) -> Option<Duration> {
+        match mode {
+            ItemType::Event | ItemType::EventTemplate => self.duration.or(self.suggested_duration),
+            _ => self.duration,
         }
     }
 
@@ -611,15 +580,21 @@ impl ItemDraft {
     }
 
     pub fn step_duration(&mut self, steps: i64) -> Result<(), &'static str> {
-        self.duration = stepped_duration(self.duration, steps, STEP_MINUTES)?;
+        self.duration = stepped_duration(
+            self.duration.or(self.suggested_duration),
+            steps,
+            STEP_MINUTES,
+        )?;
+        self.suggested_duration = None;
         Ok(())
     }
 
     pub fn toggle_duration(&mut self) {
-        self.duration = match self.duration {
+        self.duration = match self.duration.or(self.suggested_duration) {
             Some(_) => None,
             None => Some(Duration::minutes(DEFAULT_EVENT_MINUTES)),
         };
+        self.suggested_duration = None;
     }
 
     pub fn step_span(&mut self, days: i64) {
@@ -629,6 +604,9 @@ impl ItemDraft {
 
     pub fn toggle_queued(&mut self) {
         self.queued = !self.queued;
+        if let Some((_, queued)) = self.schedule_before_parse.as_mut() {
+            *queued = self.queued;
+        }
     }
 
     pub fn toggle_pinned(&mut self) {
@@ -742,7 +720,7 @@ impl ItemDraft {
                 return Err("A marker needs at least one day");
             }
             self.marker_end_date()?;
-        } else if let Some(duration) = self.duration {
+        } else if let Some(duration) = self.duration_for(mode) {
             subroutine_core::checked_duration_end(
                 if saved {
                     SchedulePoint::now()
@@ -773,7 +751,7 @@ impl ItemDraft {
             ItemType::Event | ItemType::EventTemplate => {
                 if !self.schedule.has_time() {
                     Some("An event needs a time")
-                } else if self.duration.is_none() {
+                } else if self.duration_for(mode).is_none() {
                     Some("An event needs a duration")
                 } else {
                     None
@@ -797,7 +775,7 @@ impl ItemDraft {
         if let Some(error) = self.blocker(mode, title, steps.len()) {
             return Err(error);
         }
-        let duration = self.duration.map(RelativeDuration::from);
+        let duration = self.duration_for(mode).map(RelativeDuration::from);
         let item = match mode {
             ItemType::Action | ItemType::ActionTemplate => AnyItem::Action(Action {
                 id,

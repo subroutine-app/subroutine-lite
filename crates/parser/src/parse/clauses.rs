@@ -71,6 +71,7 @@ pub(super) fn longest_match(
     granularity: Duration,
     draft: &ParseDraft,
     has_recurrence: bool,
+    default_date: Option<NaiveDate>,
 ) -> Result<Option<Match>, ParseError> {
     if is_escaped(tokens, i) {
         return Ok(None);
@@ -106,6 +107,7 @@ pub(super) fn longest_match(
         now.with_timezone(&Utc),
         today,
         granularity,
+        default_date,
     )? && draft.when.is_none()
     {
         consider(len, Clause::When(when));

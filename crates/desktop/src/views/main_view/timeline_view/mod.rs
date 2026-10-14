@@ -10,8 +10,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate};
 use gpui::{
     App, AsyncApp, Bounds, Context, DragMoveEvent, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
-    Render, ScrollHandle, Styled, Window, actions, container_query, div, prelude::FluentBuilder,
-    px,
+    Render, Styled, Window, actions, container_query, div, prelude::FluentBuilder, px,
 };
 
 use crate::{
@@ -166,10 +165,8 @@ pub(super) struct TimelineView {
     projected_work: Vec<AnyItem>,
 
     markers: Vec<Marker>,
-    marker_panel_date: Option<NaiveDate>,
-    marker_panel_draft: Option<uuid::Uuid>,
-    marker_panel_scroll: ScrollHandle,
-    marker_trigger_focus: FocusHandle,
+    marker_panel: Option<MarkerPanel>,
+    marker_panel_focus: FocusHandle,
     signals: Vec<Signal>,
     signal_focus_handles: HashMap<uuid::Uuid, FocusHandle>,
     draft_markers: Vec<Marker>,
@@ -247,8 +244,7 @@ impl TimelineView {
         self.drop_dragged = None;
         self.drop_active = false;
         self.pending_item_focus = None;
-        self.marker_panel_date = None;
-        self.marker_panel_draft = None;
+        self.marker_panel = None;
         self.expanded_bin = None;
         self.edge_scroll_speed = None;
     }
@@ -395,10 +391,8 @@ impl TimelineView {
             projected_work_key: None,
             projected_work: vec![],
             markers: vec![],
-            marker_panel_date: None,
-            marker_panel_draft: None,
-            marker_panel_scroll: ScrollHandle::new(),
-            marker_trigger_focus: cx.focus_handle(),
+            marker_panel: None,
+            marker_panel_focus: cx.focus_handle(),
             signals: vec![],
             signal_focus_handles: HashMap::new(),
             draft_markers: vec![],
@@ -621,17 +615,8 @@ impl TimelineView {
             })
             .child(force_create_hook(hook_entity.clone()))
             .children(self.render_outer_labels(window, cx))
-            .map(|this| {
-                let markers = self.render_marker_header(window, cx);
-                let shortcut_top = TOP_EDGE_INSET
-                    + if markers.is_some() {
-                        STICKY_OUTER_LABEL_HEIGHT + STICKY_OUTER_LABEL_GAP
-                    } else {
-                        STICKY_OUTER_LABEL_INSET
-                    };
-                this.children(self.render_now_shortcut(shortcut_top, cx))
-                    .children(markers)
-            });
+            .children(self.render_now_shortcut(TOP_EDGE_INSET + STICKY_OUTER_LABEL_INSET, cx))
+            .children(self.render_marker_panel(window, cx));
         let body = marquee(body, self, cx);
 
         self.tab_root(div().column(), cx)

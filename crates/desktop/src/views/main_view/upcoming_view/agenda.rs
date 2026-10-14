@@ -160,6 +160,7 @@ impl Agenda {
         signals: &[Signal],
         today: NaiveDate,
         revealed_dates: &BTreeSet<NaiveDate>,
+        show_marker_only_dates: bool,
     ) -> Self {
         let (start, end) = Self::window(items, markers, signals, today);
         let visible_markers = project_markers(markers, start, end, revealed_dates);
@@ -246,6 +247,9 @@ impl Agenda {
                     .any(|entry| !entry.projected && entry.marker.covers(*date))
         }));
         days.extend(&draft_dates);
+        if !show_marker_only_dates {
+            days.retain(|date| *date == today || by_day.contains_key(date));
+        }
 
         let has_actions_or_events = !missed.is_empty()
             || by_day
@@ -508,12 +512,12 @@ fn project_signals(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use subroutine_core::{Action, Event, SchedulePoint};
+    use subroutine_core::{Action, Event, Recurrence, RecurrenceRule, SchedulePoint};
 
     #[test]
     fn empty_agenda_has_only_today_and_one_nonselectable_create_card() {
         let today = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
-        let agenda = Agenda::build_revealing(&[], &[], &[], &[], today, &BTreeSet::new());
+        let agenda = Agenda::build_revealing(&[], &[], &[], &[], today, &BTreeSet::new(), true);
         let mut sections = super::super::sections::UpcomingSections::default();
         sections.sync(&agenda, today);
         assert!(!sections.add_in_header(&agenda, today));
@@ -589,8 +593,15 @@ mod tests {
                 vec![today, next],
             ),
         ] {
-            let agenda =
-                Agenda::build_revealing(&items, &[], &markers, &signals, today, &BTreeSet::new());
+            let agenda = Agenda::build_revealing(
+                &items,
+                &[],
+                &markers,
+                &signals,
+                today,
+                &BTreeSet::new(),
+                true,
+            );
             let dates: Vec<_> = agenda
                 .rows
                 .iter()
@@ -620,7 +631,8 @@ mod tests {
             Marker::new("Holiday", today),
             Marker::new("Another holiday", future),
         ];
-        let agenda = Agenda::build_revealing(&[], &[], &markers, &[], today, &BTreeSet::new());
+        let agenda =
+            Agenda::build_revealing(&[], &[], &markers, &[], today, &BTreeSet::new(), true);
         let mut sections = super::super::sections::UpcomingSections::default();
         sections.sync(&agenda, today);
         assert_eq!(agenda.rows.len(), 3);
@@ -640,7 +652,7 @@ mod tests {
 
         let signals = [Signal::new("Later", day_start(future))];
         let annotated =
-            Agenda::build_revealing(&[], &[], &markers, &signals, today, &BTreeSet::new());
+            Agenda::build_revealing(&[], &[], &markers, &signals, today, &BTreeSet::new(), true);
         let slots: Vec<_> = annotated
             .rows
             .iter()
@@ -653,6 +665,113 @@ mod tests {
             })
             .collect();
         assert_eq!(slots, [today]);
+    }
+
+    #[test]
+    fn hiding_marker_only_dates_keeps_today_and_its_create_slot() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let markers = [Marker::new("Holiday", today).with_end_date(today.succ_opt().unwrap())];
+        for markers in [&[][..], markers.as_slice()] {
+            let build = |show| {
+                Agenda::build_revealing(&[], &[], markers, &[], today, &BTreeSet::new(), show)
+            };
+            let filtered = build(false);
+            assert!(matches!(
+                filtered.rows.as_slice(),
+                [UpcomingRow::Day { date, .. }, UpcomingRow::Create { date: create_date, kind: CreateKind::Slot }]
+                    if *date == today && *create_date == today
+            ));
+            assert_eq!(
+                filtered.rows[0].selectable_ids().collect::<Vec<_>>(),
+                markers.iter().map(|marker| marker.id).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                build(true).rows.len(),
+                if markers.is_empty() { 2 } else { 3 }
+            );
+        }
+    }
+
+    #[test]
+    fn hiding_marker_only_dates_keeps_content_labels_and_expansion() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let [mixed, signal_day, projected, draft_day] =
+            [1, 2, 3, 4].map(|days| today + Duration::days(days));
+        let recurring = Action::new("Missed recurrence")
+            .with_queued(true)
+            .with_start(Some(SchedulePoint::Date(today.pred_opt().unwrap())))
+            .with_recurrence(Some(Recurrence::new(RecurrenceRule::days(4))));
+        let items = [
+            AnyItem::Action(recurring),
+            AnyItem::Event(Event::new("Meeting", day_start(mixed), Duration::hours(1))),
+        ];
+        let drafts = [AnyItem::Action(
+            Action::new("").with_start(Some(SchedulePoint::Date(draft_day))),
+        )];
+        let signals = [
+            Signal::new("Reminder", day_start(signal_day) + Duration::hours(12))
+                .with_recurrence(Recurrence::new(RecurrenceRule::days(1))),
+        ];
+        let markers = [
+            Marker::new("Mixed", mixed),
+            Marker::new("Anchor", projected),
+        ];
+        let build = |show| {
+            Agenda::build_revealing(
+                &items,
+                &drafts,
+                &markers,
+                &signals,
+                today,
+                &BTreeSet::new(),
+                show,
+            )
+        };
+        let full = build(true);
+        let filtered = build(false);
+        let content = |agenda: &Agenda| {
+            agenda
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    UpcomingRow::Item {
+                        item,
+                        projected,
+                        section,
+                    } => Some((item.id(), *projected, *section)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = content(&full);
+        assert_eq!(content(&filtered), expected);
+        assert_eq!(expected.len(), 6);
+        assert_eq!(
+            expected
+                .iter()
+                .filter(|(_, projected, _)| *projected)
+                .count(),
+            2
+        );
+        assert!(matches!(filtered.rows[0], UpcomingRow::Missed));
+        let mut sections = super::super::sections::UpcomingSections::default();
+        sections.sync(&filtered, today);
+        assert!(sections.add_in_header(&filtered, today));
+        for row in filtered.rows.iter().filter(|row| row.is_heading()) {
+            assert_eq!(
+                sections.can_expand(row.section()),
+                row.section() != UpcomingSection::Day(today)
+            );
+            if let UpcomingRow::Day {
+                date,
+                markers: labels,
+                ..
+            } = row
+                && *date == mixed
+            {
+                assert_eq!(labels[0].marker.title, "Mixed");
+            }
+        }
     }
 
     #[test]
@@ -671,7 +790,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let empty = Agenda::build_revealing(&[], &[], &[], &[], today, &requested);
+        let empty = Agenda::build_revealing(&[], &[], &[], &[], today, &requested, true);
         assert_eq!(dates(&empty), [today]);
 
         let item = AnyItem::Action(
@@ -686,6 +805,7 @@ mod tests {
             &[],
             today,
             &requested,
+            true,
         );
         assert_eq!(dates(&agenda), [past, today, future]);
     }
@@ -694,7 +814,7 @@ mod tests {
     fn inline_draft_replaces_empty_agenda_slot_without_moving() {
         let today = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
         let requested = BTreeSet::from([today.succ_opt().unwrap()]);
-        let before = Agenda::build_revealing(&[], &[], &[], &[], today, &requested);
+        let before = Agenda::build_revealing(&[], &[], &[], &[], today, &requested, true);
         let mut sections = super::super::sections::UpcomingSections::default();
         sections.sync(&before, today);
         let before_layout = before.layout(
@@ -715,6 +835,7 @@ mod tests {
             &[],
             today,
             &requested,
+            true,
         );
         sections.sync(&after, today);
         let after_layout = after.layout(

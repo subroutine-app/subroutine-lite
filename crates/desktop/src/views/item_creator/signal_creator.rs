@@ -22,7 +22,10 @@ impl ItemCreator {
     pub(super) fn signal_summary(&self) -> String {
         let schedule = &self.draft.schedule;
         let (Some(date), Some(time)) = (schedule.date, schedule.time) else {
-            return schedule.date.map(format_date).unwrap_or_default();
+            return match schedule.date {
+                Some(date) => format!("{} · Time required", format_date(date)),
+                None => "Date and time required".into(),
+            };
         };
 
         let mut summary = format!("{} · {}", format_date(date), format_time(time));

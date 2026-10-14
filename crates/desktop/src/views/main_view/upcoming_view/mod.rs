@@ -24,7 +24,7 @@ mod rows;
 mod scroll;
 mod sections;
 use agenda::*;
-use headers::{CONTROLS_HEIGHT, DayHeaders};
+use headers::DayHeaders;
 use scroll::RowAnchor;
 use sections::{UpcomingSection, UpcomingSections};
 
@@ -192,6 +192,8 @@ pub struct UpcomingView {
     headers: DayHeaders,
     marker_edit: Option<(Uuid, NaiveDate)>,
     sections: UpcomingSections,
+    show_marker_only_dates: bool,
+    marker_dates_focus: FocusHandle,
     hovered_section: Option<UpcomingSection>,
     mouse_exited: bool,
     details: ItemCardStates,
@@ -308,6 +310,8 @@ impl UpcomingView {
             headers: DayHeaders::default(),
             marker_edit: None,
             sections: UpcomingSections::default(),
+            show_marker_only_dates: true,
+            marker_dates_focus: cx.focus_handle(),
             hovered_section: None,
             mouse_exited: false,
             details: ItemCardStates::default(),
@@ -485,6 +489,7 @@ impl UpcomingView {
             &self.signals,
             self.today,
             self.sections.revealed_dates(),
+            self.show_marker_only_dates,
         );
         self.sections.sync(&self.agenda, self.today);
 
@@ -604,6 +609,65 @@ impl UpcomingView {
             self.sections.collapse_all();
         }
         cx.notify();
+    }
+
+    fn toggle_marker_only_dates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_marker_only_dates {
+            let stays_visible = |section| {
+                section == UpcomingSection::Day(self.today) || self.sections.can_expand(section)
+            };
+            let visible: HashSet<_> = self
+                .agenda
+                .rows
+                .iter()
+                .filter(|row| stays_visible(row.section()))
+                .flat_map(UpcomingRow::selectable_ids)
+                .collect();
+            let manager = ItemManager::global(cx);
+            let hiding_edit = self.agenda.rows.iter().any(|row| {
+                !stays_visible(row.section())
+                    && row
+                        .selectable_ids()
+                        .any(|id| manager.read(cx).is_being_edited(id))
+            });
+            if hiding_edit {
+                manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+                if manager.read(cx).is_editing() {
+                    return;
+                }
+            }
+            if self
+                .item_focus_handles
+                .iter()
+                .any(|(id, handle)| !visible.contains(id) && handle.contains_focused(window, cx))
+            {
+                self.marker_dates_focus.focus(window, cx);
+            }
+            SelectionManager::global(cx).update(cx, |selection, cx| {
+                if selection.has_selection_in(SelectionScope::Upcoming) {
+                    let remaining = selection
+                        .ids()
+                        .iter()
+                        .copied()
+                        .filter(|id| visible.contains(id))
+                        .collect();
+                    selection.select_many(SelectionScope::Upcoming, remaining, cx);
+                }
+            });
+            self.marker_edit
+                .take_if(|(_, date)| !stays_visible(UpcomingSection::Day(*date)));
+            self.reveal.take_if(|target| {
+                let section = match target {
+                    UpcomingReveal::Item { section, .. } => *section,
+                    UpcomingReveal::Day(date) => UpcomingSection::Day(*date),
+                };
+                !stays_visible(section)
+            });
+        }
+        self.show_marker_only_dates = !self.show_marker_only_dates;
+        self.hovered_section = None;
+        self.clear_drop_target(cx);
+        self.invalidate(cx);
     }
 
     fn prepare_collapse(
@@ -1228,17 +1292,8 @@ impl UpcomingView {
                                     .column()
                                     .h(full_height)
                                     .when(source == 0, |row| {
-                                        row.pt(crate::views::TOP_EDGE_INSET).child(
-                                            div()
-                                                .row()
-                                                .w_full()
-                                                .h(CONTROLS_HEIGHT)
-                                                .flex_none()
-                                                .px_4()
-                                                .items_center()
-                                                .justify_end()
-                                                .child(view.section_controls(cx)),
-                                        )
+                                        row.pt(crate::views::TOP_EDGE_INSET)
+                                            .child(view.section_controls(cx))
                                     })
                                     .child(
                                         div()

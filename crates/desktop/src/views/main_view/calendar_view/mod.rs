@@ -22,13 +22,14 @@ use gpui_kit::layout::ScrollFade;
 use gpui_kit::overlay::{GlassExt as _, GlassPreset};
 use gpui_kit_theme::ActiveTheme;
 use gpui_kit_theme::{Radius, Surface};
-use subroutine_core::{Action, AnyItem, Event, ItemType, Marker, SchedulePoint, Signal};
+use subroutine_core::{Action, AnyItem, ItemType, Marker, SchedulePoint, Signal};
 
 mod borders;
 mod grid;
 mod inspector_list;
 mod marker_resize;
 mod markers;
+mod month_labels;
 
 use inspector_list::{CalendarInspectorDelegate, CalendarInspectorEntry};
 
@@ -682,6 +683,11 @@ impl CalendarView {
         cx: &mut Context<Self>,
     ) {
         if self.inspector_range != Some(range) {
+            let manager = ItemManager::global(cx);
+            manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+            if manager.read(cx).is_editing() {
+                return;
+            }
             self.inspector_list.update(cx, |list, cx| {
                 list.reset_items(cx, |delegate, _| delegate.clear());
             });
@@ -714,6 +720,9 @@ impl CalendarView {
         self.set_edge_scroll_speed(None, cx);
         if self.inspector_date.is_some() {
             self.close_day_inspector(window, cx);
+            if self.inspector_date.is_some() {
+                return;
+            }
         }
         self.focus_handle.focus(window, cx);
         self.date_range_drag = Some(DateRangeDrag::new(date, position));
@@ -990,20 +999,23 @@ impl CalendarView {
         });
     }
     pub(super) fn close_day_inspector(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.inspector_date.is_none() {
+            return;
+        }
         let restore_calendar_focus = self.inspector_focus.contains_focused(window, cx);
         let destination_focus = window.focused(cx);
+        let manager = ItemManager::global(cx);
+        manager.update(cx, |manager, cx| manager.commit_open_edit(window, cx));
+        if manager.read(cx).is_editing() {
+            return;
+        }
         self.clear_inspector_selection(cx);
         self.inspector_bounds = None;
         self.inspector_list.update(cx, |list, cx| {
             list.reset_items(cx, |delegate, _| delegate.clear());
         });
-        if self.inspector_date.take().is_none() {
-            return;
-        }
+        self.inspector_date = None;
         self.inspector_range = None;
-        ItemManager::global(cx).update(cx, |manager, cx| {
-            manager.commit_open_edit(window, cx);
-        });
         if restore_calendar_focus {
             self.focus_handle.focus(window, cx);
         } else if let Some(destination) = destination_focus {
@@ -1199,8 +1211,11 @@ impl CalendarView {
         if manager.read(cx).is_editing() {
             return;
         }
-        let start = local_time_on(date, chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
-        let item = AnyItem::Event(Event::new("", start, chrono::Duration::hours(1)));
+        let item = AnyItem::Action(
+            Action::new("")
+                .with_queued(true)
+                .with_start(Some(SchedulePoint::Date(date))),
+        );
         SelectionManager::clear_global(cx);
         self.inspector_focus.focus(window, cx);
         manager.update(cx, |manager, cx| {
@@ -1526,18 +1541,19 @@ impl CalendarView {
     }
 
     pub(super) fn sync_month_in_view(&mut self, cx: &mut Context<Self>) {
-        let Some(month_start) = self.date_in_view().with_day(1) else {
-            return;
-        };
-        if month_start == self.month_in_view {
+        let month = self.sticky_month();
+        if month == self.month_in_view {
             return;
         }
 
-        self.month_in_view = month_start;
-        let year = month_start.year();
-        let month = Month::try_from(month_start.month() as u8).unwrap_or(Month::January);
+        self.month_in_view = month;
+        self.select_month(month, cx);
+    }
+
+    fn select_month(&self, date: NaiveDate, cx: &mut Context<Self>) {
+        let month = Month::try_from(date.month() as u8).unwrap_or(Month::January);
         self.month_select
-            .update(cx, |select, cx| select.set_month(year, month, cx));
+            .update(cx, |select, cx| select.set_month(date.year(), month, cx));
     }
 
     pub(super) fn set_drop_target(
@@ -1673,6 +1689,9 @@ impl CalendarView {
     }
 
     pub fn toggle_month_selector(&mut self, cx: &mut Context<Self>) {
+        if !self.month_selector_open {
+            self.select_month(self.sticky_month(), cx);
+        }
         self.month_selector_open = !self.month_selector_open;
         cx.notify();
     }
@@ -2056,82 +2075,38 @@ impl CalendarView {
         )
     }
 
-    pub fn render_month_selection(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = self.day_width() < px(80.);
-        let top = self.visible_top() + px(12.);
-        let button_height = if compact { px(32.) } else { px(40.) };
-        let available_width = (self.day_width() * 7. - px(24.)).max(px(0.));
+    fn render_month_selection(&self) -> impl IntoElement {
+        let top = self.month_label_top() + self.month_label_height() + px(8.);
+        let available_width = (self.day_width() * 7. - month_labels::INSET * 2.).max(px(0.));
         let available_height = self.bounds.map_or(px(0.), |bounds| {
-            (bounds.size.height - top - button_height - px(8.) - px(12.)).max(px(0.))
+            (bounds.size.height - top - month_labels::INSET).max(px(0.))
         });
-        let month = self
-            .month_in_view
-            .format(if compact { "%b" } else { "%B" })
-            .to_string();
-        let year = self.month_in_view.format("%Y").to_string();
 
         div()
-            .column()
+            .id("calendar-month-selector-scroll")
             .absolute()
             .top(top)
-            .right(px(12.))
-            .gap_2()
-            .items_end()
+            .right(month_labels::INSET)
+            .max_w(available_width)
+            .max_h(available_height)
+            .min_h_0()
+            .overflow_scroll()
+            .shadow_lg()
             .child(
-                Button::new("calendar-month-select")
-                    .glass_pill()
-                    .h(button_height)
-                    .px_4()
-                    .max_w(available_width)
-                    .min_w_0()
-                    .when(compact, |this| this.px_2())
-                    .tooltip(self.month_in_view.format("%B %Y").to_string())
-                    .block_mouse_except_scroll()
-                    .gap_1()
+                div()
+                    .id("calendar-month-selector")
+                    .bg_glass()
+                    .glass_surface(Surface::Overlay)
+                    .glass_radius(Radius::Dialog)
+                    .glass(|glass| glass.protect_text_contrast(false))
+                    .when(cfg!(not(target_os = "macos")), |frame| {
+                        frame.glass_preset(GlassPreset::Frosted)
+                    })
                     .child(
-                        Label::new(month)
-                            .text_2xl()
-                            .when(compact, |this| this.text_base())
-                            .flex_1()
-                            .min_w_0()
-                            .truncate(),
-                    )
-                    .child(
-                        Label::new(year)
-                            .text_2xl()
-                            .when(compact, |this| this.text_base())
-                            .font_weight(FontWeight::EXTRA_LIGHT),
-                    )
-                    .on_click(cx.listener(|view, _, _window, cx| {
-                        view.toggle_month_selector(cx);
-                    })),
+                        MonthSelect::new(&self.month_select)
+                            .when(self.day_width() < px(60.), |this| this.small()),
+                    ),
             )
-            .when(self.month_selector_open, |this| {
-                this.child(
-                    div()
-                        .id("calendar-month-selector-scroll")
-                        .max_w(available_width)
-                        .max_h(available_height)
-                        .min_h_0()
-                        .overflow_scroll()
-                        .shadow_lg()
-                        .child(
-                            div()
-                                .id("calendar-month-selector")
-                                .bg_glass()
-                                .glass_surface(Surface::Overlay)
-                                .glass_radius(Radius::Dialog)
-                                .glass(|glass| glass.protect_text_contrast(false))
-                                .when(cfg!(not(target_os = "macos")), |frame| {
-                                    frame.glass_preset(GlassPreset::Frosted)
-                                })
-                                .child(
-                                    MonthSelect::new(&self.month_select)
-                                        .when(self.day_width() < px(60.), |this| this.small()),
-                                ),
-                        ),
-                )
-            })
     }
 }
 
@@ -2236,24 +2211,6 @@ impl CalendarView {
                     view.finish_date_range_drag_at(event.position, cx);
                 }),
             )
-            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, window, cx| {
-                let delta = event.delta.pixel_delta(window.line_height()).y;
-                if delta == px(0.) {
-                    return;
-                }
-
-                match event.delta {
-                    ScrollDelta::Pixels(_) => {
-                        view.cancel_scroll();
-                        view.scroll_offset += delta;
-                        cx.notify();
-                    }
-                    ScrollDelta::Lines(_) => {
-                        let current = view.scroll_target.unwrap_or_else(|| view.scroll_weeks());
-                        view.scroll_to_weeks(current + delta / view.week_height, cx);
-                    }
-                }
-            }))
             .child(
                 ScrollFade::new("calendar.grid-top-fade")
                     .top(true)
@@ -2298,29 +2255,55 @@ impl CalendarView {
             .absolute()
             .inset_0()
         });
+        let (attached_months, sticky_month) = self.render_month_labels(window, cx);
         let calendar = div()
             .relative()
             .size_full()
             .min_w_0()
+            .on_scroll_wheel(cx.listener(|view, event: &ScrollWheelEvent, window, cx| {
+                let delta = event.delta.pixel_delta(window.line_height()).y;
+                if delta == px(0.) {
+                    return;
+                }
+                match event.delta {
+                    ScrollDelta::Pixels(_) => {
+                        view.cancel_scroll();
+                        view.scroll_offset += delta;
+                        cx.notify();
+                    }
+                    ScrollDelta::Lines(_) => {
+                        let current = view.scroll_target.unwrap_or_else(|| view.scroll_weeks());
+                        view.scroll_to_weeks(current + delta / view.week_height, cx);
+                    }
+                }
+            }))
             .child(body)
-            .children(inspector);
+            .child(attached_months)
+            .children(inspector)
+            .child(self.render_controls(sticky_month, cx));
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let calendar = calendar.child(self.render_day_names(cx));
         calendar
     }
 
-    fn render_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact_inspector = self.inspector_date.is_some()
+    fn compact_inspector(&self) -> bool {
+        self.inspector_date.is_some()
             && !self.item_drag_active
             && self.bounds.is_some_and(|bounds| {
                 bounds.size.height - self.visible_top() < DAY_INSPECTOR_COMPACT_HEIGHT
-            });
+            })
+    }
+
+    fn render_controls(&self, sticky_month: gpui::Div, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .relative()
-            .size_full()
-            .when(!compact_inspector, |this| {
-                this.child(self.render_month_selection(cx))
+            .absolute()
+            .inset_0()
+            .when(!self.compact_inspector(), |this| {
+                this.child(sticky_month)
                     .children(self.render_today_shortcut(cx))
+                    .when(self.month_selector_open, |this| {
+                        this.child(self.render_month_selection())
+                    })
             })
     }
 }
@@ -2329,7 +2312,6 @@ impl Render for CalendarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let measured = cx.entity();
         let content = cx.entity();
-        let controls = cx.entity();
 
         let calendar = div()
             .relative()
@@ -2462,15 +2444,5 @@ impl Render for CalendarView {
                     .child(calendar),
             )
             .child(self.marker_resize_hook(cx))
-            .child(
-                container_query(move |size, _, cx| {
-                    if size.width <= px(0.) || size.height <= px(0.) {
-                        return div().size_full().into_any_element();
-                    }
-                    controls.update(cx, |view, cx| view.render_controls(cx).into_any_element())
-                })
-                .absolute()
-                .inset_0(),
-            )
     }
 }

@@ -4,7 +4,7 @@ use gpui_kit_theme::{ActiveTheme as _, Appearance, Theme};
 
 use crate::components::transition::{EASE_OUT_CUBIC, WindowTransitionExt as _};
 
-const FOCUS_WASH: MotionSpec = MotionSpec::new(200, EASE_OUT_CUBIC);
+const WASH_TRANSITION: MotionSpec = MotionSpec::new(200, EASE_OUT_CUBIC);
 const INACTIVE_WASH_FACTOR: f32 = 0.6;
 const WASH_BOOST: f32 = 0.08;
 const LIGHT_ACTIVE_WASH: f32 = 0.96;
@@ -33,6 +33,13 @@ pub(crate) enum WindowMaterial {
     Frosted,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowWash {
+    Opaque,
+    Active,
+    Inactive,
+}
+
 impl WindowMaterial {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn for_window(cx: &App) -> Self {
@@ -51,9 +58,33 @@ impl WindowMaterial {
         Self::Opaque
     }
 
+    pub(crate) fn from_tint(tint: Hsla) -> Self {
+        if tint.a < 1.0 {
+            Self::Frosted
+        } else {
+            Self::Opaque
+        }
+    }
+
+    fn wash(self, expanded: bool, active: bool) -> WindowWash {
+        if self == Self::Opaque || expanded {
+            WindowWash::Opaque
+        } else if active {
+            WindowWash::Active
+        } else {
+            WindowWash::Inactive
+        }
+    }
+
     pub(crate) fn animated_tint(self, window: &mut Window, cx: &mut App) -> Hsla {
-        let target = self.tint(cx.theme(), window.is_window_active());
-        let opacity = window.keyed_transition("window-material-wash", cx, FOCUS_WASH, || target.a);
+        let target = self
+            .wash(
+                window.is_fullscreen() || window.is_maximized(),
+                window.is_window_active(),
+            )
+            .tint(cx.theme());
+        let opacity =
+            window.keyed_transition("window-material-wash", cx, WASH_TRANSITION, || target.a);
         match self {
             Self::Opaque => opacity.snap(target.a, cx),
             Self::Frosted => opacity.set(target.a, cx),
@@ -61,11 +92,23 @@ impl WindowMaterial {
         target.alpha(opacity.animate(window, cx))
     }
 
-    fn tint(self, theme: &Theme, active: bool) -> Hsla {
+    pub(crate) fn apply(self, window: &mut Window) {
+        window.set_background_appearance(match self {
+            Self::Opaque => WindowBackgroundAppearance::Opaque,
+            Self::Frosted => WindowBackgroundAppearance::Blurred,
+        });
+        window.refresh();
+    }
+}
+
+impl WindowWash {
+    fn tint(self, theme: &Theme) -> Hsla {
         let canvas = theme.colors.canvas.alpha(1.0);
-        if self == Self::Opaque {
-            return canvas;
-        }
+        let active = match self {
+            Self::Opaque => return canvas,
+            Self::Active => true,
+            Self::Inactive => false,
+        };
 
         // Protect muted labels at rest and primary text through hover/selection,
         // without letting stacked interaction tints make the entire window opaque.
@@ -103,21 +146,51 @@ impl WindowMaterial {
         };
         canvas.alpha(opacity)
     }
-
-    pub(crate) fn apply(self, window: &mut Window) {
-        window.set_background_appearance(match self {
-            Self::Opaque => WindowBackgroundAppearance::Opaque,
-            Self::Frosted => WindowBackgroundAppearance::Blurred,
-        });
-        window.refresh();
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::tokens::TokenDocument;
+    use gpui_kit::{motion::Transition, tokens::TokenDocument};
     use gpui_kit_theme::Density;
+    use std::time::Duration;
+
+    #[test]
+    fn native_blur_follows_the_animated_wash_through_expansion_and_reversal() {
+        let tokens =
+            TokenDocument::parse(include_str!("../../../assets/themes/subroutine-dark.json"))
+                .unwrap();
+        let theme = Theme::from_tokens(&tokens, Density::Comfortable);
+        for active in [false, true] {
+            let windowed = WindowMaterial::Frosted.wash(false, active).tint(&theme);
+            let expanded = WindowMaterial::Frosted.wash(true, active).tint(&theme);
+            let mut opacity = Transition::new(windowed.a, WASH_TRANSITION);
+            let material = |opacity| WindowMaterial::from_tint(windowed.alpha(opacity));
+
+            opacity.set(expanded.a);
+            assert_eq!(opacity.value(), windowed.a);
+            opacity.advance(Duration::from_millis(100));
+            let midway = opacity.value();
+            assert!(windowed.a < midway && midway < expanded.a);
+            assert_eq!(material(midway), WindowMaterial::Frosted);
+
+            opacity.set(windowed.a);
+            assert_eq!(opacity.value(), midway);
+            opacity.advance(Duration::from_millis(200));
+            assert_eq!(opacity.value(), windowed.a);
+
+            opacity.set(expanded.a);
+            opacity.advance(Duration::from_millis(200));
+            assert_eq!(material(opacity.value()), WindowMaterial::Opaque);
+
+            opacity.set(windowed.a);
+            assert_eq!(opacity.value(), expanded.a);
+            opacity.advance(Duration::from_millis(100));
+            assert_eq!(material(opacity.value()), WindowMaterial::Frosted);
+            opacity.advance(Duration::from_millis(100));
+            assert_eq!(opacity.value(), windowed.a);
+        }
+    }
 
     #[test]
     fn light_canvases_stay_light_over_dark_windows_even_when_inactive() {
@@ -131,7 +204,7 @@ mod tests {
         {
             let theme = Theme::from_tokens(tokens, Density::Comfortable);
             for (active, max_lightness_loss) in [(true, 0.04), (false, 0.08)] {
-                let tint = WindowMaterial::Frosted.tint(&theme, active);
+                let tint = WindowMaterial::Frosted.wash(false, active).tint(&theme);
                 let background = gpui::black().blend(tint);
                 assert!(
                     theme.colors.canvas.l - background.l <= max_lightness_loss,
@@ -144,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn window_tint_restores_contrast_when_active_and_stays_opaque_without_frost() {
+    fn window_tint_preserves_contrast_and_stays_opaque_when_expanded_or_disabled() {
         let themes = [
             include_str!("../../../assets/themes/subroutine-dark.json"),
             include_str!("../../../assets/themes/subroutine-light.json"),
@@ -155,11 +228,21 @@ mod tests {
         });
 
         for theme in themes {
-            let tint = WindowMaterial::Frosted.tint(&theme, true);
-            let inactive = WindowMaterial::Frosted.tint(&theme, false);
+            let tint = WindowMaterial::Frosted.wash(false, true).tint(&theme);
+            let inactive = WindowMaterial::Frosted.wash(false, false).tint(&theme);
             assert!(0.0 < inactive.a && inactive.a < tint.a && tint.a < 1.0);
-            assert_eq!(WindowMaterial::Opaque.tint(&theme, true).a, 1.0);
-            assert_eq!(WindowMaterial::Opaque.tint(&theme, false).a, 1.0);
+            for active in [false, true] {
+                assert_eq!(
+                    WindowMaterial::Frosted.wash(true, active).tint(&theme),
+                    theme.colors.canvas.alpha(1.0),
+                );
+                for expanded in [false, true] {
+                    assert_eq!(
+                        WindowMaterial::Opaque.wash(expanded, active).tint(&theme),
+                        theme.colors.canvas.alpha(1.0),
+                    );
+                }
+            }
 
             for backdrop in [gpui::black(), gpui::white()] {
                 let resting = backdrop.blend(tint);

@@ -6,11 +6,14 @@ mod time;
 mod title;
 mod when;
 
-use chrono::{DateTime, Duration, Local};
+#[cfg(test)]
+mod tests;
+
+use chrono::{DateTime, Duration, Local, NaiveDate};
 use thiserror::Error;
 
 use crate::{
-    ast::{EntityKind, ParseDraft},
+    ast::{EntityKind, ParseDraft, WhenSpec},
     lexer::{Token, lex},
 };
 use clauses::longest_match;
@@ -111,6 +114,23 @@ pub fn parse_marker(input: &str) -> Result<ParseDraft, ParseError> {
     parse_impl(input, EntityKind::Marker, Local::now())
 }
 
+/// Defaults undated markers and bare times to `date`; relative phrases still use the current time.
+pub fn parse_marker_on_date(input: &str, date: NaiveDate) -> Result<ParseDraft, ParseError> {
+    parse_on_date(input, EntityKind::Marker, date)
+}
+
+/// Defaults undated input and time-only clauses to `date`, without supplying a clock time.
+/// Explicit dates override it; relative phrases still use the current local date/time.
+/// Templates ignore `date`, and weekday recurrences align from it when no date is explicit.
+pub fn parse_on_date(
+    input: &str,
+    kind: EntityKind,
+    date: NaiveDate,
+) -> Result<ParseDraft, ParseError> {
+    parse_tokens(input, kind, Local::now(), Duration::minutes(5), Some(date))
+        .map_err(|error| error.with_input(input))
+}
+
 fn parse_impl(
     input: &str,
     kind: EntityKind,
@@ -125,7 +145,7 @@ pub fn parse_with_context(
     now: DateTime<Local>,
     granularity: Duration,
 ) -> Result<ParseDraft, ParseError> {
-    parse_tokens(input, kind, now, granularity).map_err(|error| error.with_input(input))
+    parse_tokens(input, kind, now, granularity, None).map_err(|error| error.with_input(input))
 }
 
 fn parse_tokens(
@@ -133,7 +153,9 @@ fn parse_tokens(
     kind: EntityKind,
     now: DateTime<Local>,
     granularity: Duration,
+    default_date: Option<NaiveDate>,
 ) -> Result<ParseDraft, ParseError> {
+    let default_date = default_date.filter(|_| !kind.is_template());
     let tokens = lex(input);
     let has_recurrence = has_recurrence_clause(&tokens)?;
     let mut draft = ParseDraft::new(kind.clone(), input);
@@ -155,8 +177,15 @@ fn parse_tokens(
             continue;
         }
 
-        if let Some(matched) = longest_match(&tokens, i, now, granularity, &draft, has_recurrence)?
-        {
+        if let Some(matched) = longest_match(
+            &tokens,
+            i,
+            now,
+            granularity,
+            &draft,
+            has_recurrence,
+            default_date,
+        )? {
             let len = matched.len;
             let kind = matched.apply(&mut draft);
             let start = tokens[i].span.start;
@@ -170,6 +199,7 @@ fn parse_tokens(
     }
 
     assemble_title(&mut draft, &tokens, &consumed);
+    draft.when = draft.when.or(default_date.map(WhenSpec::NaiveDate));
     crate::build::recurrence_to_rule(draft.recurrence.as_ref())
         .map_err(|error| ParseError::recurrence(input, error.to_string()))?;
     align_weekdays(

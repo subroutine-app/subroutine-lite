@@ -17,7 +17,7 @@ use gpui::{
     actions, div, point, px, size,
 };
 use gpui_kit::foundation::Selectable;
-use gpui_kit_theme::{ActiveTheme, Theme};
+use gpui_kit_theme::{ActiveTheme, Appearance, Theme};
 use subroutine_core::{AnyItem, ItemType};
 use uuid::Uuid;
 
@@ -52,11 +52,15 @@ pub const DEFAULT_ITEM_WIDTH: Pixels = px(64. * 4.);
 type ItemCardClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 fn neutral_card_colors(theme: &Theme) -> ButtonColors {
+    let bg = match theme.appearance {
+        Appearance::Light => theme.colors.raised,
+        Appearance::Dark => theme.colors.panel,
+    };
     ButtonColors {
-        bg: theme.colors.raised,
+        bg,
         fg: theme.colors.text,
-        hover: theme.colors.raised.blend(theme.colors.hover),
-        active: theme.colors.raised.blend(theme.colors.active),
+        hover: bg.blend(theme.colors.hover),
+        active: bg.blend(theme.colors.active),
         border: Some(theme.colors.hairline),
     }
 }
@@ -72,7 +76,7 @@ pub fn item_icon(item: ItemType) -> Icon {
 }
 
 pub fn card_background(cx: &App) -> Hsla {
-    cx.theme().colors.raised
+    neutral_card_colors(cx.theme()).bg
 }
 
 #[derive(Clone)]

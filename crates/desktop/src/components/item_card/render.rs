@@ -8,6 +8,7 @@ use gpui::{
 
 use gpui_kit::foundation::FocusRing as _;
 use gpui_kit_theme::ActiveTheme;
+use subroutine_core::{AnyItem, ItemType};
 
 use crate::{
     components::{
@@ -24,7 +25,7 @@ use crate::{
 };
 
 use super::{
-    CardPresentation, DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale,
+    CardMeta, CardPresentation, DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale,
     PREVIEW_HOVER_GROUP, ToggleItemDetails, availability::projected_event_availability_target,
     card_background, content::CardContentGeometry, create_drag_data, draft_type::open_type_menu,
     menu::card_context_menu, neutral_card_colors, notes::item_content,
@@ -177,6 +178,19 @@ impl RenderOnce for ItemCard {
         };
         self.actionable &= !is_draft;
         self.draggable &= !is_draft;
+        if is_draft && matches!(self.item, AnyItem::Action(_)) {
+            let manager = ItemManager::global(cx);
+            if let Some(editing) = manager.read(cx).editing_item.as_ref()
+                && editing.id() == self.item.id()
+                && editing.item_type() == ItemType::Event
+            {
+                self.meta = editing
+                    .draft_needs_time()
+                    .then(|| CardMeta::new("Time required"))
+                    .into_iter()
+                    .collect();
+            }
+        }
         let can_change_type = self.editable
             && ItemManager::global(cx)
                 .read(cx)

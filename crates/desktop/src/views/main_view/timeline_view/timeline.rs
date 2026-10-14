@@ -727,7 +727,7 @@ impl TimelineView {
         let start = scroll_position - horizon;
         let end = scroll_position + horizon;
         let base_division = self.current_division_state().base_division;
-        let outer_label_layout = self.outer_label_layout(window);
+
         let floor = base_division.floor_boundary(start);
 
         let num_divisions =
@@ -847,10 +847,9 @@ impl TimelineView {
                     })
             }))
             .children(divisions.iter().copied().map(|time| {
-                let outer_period = base_division
+                let is_outer = base_division
                     .outer_period_label_at(time)
-                    .filter(|period| period.start == time);
-                let is_outer = outer_period.is_some();
+                    .is_some_and(|period| period.start == time);
                 let is_hovered_divider = hovered_divider == Some(time);
                 let hover_divider = cx.theme().colors.hairline_strong;
                 let base_end = base_division.next_boundary(time);
@@ -890,6 +889,24 @@ impl TimelineView {
                             })
                             .child(base_division.base_label_style().label(time, false, cx)),
                     )
+                    .children(
+                        matches!(
+                            base_division,
+                            BaseTimeDivision::Day
+                                | BaseTimeDivision::Month
+                                | BaseTimeDivision::Year
+                        )
+                        .then(|| self.marker_summary(time, base_end))
+                        .flatten()
+                        .map(|summary| {
+                            self.render_marker_summary(
+                                summary,
+                                ("timeline-heading-markers", time.timestamp() as u64),
+                                (self.bounds.unwrap_or_default().size.width * 0.3).min(px(240.)),
+                                cx,
+                            )
+                        }),
+                    )
                     .when(is_outer, |this| {
                         this.child(
                             Divider::horizontal()
@@ -897,9 +914,6 @@ impl TimelineView {
                                 .stroke(px(2.))
                                 .when(is_hovered_divider, |divider| divider.color(hover_divider)),
                         )
-                        .when_some(outer_period, |this, period| {
-                            this.child(outer_label_layout.spacer(&period.text, window))
-                        })
                     })
                     .when(!is_outer, |this| {
                         this.child(

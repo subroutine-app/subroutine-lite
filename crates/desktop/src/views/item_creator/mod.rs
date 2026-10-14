@@ -30,7 +30,7 @@ use gpui_kit::foundation::ThemeOverlay;
 use gpui_kit_theme::ActiveTheme;
 use gpui_kit_theme::{Surface, Theme};
 
-use parser::ParseDraft;
+use parser::{EntityKind, HighlightKind, ParseDraft};
 use subroutine_core::{Action, AnyItem, ItemType, SchedulePoint};
 use uuid::Uuid;
 
@@ -41,6 +41,9 @@ mod event_creator;
 mod marker_creator;
 mod routine_creator;
 mod signal_creator;
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) use chip::CreatorChip;
 use chip::{CHIP_HEIGHT, stagger};
@@ -207,6 +210,15 @@ struct BatchRun {
     placed: usize,
 }
 
+impl BatchRun {
+    fn after_save(self, cursor: Option<DateTime<Utc>>) -> Self {
+        Self {
+            cursor: cursor.or(self.cursor),
+            placed: self.placed + 1,
+        }
+    }
+}
+
 pub struct ItemCreator {
     pub focus_handle: FocusHandle,
     db_store: Entity<AppDatabaseStore>,
@@ -226,6 +238,7 @@ pub struct ItemCreator {
     parsed: Option<ParseDraft>,
     parse_error: Option<String>,
     draft: ItemDraft,
+    initial_draft: ItemDraft,
     item_id: Uuid,
 
     batch: Option<BatchRun>,
@@ -328,6 +341,7 @@ impl ItemCreator {
             title: String::new(),
             parsed: None,
             parse_error: None,
+            initial_draft: draft.clone(),
             draft,
             item_id: Uuid::now_v7(),
             batch: None,
@@ -350,6 +364,7 @@ impl ItemCreator {
     ) -> Self {
         let mut creator = Self::new(mode, window, cx);
         creator.draft.schedule.date = Some(date);
+        creator.initial_draft = creator.draft.clone();
         creator
     }
 
@@ -362,6 +377,7 @@ impl ItemCreator {
         creator.queue_required = true;
         creator.draft.queued = true;
         creator.draft.schedule.date = date;
+        creator.initial_draft = creator.draft.clone();
         creator
     }
 
@@ -372,6 +388,7 @@ impl ItemCreator {
     ) -> Self {
         let mut creator = Self::new(ItemType::Marker, window, cx);
         creator.draft.set_marker_range(range);
+        creator.initial_draft = creator.draft.clone();
         creator
     }
 
@@ -408,22 +425,8 @@ impl ItemCreator {
     }
 
     fn reparse(&mut self, _cx: &mut Context<Self>) {
-        let text = self.title.as_str();
         self.parse_error = None;
-        let parsed = if text.is_empty() {
-            Ok(None)
-        } else {
-            match self.mode {
-                ItemType::Action => parser::parse_action(text),
-                ItemType::Event => parser::parse_event(text),
-                ItemType::Routine => parser::parse_action(text),
-                ItemType::Marker => parser::parse_marker(text),
-                ItemType::Signal => parser::parse_signal(text),
-                ItemType::ActionTemplate => parser::parse_action(text),
-                ItemType::EventTemplate => parser::parse_event(text),
-            }
-            .map(Some)
-        };
+        let parsed = parse_title(&self.title, self.mode, self.draft.parse_date());
         self.parsed = match parsed {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -436,7 +439,6 @@ impl ItemCreator {
             self.parse_error = Some(error.to_string());
             return;
         }
-        self.draft.apply_mode_defaults(self.mode);
         if self.queue_required && self.mode == ItemType::Action {
             self.draft.queued = true;
         }
@@ -450,6 +452,7 @@ impl ItemCreator {
     }
 
     fn claim(&mut self, clause: Clause, _window: &mut Window, cx: &mut Context<Self>) {
+        self.draft.disown(clause);
         let Some(range) = self
             .parsed
             .as_ref()
@@ -459,7 +462,6 @@ impl ItemCreator {
         };
 
         let stripped = strip_clause(&self.title, range);
-        self.draft.disown(clause);
         self.claimed = Some(clause);
         self.claim_cue.trigger();
         self.title = stripped.trim().to_string();
@@ -533,8 +535,7 @@ impl ItemCreator {
         if mode != ItemType::Action {
             self.batch = None;
         }
-        self.draft.forget_reading();
-        self.reparse(cx);
+        self.draft.apply_mode_defaults(mode);
         self.body_cue.trigger();
         self.title_input.update(cx, |input, cx| {
             input.set_placeholder(title_placeholder(mode), cx);
@@ -604,20 +605,16 @@ impl ItemCreator {
         let Some(run) = self.batch.as_ref() else {
             return Ok(None);
         };
-        let settings = Settings::global(cx);
-        let context = self.db_store.read(cx).pipeline(&settings);
         self.draft.schedule.validate()?;
-
-        let named = self
-            .draft
-            .schedule
-            .has_time()
-            .then(|| self.draft.schedule.datetime())
-            .flatten();
-
         let probe = Action::new("")
             .with_duration(self.draft.duration.map(Into::into))
-            .with_start(named.map(SchedulePoint::DateTime));
+            .with_start(self.draft.schedule.point());
+        if !batch_needs_timed_placement(&probe) {
+            return Ok(None);
+        }
+
+        let settings = Settings::global(cx);
+        let context = self.db_store.read(cx).pipeline(&settings);
         let cursor = match run.cursor {
             Some(cursor) => cursor,
             None => context.batch_start()?,
@@ -639,16 +636,18 @@ impl ItemCreator {
 
     fn batch_summary(&self, cx: &App) -> Option<String> {
         let run = self.batch.as_ref()?;
-        let (start, end) = match self.batch_slot(cx) {
-            Ok(slot) => slot?,
+        let summary = match self.batch_slot(cx) {
+            Ok(Some((start, end))) => {
+                format!(
+                    "{} – {}",
+                    format_time(start.time()),
+                    format_time(end.time())
+                )
+            }
+            Ok(None) => self.action_summary(),
             Err(error) => return Some(error.to_owned()),
         };
-        Some(format!(
-            "#{} in batch · {} – {}",
-            run.placed + 1,
-            format_time(start.time()),
-            format_time(end.time()),
-        ))
+        Some(format!("#{} in batch · {summary}", run.placed + 1))
     }
 
     fn blocker(&self, cx: &App) -> Option<&str> {
@@ -730,7 +729,7 @@ impl ItemCreator {
         let batch = self.is_batching().then(|| self.batch.unwrap_or_default());
         let settings = Settings::global(cx);
         let result = self.db_store.update(cx, |store, cx| match (item, batch) {
-            (AnyItem::Action(action), Some(run)) => store
+            (AnyItem::Action(action), Some(run)) if batch_needs_timed_placement(&action) => store
                 .batch_action(action, run.cursor, &settings, cx)
                 .map(Some),
             (item, _) => store.create_items(vec![item], cx).map(|_| None),
@@ -740,15 +739,12 @@ impl ItemCreator {
             return;
         };
 
-        match (batch, advanced) {
-            (Some(run), Some(cursor)) => {
-                self.batch = Some(BatchRun {
-                    cursor: Some(cursor),
-                    placed: run.placed + 1,
-                });
+        match batch {
+            Some(run) => {
+                self.batch = Some(run.after_save(advanced));
                 self.reset(window, cx);
             }
-            _ => window.dispatch_action(Box::new(CloseOverlay), cx),
+            None => window.dispatch_action(Box::new(CloseOverlay), cx),
         }
     }
 
@@ -756,9 +752,8 @@ impl ItemCreator {
         self.title.clear();
         self.parsed = None;
         self.parse_error = None;
-        self.draft = ItemDraft::new();
+        self.draft = fresh_draft(&self.initial_draft, self.mode);
         self.item_id = Uuid::now_v7();
-        self.draft.apply_mode_defaults(self.mode);
         if self.queue_required && self.mode == ItemType::Action {
             self.draft.queued = true;
         }
@@ -816,7 +811,16 @@ impl ItemCreator {
                     .schedule
                     .time
                     .map(format_time)
-                    .unwrap_or_else(|| "Any time".into()),
+                    .unwrap_or_else(|| {
+                        if matches!(
+                            self.mode,
+                            ItemType::Event | ItemType::Signal | ItemType::EventTemplate
+                        ) {
+                            "Set time".into()
+                        } else {
+                            "Any time".into()
+                        }
+                    }),
             )
             .active(self.draft.schedule.has_time())
             .reveal(ui.at(ix))
@@ -863,7 +867,7 @@ impl ItemCreator {
             .icon(AppIcon::Timeline)
             .value(
                 self.draft
-                    .duration
+                    .duration_for(self.mode)
                     .map(format_duration)
                     .unwrap_or_else(|| "No length".into()),
             )
@@ -1756,6 +1760,47 @@ impl ItemCreator {
                     .on_click(cx.listener(|this, _, window, cx| this.submit_step(window, cx))),
             )
     }
+}
+
+fn parse_title(
+    text: &str,
+    mode: CreatorMode,
+    date: Option<chrono::NaiveDate>,
+) -> Result<Option<ParseDraft>, parser::ParseError> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let kind = match mode {
+        ItemType::Action | ItemType::ActionTemplate | ItemType::Routine => EntityKind::Action,
+        ItemType::Event | ItemType::EventTemplate => EntityKind::Event,
+        ItemType::Marker => EntityKind::Marker,
+        ItemType::Signal => EntityKind::Signal,
+    };
+    let mut parsed = match date {
+        Some(date) => parser::parse_on_date(text, kind, date),
+        None => parser::parse_with_context(text, kind, Local::now(), chrono::Duration::minutes(5)),
+    }?;
+    if parsed.recurrence.is_none()
+        && !parsed
+            .highlights
+            .iter()
+            .any(|(_, kind)| *kind == HighlightKind::When)
+    {
+        parsed.when = None;
+    }
+    Ok(Some(parsed))
+}
+
+// Undated batch entries use the scheduler; a named day stays date-only.
+fn batch_needs_timed_placement(action: &Action) -> bool {
+    !matches!(action.start, Some(SchedulePoint::Date(_)))
+}
+
+fn fresh_draft(initial: &ItemDraft, mode: CreatorMode) -> ItemDraft {
+    let mut draft = initial.clone();
+    draft.forget_reading();
+    draft.apply_mode_defaults(mode);
+    draft
 }
 
 const SIGILS: [char; 3] = ['@', '~', '%'];

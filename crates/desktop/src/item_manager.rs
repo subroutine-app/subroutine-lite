@@ -1,7 +1,8 @@
 mod draft;
+mod marker;
 
 pub(crate) use draft::{
-    DRAFT_KEY_CONTEXT, DraftAsAction, DraftAsEvent, DraftType, OpenDraftTypeMenu,
+    DRAFT_KEY_CONTEXT, DraftAsAction, DraftAsEvent, DraftDuration, DraftType, OpenDraftTypeMenu,
 };
 
 use std::time::Duration;
@@ -17,7 +18,7 @@ use gpui_kit::display::badge::Tone;
 use gpui_kit::foundation::Sizable as _;
 use gpui_kit_theme::ControlSize;
 
-use parser::{self, ParseDraft};
+use parser::{self, EntityKind, ParseDraft};
 use subroutine_core::{Action, AnyItem, Event, ItemType, PipelineContext, SchedulePoint};
 use uuid::Uuid;
 
@@ -157,7 +158,7 @@ pub(crate) fn next_batch_draft(
 
 pub struct EditingItem {
     pub original: ItemSubject,
-    alternate_draft: Option<AnyItem>,
+    draft: Option<draft::InlineDraft>,
     kind: EditKind,
     pub input: Entity<TextInput>,
     pub parsed: Result<Option<ParseDraft>, parser::ParseError>,
@@ -169,7 +170,13 @@ pub struct EditingItem {
 }
 
 impl EditingItem {
-    fn new(item: ItemSubject, kind: EditKind, window: &mut Window, cx: &mut App) -> Self {
+    fn new(
+        item: ItemSubject,
+        kind: EditKind,
+        draft: Option<draft::InlineDraft>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
         let title = item.title().to_string();
         let input = cx.new(|cx| {
             TextInput::new(format!("item-title.{}", item.id()), window, cx)
@@ -181,7 +188,7 @@ impl EditingItem {
         window.focus(&input.read(cx).focus_handle(cx), cx);
         let mut editing = Self {
             original: item,
-            alternate_draft: None,
+            draft,
             kind,
             input,
             parsed: Ok(None),
@@ -191,7 +198,7 @@ impl EditingItem {
             laid_out_highlight_revision: 0,
             _change: None,
         };
-        editing.parsed = editing.parse(&title);
+        editing.update_parse(&title);
         editing
     }
 
@@ -215,7 +222,27 @@ impl EditingItem {
     }
 
     pub fn item_type(&self) -> ItemType {
-        self.original.item_type()
+        self.draft
+            .as_ref()
+            .map_or_else(|| self.original.item_type(), |draft| draft.kind.item_type())
+    }
+
+    /// Reports a missing Event time, not other parse or validation failures.
+    pub fn draft_needs_time(&self) -> bool {
+        self.draft
+            .as_ref()
+            .is_some_and(|draft| draft.needs_time(&self.parsed))
+    }
+
+    fn update_parse(&mut self, text: &str) {
+        self.parsed = self.parse(text);
+        // Keep the draft in its creation slot while parsed clauses change.
+        if let Some(draft) = &self.draft
+            && let Ok(preview) = draft.preview(None, None)
+        {
+            self.original = ItemSubject::Live(preview);
+        }
+        self.highlight_revision = self.highlight_revision.wrapping_add(1);
     }
 
     pub fn parse(&self, text: &str) -> Result<Option<ParseDraft>, parser::ParseError> {
@@ -224,14 +251,32 @@ impl EditingItem {
             return Ok(None);
         }
 
-        match self.item_type() {
-            ItemType::Action => parser::parse_action(text),
-            ItemType::Event => parser::parse_event(text),
-            ItemType::Routine => parser::parse_routine_step(text),
-            ItemType::Marker => parser::parse_marker(text),
-            ItemType::Signal => parser::parse_signal(text),
-            ItemType::ActionTemplate => parser::parse_action_template(text),
-            ItemType::EventTemplate => parser::parse_event_template(text),
+        if let Some(draft) = &self.draft {
+            return draft.parse(text).map(Some);
+        }
+
+        match &self.original {
+            ItemSubject::Live(AnyItem::Action(action)) => {
+                draft::parse(text, EntityKind::Action, action.start.map(Into::into))
+            }
+            ItemSubject::Live(AnyItem::Event(event)) => draft::parse(
+                text,
+                EntityKind::Event,
+                Some(event.start.with_timezone(&Local).date_naive()),
+            ),
+            ItemSubject::Live(AnyItem::Routine(_)) => parser::parse_routine_step(text),
+            ItemSubject::Live(AnyItem::Marker(marker)) => {
+                parser::parse_marker_on_date(text, marker.date)
+            }
+            ItemSubject::Live(AnyItem::Signal(signal)) => draft::parse(
+                text,
+                EntityKind::Signal,
+                Some(signal.datetime.with_timezone(&Local).date_naive()),
+            ),
+            ItemSubject::Live(AnyItem::ActionTemplate(_))
+            | ItemSubject::Saved(SavedItem::Action(_)) => parser::parse_action_template(text),
+            ItemSubject::Live(AnyItem::EventTemplate(_))
+            | ItemSubject::Saved(SavedItem::Event(_)) => parser::parse_event_template(text),
         }
         .map(Some)
     }
@@ -318,7 +363,10 @@ impl ItemManager {
         } else {
             EditKind::Existing
         };
-        self.begin_subject_edit(ItemSubject::Live(item.clone()), kind, window, cx);
+        let draft = is_draft
+            .then(|| draft::InlineDraft::new(item, DraftDuration::Explicit))
+            .flatten();
+        self.begin_subject_edit(ItemSubject::Live(item.clone()), kind, draft, window, cx);
     }
 
     pub(super) fn begin_view_draft(
@@ -329,9 +377,47 @@ impl ItemManager {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.begin_view_draft_with_duration(
+            item,
+            view,
+            cursor,
+            DraftDuration::Suggested,
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn begin_view_draft_with_duration(
+        &mut self,
+        item: &AnyItem,
+        view: DraftView,
+        cursor: Option<DateTime<Utc>>,
+        duration: DraftDuration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.begin_subject_edit(
             ItemSubject::Live(item.clone()),
             EditKind::ViewDraft { view, cursor },
+            draft::InlineDraft::new(item, duration),
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn begin_event_draft(
+        &mut self,
+        start: Option<SchedulePoint>,
+        view: DraftView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = draft::InlineDraft::event(start, view.queues_actions());
+        let item = draft.preview(None, None).expect("seeded event draft");
+        self.begin_subject_edit(
+            ItemSubject::Live(item),
+            EditKind::ViewDraft { view, cursor: None },
+            Some(draft),
             window,
             cx,
         );
@@ -346,6 +432,7 @@ impl ItemManager {
         self.begin_subject_edit(
             ItemSubject::Saved(item.clone()),
             EditKind::Existing,
+            None,
             window,
             cx,
         );
@@ -355,6 +442,7 @@ impl ItemManager {
         &mut self,
         item: ItemSubject,
         kind: EditKind,
+        draft: Option<draft::InlineDraft>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -383,7 +471,7 @@ impl ItemManager {
         {
             cx.emit(DiscardDraft(previous.id()));
         }
-        let mut editing = EditingItem::new(item, kind, window, cx);
+        let mut editing = EditingItem::new(item, kind, draft, window, cx);
         let input = editing.input.clone();
         editing._change = Some(cx.subscribe_in(
             &input,
@@ -392,8 +480,7 @@ impl ItemManager {
                 if let TextInputEvent::Change(text) = event
                     && let Some(editing) = this.editing_item.as_mut()
                 {
-                    editing.parsed = editing.parse(text);
-                    editing.highlight_revision = editing.highlight_revision.wrapping_add(1);
+                    editing.update_parse(text);
                     cx.notify();
                 }
             },
@@ -577,32 +664,17 @@ impl ItemManager {
         let mut submitted = None;
 
         let committed = (|| -> crate::stores::SaveResult {
-            match &editing.original {
+            let resolved;
+            let subject = if let Some(inline) = &editing.draft {
+                resolved = ItemSubject::Live(inline.finish(draft.as_ref(), recurrence)?);
+                &resolved
+            } else {
+                &editing.original
+            };
+            let unapplied = draft.as_ref().filter(|_| editing.draft.is_none());
+            match subject {
                 ItemSubject::Live(AnyItem::Action(original)) => {
-                    let updated = match draft {
-                        Some(ref d) => {
-                            let mut a = original.clone();
-                            a.title = d.title.clone();
-                            if let Some(ref when) = d.when {
-                                apply_action_when(&mut a, when);
-                            }
-                            if let Some(dur) = d.duration {
-                                a.duration = Some(dur.into());
-                            }
-                            if let Some(rule) = recurrence {
-                                a.recurrence = Some(rule);
-                            }
-                            if let Some(ref content) = d.content {
-                                a.content = Some(content.clone());
-                            }
-                            a
-                        }
-                        None => {
-                            let mut a = original.clone();
-                            a.title = raw.clone();
-                            a
-                        }
-                    };
+                    let updated = draft::apply_action(original, unapplied, recurrence)?;
                     if draft_view.is_some() {
                         let mut updated = updated;
                         if draft_view.is_some_and(DraftView::queues_actions) {
@@ -630,30 +702,7 @@ impl ItemManager {
                     }
                 }
                 ItemSubject::Live(AnyItem::Event(original)) => {
-                    let updated = match draft {
-                        Some(ref d) => {
-                            let mut e = original.clone();
-                            e.title = d.title.clone();
-                            if let Some(parser::WhenSpec::DateTime(dt)) = d.when {
-                                e.start = dt;
-                            }
-                            if let Some(dur) = d.duration {
-                                e.duration = dur.into();
-                            }
-                            if let Some(rule) = recurrence {
-                                e.recurrence = Some(rule);
-                            }
-                            if let Some(ref content) = d.content {
-                                e.content = Some(content.clone());
-                            }
-                            e
-                        }
-                        None => {
-                            let mut e = original.clone();
-                            e.title = raw.clone();
-                            e
-                        }
-                    };
+                    let updated = draft::apply_event(original, unapplied, recurrence)?;
                     if draft_view.is_some() {
                         let mut updated = updated;
                         let mut items = Vec::new();
@@ -697,38 +746,7 @@ impl ItemManager {
                 }
                 ItemSubject::Live(AnyItem::Marker(original)) => {
                     let updated = match draft {
-                        Some(ref d) => {
-                            let mut marker = original.clone();
-                            marker.title = d.title.clone();
-                            if let Some(ref when) = d.when {
-                                use parser::WhenSpec;
-                                match when {
-                                    WhenSpec::NaiveDate(date) => marker.set_date(*date),
-                                    WhenSpec::DateTime(dt) => {
-                                        marker.set_date(dt.with_timezone(&Local).date_naive())
-                                    }
-                                }
-                            }
-                            if let Some(duration) = d.duration {
-                                if duration < chrono::Duration::days(1) {
-                                    return Err("A marker needs at least one day".into());
-                                }
-                                let span = duration
-                                    .checked_sub(&chrono::Duration::days(1))
-                                    .ok_or("The marker span is out of range")?;
-                                let end_date = marker.date.checked_add_signed(span).ok_or(
-                                    "The end date is outside the supported calendar range",
-                                )?;
-                                marker.set_end_date((end_date > marker.date).then_some(end_date));
-                            }
-                            if let Some(rule) = recurrence {
-                                marker.recurrence = Some(rule);
-                            }
-                            if let Some(ref content) = d.content {
-                                marker.content = Some(content.clone());
-                            }
-                            marker
-                        }
+                        Some(ref draft) => marker::apply(original, draft, recurrence)?,
                         None => {
                             let mut marker = original.clone();
                             marker.title = raw.clone();
@@ -739,20 +757,7 @@ impl ItemManager {
                 }
                 ItemSubject::Live(AnyItem::Signal(original)) => {
                     let updated = match draft {
-                        Some(ref d) => {
-                            let mut signal = original.clone();
-                            signal.title = d.title.clone();
-                            if let Some(parser::WhenSpec::DateTime(dt)) = d.when {
-                                signal.datetime = dt;
-                            }
-                            if let Some(rule) = recurrence {
-                                signal.recurrence = Some(rule);
-                            }
-                            if let Some(ref content) = d.content {
-                                signal.content = Some(content.clone());
-                            }
-                            signal
-                        }
+                        Some(ref d) => draft::apply_signal(original, d, recurrence)?,
                         None => {
                             let mut signal = original.clone();
                             signal.title = raw.clone();

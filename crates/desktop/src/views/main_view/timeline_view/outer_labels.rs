@@ -12,19 +12,25 @@ use crate::{
 };
 
 use super::{
-    BaseTimeDivision, HOUR_DIVIDER_HEIGHT, OuterPeriodLabel, STICKY_OUTER_LABEL_GAP,
-    STICKY_OUTER_LABEL_HEIGHT, STICKY_OUTER_LABEL_INSET, TimelineView, geometry::TimelineGeometry,
+    ANNOTATION_CHIP_HEIGHT, BaseTimeDivision, EDGE_HORIZON, HOUR_DIVIDER_HEIGHT, OuterPeriodLabel,
+    STICKY_OUTER_LABEL_GAP, STICKY_OUTER_LABEL_HEIGHT, STICKY_OUTER_LABEL_INSET, TimelineView,
+    geometry::TimelineGeometry,
 };
 
 const BORDER: Pixels = px(1.);
+const LABEL_PARALLAX_RATE: f32 = 0.82;
 
 fn sticky_center() -> Pixels {
     TOP_EDGE_INSET + STICKY_OUTER_LABEL_HEIGHT / 2.
 }
 
 fn boundary_center(geometry: &TimelineGeometry, time: DateTime<Local>) -> Pixels {
-    // Use the divider's snapped row, including its half-height, as the attachment anchor.
+    // Use the divider's snapped row, including its half-height, as the period boundary.
     geometry.y(geometry.offset(time) - HOUR_DIVIDER_HEIGHT / 2.) + HOUR_DIVIDER_HEIGHT / 2.
+}
+
+fn label_offset(geometry: &TimelineGeometry, time: DateTime<Local>) -> Pixels {
+    (boundary_center(geometry, time) - sticky_center()) * LABEL_PARALLAX_RATE
 }
 
 fn sticky_period(
@@ -95,18 +101,49 @@ impl OuterLabelLayout {
         px((width.as_f32() * window.scale_factor()).ceil() / window.scale_factor())
     }
 
-    pub(super) fn spacer(&self, text: &str, window: &Window) -> Div {
+    fn summary_width(&self, label_width: Pixels, viewport_width: Pixels) -> Pixels {
+        (viewport_width / 2. - STICKY_OUTER_LABEL_INSET - label_width - self.gap)
+            .clamp(px(0.), px(240.))
+    }
+
+    fn marker_context(
+        &self,
+        summary: Button,
+        label_width: Pixels,
+        summary_width: Pixels,
+        cx: &Context<TimelineView>,
+    ) -> Div {
         div()
-            .flex_none()
-            .w(self.width(text, window))
+            .absolute()
+            .top_0()
+            .right_0()
+            .w(label_width + self.gap + summary_width)
             .h(self.height)
-            .mr(STICKY_OUTER_LABEL_INSET)
+            .child(
+                summary
+                    .absolute()
+                    .left_0()
+                    .top((self.height - ANNOTATION_CHIP_HEIGHT) / 2.)
+                    .w(summary_width)
+                    .h(ANNOTATION_CHIP_HEIGHT)
+                    .justify_end(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left(self.padding)
+                    .right(self.padding)
+                    .h(BORDER)
+                    .bg(cx.theme().colors.hairline),
+            )
     }
 
     fn attached(
         &self,
         period: &OuterPeriodLabel,
         center: Pixels,
+        summary: Option<Div>,
         window: &Window,
         cx: &Context<TimelineView>,
     ) -> Div {
@@ -162,6 +199,7 @@ impl OuterLabelLayout {
                     .top(BORDER)
                     .right(BORDER),
             )
+            .children(summary)
     }
 
     fn content(&self, text: &str, width: Pixels, cx: &Context<TimelineView>) -> Div {
@@ -222,12 +260,15 @@ impl TimelineView {
         let period = sticky_period(division, &self.geometry)?;
         let layout = self.outer_label_layout(window);
         let next = division.outer_period_label_at(period.end)?;
-        let handoff = Handoff::new(boundary_center(&self.geometry, next.start), layout.height);
+        let label_center =
+            |time| sticky_center() + window.pixel_snap(label_offset(&self.geometry, time));
+        let next_center = label_center(next.start);
+        let handoff = Handoff::new(next_center, layout.height);
         let width = layout.width(&period.text, window);
         let shell_width = handoff.width(width, layout.width(&next.text, window));
         let sticky_top = sticky_center() - layout.height / 2.;
         let sticky_bottom = sticky_top + layout.height;
-        let target = if boundary_center(&self.geometry, next.start) <= sticky_bottom {
+        let target = if next_center <= sticky_bottom {
             &next
         } else {
             &period
@@ -249,6 +290,70 @@ impl TimelineView {
                 view.zoom_to_span(start, end, cx);
             }));
 
+        let day_context = |period: &OuterPeriodLabel| {
+            if division != BaseTimeDivision::Hour {
+                return None;
+            }
+            let label_width = layout.width(&period.text, window);
+            let summary_width = layout.summary_width(label_width, bounds.size.width);
+            if summary_width <= px(0.) {
+                return None;
+            }
+            let summary = self.marker_summary(period.start, period.end)?;
+            Some(
+                layout.marker_context(
+                    self.render_marker_summary(
+                        summary,
+                        (
+                            "timeline-outer-day-markers",
+                            period.start.timestamp() as u64,
+                        ),
+                        summary_width,
+                        cx,
+                    )
+                    .tab_stop(period.start == start),
+                    label_width,
+                    summary_width,
+                    cx,
+                ),
+            )
+        };
+
+        let partial_day = division == BaseTimeDivision::Day
+            && self.duration_to_height(Duration::days(1)) > bounds.size.height - TOP_EDGE_INSET;
+        let sticky_context = match division {
+            BaseTimeDivision::Minute | BaseTimeDivision::FiveMinutes | BaseTimeDivision::Day
+                if division != BaseTimeDivision::Day || partial_day =>
+            {
+                let time = if partial_day {
+                    self.geometry.time_at_y(sticky_center())
+                } else {
+                    start
+                };
+                let day = BaseTimeDivision::Day.floor_boundary(time);
+                let end = BaseTimeDivision::Day.next_boundary(day);
+                let summary_width = layout.summary_width(shell_width, bounds.size.width);
+                if summary_width > px(0.) {
+                    self.marker_summary(day, end).map(|summary| {
+                        layout.marker_context(
+                            self.render_marker_summary(
+                                summary.with_date(),
+                                ("timeline-sticky-day-markers", day.timestamp() as u64),
+                                summary_width,
+                                cx,
+                            ),
+                            shell_width,
+                            summary_width,
+                            cx,
+                        )
+                    })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
         // Keep the text's horizontal envelope independent of the changing glass width.
         let outgoing = div()
             .absolute()
@@ -266,14 +371,26 @@ impl TimelineView {
                     .opacity(handoff.opacity),
             );
 
+        // Share the date's handoff without widening its text clip or zoom target.
+        let outgoing_context = day_context(&period).map(|summary| {
+            div()
+                .absolute()
+                .top(sticky_top)
+                .right(STICKY_OUTER_LABEL_INSET)
+                .w(width + layout.gap + layout.summary_width(width, bounds.size.width))
+                .h(layout.height)
+                .overflow_hidden()
+                .child(summary.top(handoff.offset).opacity(handoff.opacity))
+        });
+
         let mut attached = Vec::new();
         let mut period = next;
         loop {
-            let center = boundary_center(&self.geometry, period.start);
-            if center - layout.height / 2. > bounds.size.height {
+            let center = label_center(period.start);
+            if center - layout.height / 2. > bounds.size.height + EDGE_HORIZON {
                 break;
             }
-            attached.push(layout.attached(&period, center, window, cx));
+            attached.push(layout.attached(&period, center, day_context(&period), window, cx));
             period = division.outer_period_label_at(period.end)?;
         }
 
@@ -282,7 +399,8 @@ impl TimelineView {
             .absolute()
             .top(sticky_top)
             .right(STICKY_OUTER_LABEL_INSET)
-            .child(sticky);
+            .child(sticky)
+            .children(sticky_context);
 
         // Paint attached text after the glass so entering glyphs are never part of its backdrop.
         Some(
@@ -291,6 +409,7 @@ impl TimelineView {
                 .inset_0()
                 .child(sticky)
                 .child(outgoing)
+                .children(outgoing_context)
                 .children(attached),
         )
     }
@@ -326,6 +445,40 @@ mod tests {
             assert_eq!((after.offset, after.opacity), (-travel, 0.));
             assert_eq!(after.width(current_width, next_width), next_width);
             assert_eq!(sticky_center() - height / 2. + height / 2., sticky_center());
+        }
+    }
+
+    #[test]
+    fn parallax_tracks_scroll_without_drifting_across_rebases() {
+        let epoch = Local
+            .with_ymd_and_hms(2026, 10, 13, 12, 0, 0)
+            .single()
+            .unwrap();
+        let duration = Duration::seconds(1);
+        for scale in [1., 1.25, 1.33, 1.5, 2.] {
+            let mut geometry = TimelineGeometry::new(epoch, duration, scale);
+            geometry.update(epoch, duration, px(0.), sticky_center(), scale);
+            let time = epoch + Duration::seconds(240);
+            let initial_boundary = boundary_center(&geometry, time);
+            let initial_offset = label_offset(&geometry, time);
+            for step in (-160..=160).chain((-160..=160).rev()) {
+                geometry.update(
+                    epoch,
+                    duration,
+                    px(step as f32 / 2.),
+                    sticky_center(),
+                    scale,
+                );
+                let movement = boundary_center(&geometry, time) - initial_boundary;
+                let label_movement = label_offset(&geometry, time) - initial_offset;
+                assert!((label_movement - movement * LABEL_PARALLAX_RATE).abs() < px(0.001));
+            }
+            let later = epoch + Duration::seconds(20_000);
+            geometry.update(later, duration, px(0.), sticky_center(), scale);
+            assert!(
+                (label_offset(&geometry, later + Duration::seconds(240)) - initial_offset).abs()
+                    < px(0.001)
+            );
         }
     }
 
@@ -368,6 +521,8 @@ mod tests {
                     }
                     assert!(boundary_center(&geometry, pinned.start) <= sticky_center());
                     assert!(boundary_center(&geometry, pinned.end) > sticky_center());
+                    assert!(label_offset(&geometry, pinned.start) <= px(0.));
+                    assert!(label_offset(&geometry, pinned.end) > px(0.));
                 }
             }
         }

@@ -41,6 +41,7 @@ const MIN_SUMMARY_WIDTH: Pixels = px(80.);
 const MIN_FULL_SUMMARY_WIDTH: Pixels = px(120.);
 
 const CREATE_ROW_HEIGHT: Pixels = px(24.);
+const DATE_BADGE_SIZE: Pixels = px(28.);
 
 fn same_month(date: NaiveDate, other: NaiveDate) -> bool {
     (date.year(), date.month()) == (other.year(), other.month())
@@ -115,7 +116,7 @@ fn calendar_salience(item: &AnyItem) -> Option<u8> {
         AnyItem::Marker(_) => None,
         AnyItem::Event(_) => Some(100),
         AnyItem::Action(action) => {
-            if matches!(action.start, Some(SchedulePoint::Date(_))) {
+            if action.start.is_some() {
                 Some(90)
             } else if action.pinned {
                 Some(80)
@@ -190,6 +191,15 @@ fn calendar_summaries(
     (summaries, hidden_count)
 }
 
+fn calendar_summary_time(start: Option<SchedulePoint>, day_width: Pixels) -> Option<String> {
+    match start? {
+        SchedulePoint::DateTime(time) if day_width >= MIN_FULL_SUMMARY_WIDTH => {
+            Some(format_item_time(time.into()))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod preview_tests {
     use super::*;
@@ -227,6 +237,58 @@ mod preview_tests {
     }
 
     #[test]
+    fn timed_actions_receive_previews_within_cell_limits() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let items: Vec<_> = [14, 9]
+            .into_iter()
+            .map(|hour| {
+                AnyItem::Action(Action::new(format!("Action at {hour}")).with_start(Some(
+                    SchedulePoint::DateTime(date.and_hms_opt(hour, 0, 0).unwrap().and_utc()),
+                )))
+            })
+            .collect();
+        let (summaries, hidden) = calendar_summaries(&items, px(160.), 3);
+        assert_eq!(
+            summaries.iter().map(AnyItem::id).collect::<Vec<_>>(),
+            vec![items[1].id(), items[0].id()]
+        );
+        assert_eq!(hidden, 0);
+
+        let (summaries, hidden) = calendar_summaries(&items, px(100.), 3);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id(), items[1].id());
+        assert_eq!(hidden, 1);
+
+        for (width, rows) in [(px(60.), 3), (px(160.), 1)] {
+            let (summaries, hidden) = calendar_summaries(&items, width, rows);
+            assert!(summaries.is_empty());
+            assert_eq!(hidden, items.len());
+        }
+    }
+
+    #[test]
+    fn preview_time_requires_a_timed_start_and_a_wide_cell() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let time = date
+            .and_hms_opt(9, 30, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .single()
+            .unwrap();
+        let start = Some(SchedulePoint::DateTime(time.into()));
+        assert_eq!(
+            calendar_summary_time(start, px(120.)).as_deref(),
+            Some("9:30am")
+        );
+        assert_eq!(calendar_summary_time(start, px(119.)), None);
+        assert_eq!(
+            calendar_summary_time(Some(SchedulePoint::Date(date)), px(160.)),
+            None
+        );
+        assert_eq!(calendar_summary_time(None, px(160.)), None);
+    }
+
+    #[test]
     fn busy_dates_leave_room_for_creation_and_report_hidden_items() {
         let date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
         let items: Vec<_> = (0..4)
@@ -257,12 +319,7 @@ fn render_calendar_summary(
 ) -> impl IntoElement {
     let item_type = item.item_type();
     let neutral = cx.theme().colors.text_muted;
-    let when = match item.start() {
-        Some(SchedulePoint::Date(_)) => "Any time".to_string(),
-        Some(start) => format_item_time(start.into()),
-        None => String::new(),
-    };
-    let has_time_label = !when.is_empty() && day_width >= MIN_FULL_SUMMARY_WIDTH;
+    let when = calendar_summary_time(item.start(), day_width);
     let id: ElementId =
         format!("calendar-summary-{}-{}", date.format("%Y-%m-%d"), item.id()).into();
     let persisted = crate::stores::AppDatabaseStore::global(cx)
@@ -302,14 +359,12 @@ fn render_calendar_summary(
                     .text_color(neutral),
             )
         })
-        .when(has_time_label, |this| {
-            this.child(
-                Label::new(when)
-                    .text_xs()
-                    .flex_none()
-                    .text_color(cx.theme().colors.text_muted),
-            )
-        })
+        .children(when.map(|when| {
+            Label::new(when)
+                .text_xs()
+                .flex_none()
+                .text_color(cx.theme().colors.text_muted)
+        }))
         .child(
             Label::new(item.title().to_string())
                 .text_xs()
@@ -445,6 +500,9 @@ impl CalendarView {
         let bounds = self.bounds.unwrap_or_default();
         let day_width = self.day_width();
         let narrow = day_width < px(60.);
+        let focus_ring_width = px(cx.theme().effects.focus_ring_width);
+        let cell_inset =
+            (window.rem_size() * if narrow { 0.125 } else { 0.25 }).max(focus_ring_width);
         let horizon = bounds.size.height / 2. + EDGE_HORIZON;
 
         let scroll_position = self.scroll_offset * -1.;
@@ -463,12 +521,9 @@ impl CalendarView {
         let range_end = range_start + chrono::Duration::weeks(num_weeks as i64);
         self.day_button_layouts
             .retain(|date, _| range_start <= *date && *date < range_end);
-        let content_top = window.line_height() + px(10.) + px(cx.theme().effects.focus_ring_width);
-        let preview_height = interval
-            - window.line_height()
-            - px(11.)
-            - px(cx.theme().effects.focus_ring_width * 2.)
-            - CREATE_ROW_HEIGHT;
+        let content_top = DATE_BADGE_SIZE + px(10.) + focus_ring_width;
+        let preview_height =
+            interval - DATE_BADGE_SIZE - px(11.) - focus_ring_width * 2. - CREATE_ROW_HEIGHT;
         let marker_limit = marker_capacity(preview_height);
         let manager = ItemManager::global(cx);
         let draft = match manager.read(cx).view_draft(DraftView::Calendar) {
@@ -556,9 +611,9 @@ impl CalendarView {
             .absolute()
             .inset_0()
             .id("calendar-grid")
-            .children((0..num_weeks).into_iter().map(|i| {
-                let y = first_row_top + i as f32 * interval;
-                let week_start = start_week.first_day() + chrono::Duration::weeks(i as i64);
+            .children((0..num_weeks).map(|row| {
+                let y = first_row_top + row as f32 * interval;
+                let week_start = start_week.first_day() + chrono::Duration::weeks(row as i64);
 
                 div()
                     .row()
@@ -566,32 +621,38 @@ impl CalendarView {
                     .top(y)
                     .w_full()
                     .h(interval)
-                    .children((0..7).map(|i| {
-                        let date = week_start + chrono::Duration::days(i as i64);
-                        let mut date_label = if date.day() == 1 && !narrow {
-                            Label::new(date.format("%b %-d").to_string())
-                                .px_1p5()
-                                .text_color(cx.theme().colors.text)
-                                .font_weight(FontWeight::LIGHT)
-                        } else {
-                            Label::new(date.format("%-d").to_string())
-                                .px_1p5()
-                                .text_color(cx.theme().colors.text)
-                                .font_weight(FontWeight::LIGHT)
-                        };
-                        if date == today {
-                            date_label = date_label
-                                .bg(UxColor::CurrentTime.color(cx.theme()))
-                                .text_color(UxColor::CurrentTime.on_fill(cx.theme()))
-                                .px_2()
-                                .rounded_full()
-                                .font_weight(FontWeight::SEMIBOLD);
-                        }
-                        date_label = date_label
+                    .children((0..7).map(|column| {
+                        let date = week_start + chrono::Duration::days(column as i64);
+
+                        let date_label = div()
+                            .row()
+                            .gap_0p5()
+                            .text_base()
+                            .text_color(cx.theme().colors.text)
+                            .font_weight(FontWeight::LIGHT)
                             .min_w_0()
                             .max_w_full()
-                            .when(narrow, |this| this.px_1().text_xs())
-                            .truncate();
+                            .when(narrow, |this| this.text_sm())
+                            .when(date.day() == 1 && !narrow, |this| {
+                                this.child(
+                                    Label::new(date.format("%b").to_string())
+                                        .min_w_0()
+                                        .flex_shrink_1()
+                                        .truncate(),
+                                )
+                            })
+                            .child(
+                                Label::new(date.format("%-d").to_string())
+                                    .size(DATE_BADGE_SIZE)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when(date == today, |this| {
+                                        this.bg(UxColor::CurrentTime.color(cx.theme()))
+                                            .text_color(UxColor::CurrentTime.on_fill(cx.theme()))
+                                            .rounded_full()
+                                    }),
+                            );
                         let selected = selected_range.is_some_and(|range| range.contains(date));
                         let drop_active = self.drop_target == Some(date);
                         let id: ElementId = format!("calendar-{}", date.format("%Y-%m-%d")).into();
@@ -813,8 +874,7 @@ impl CalendarView {
                                 div()
                                     .row()
                                     .pt_1p5()
-                                    .px_1()
-                                    .when(narrow, |this| this.px_0p5())
+                                    .px(cell_inset)
                                     .w_full()
                                     .min_w_0()
                                     .justify_end()
@@ -874,9 +934,8 @@ impl CalendarView {
                                     .min_w_0()
                                     .min_h_0()
                                     .overflow_hidden()
-                                    .px_1()
-                                    .when(narrow, |this| this.px_0p5())
-                                    .py(px(theme.effects.focus_ring_width))
+                                    .px(cell_inset)
+                                    .py(focus_ring_width)
                                     .w_full()
                                     .child(div().h(marker_height).flex_none())
                                     .child(
@@ -886,7 +945,6 @@ impl CalendarView {
                                             .min_w_0()
                                             .min_h_0()
                                             .flex_shrink_1()
-                                            .overflow_hidden()
                                             .when(has_entries && preview_rows > 0, |this| {
                                                 this.child(
                                                     Button::new((

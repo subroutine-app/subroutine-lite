@@ -7,11 +7,11 @@ use super::{
     date::{add_days, parse_ordinal_number, parse_weekday_name},
     duration::join_adjacent,
     is_numeric, numeric_end,
-    time::{date_at, default_time},
+    time::date_at,
     title::is_escaped,
 };
 use crate::{
-    ast::{EntityKind, ParseDraft, RecurrenceSpec, WeekdaySet, WhenSpec},
+    ast::{ParseDraft, RecurrenceSpec, WeekdaySet, WhenSpec},
     lexer::{SpannedToken, Token},
 };
 
@@ -260,13 +260,7 @@ pub(super) fn align_weekdays(draft: &mut ParseDraft, today: NaiveDate) -> Result
                 Some(WhenSpec::DateTime(dt)) => {
                     WhenSpec::DateTime(date_at(next, super::time::local_datetime(dt)?.time())?)
                 }
-                Some(WhenSpec::NaiveDate(_)) => WhenSpec::NaiveDate(next),
-                None => match draft.kind {
-                    EntityKind::Event | EntityKind::Signal => {
-                        WhenSpec::DateTime(date_at(next, default_time())?)
-                    }
-                    _ => WhenSpec::NaiveDate(next),
-                },
+                Some(WhenSpec::NaiveDate(_)) | None => WhenSpec::NaiveDate(next),
             });
             return Ok(());
         }

@@ -7,7 +7,7 @@ use gpui::{
     IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, size,
 };
-use gpui_kit::foundation::{Disableable as _, FocusRing as _, StyledExt as _};
+use gpui_kit::foundation::{Disableable as _, FocusRing as _, Selectable as _, StyledExt as _};
 use gpui_kit_theme::ActiveTheme;
 use subroutine_core::{AnyItem, SchedulePoint};
 use uuid::Uuid;
@@ -25,7 +25,7 @@ use crate::{
 use super::{
     UpcomingDropTarget, UpcomingSection, UpcomingView,
     agenda::{AgendaMarker, CreateKind, UpcomingRow},
-    headers::{CONTROLS_WIDTH, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT},
+    headers::{CONTROLS_HEIGHT, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT},
 };
 
 fn card_row(id: impl Into<ElementId>, height: Pixels) -> Stateful<Div> {
@@ -395,14 +395,42 @@ impl UpcomingView {
             (AppIcon::ListChevronsDownUp, "Collapse all lists")
         };
 
-        div()
+        let controls = div()
             .id("upcoming-section-controls")
-            .w(CONTROLS_WIDTH)
             .block_mouse_except_scroll()
             .on_click(|_, _, cx| cx.stop_propagation())
             .row()
             .flex_none()
             .items_center()
+            .gap(MARKER_GAP)
+            .child(
+                Button::new("upcoming-marker-only-dates")
+                    .ghost()
+                    .size(MARKER_HEIGHT)
+                    .icon(Icon::new(AppIcon::Calendar).size_4())
+                    .text_color(cx.theme().colors.text_muted)
+                    .selected(self.show_marker_only_dates)
+                    .track_focus(&self.marker_dates_focus)
+                    .role(gpui::Role::Button)
+                    .aria_label("Show marker-only dates")
+                    .aria_toggled(if self.show_marker_only_dates {
+                        gpui::Toggled::True
+                    } else {
+                        gpui::Toggled::False
+                    })
+                    .tooltip(if self.show_marker_only_dates {
+                        "Hide marker-only dates"
+                    } else {
+                        "Show marker-only dates"
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        SelectionManager::claim_press(cx)
+                    })
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        cx.stop_propagation();
+                        view.toggle_marker_only_dates(window, cx);
+                    })),
+            )
             .child(
                 Button::new("upcoming-toggle-all")
                     .ghost()
@@ -420,7 +448,17 @@ impl UpcomingView {
                             view.set_all_expanded(expanded, window, cx);
                         }))
                     }),
-            )
+            );
+
+        div()
+            .row()
+            .w_full()
+            .h(CONTROLS_HEIGHT)
+            .flex_none()
+            .px_4()
+            .items_center()
+            .justify_end()
+            .child(controls)
     }
 
     fn render_day(

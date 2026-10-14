@@ -1,4 +1,3 @@
-
 use gpui::Hsla;
 use gpui_kit_theme::{Appearance, SemanticBorder, SemanticWash, Theme};
 
@@ -72,6 +71,12 @@ impl UxColor {
 
     pub(crate) fn on_fill(self, theme: &Theme) -> Hsla {
         let fill = self.color(theme);
+        if self == Self::CurrentTime
+            && let Some(foreground) = theme.palette_color("brandUi.onCurrentTime")
+            && theme.contrast(foreground, fill) >= crate::themes::FILL_TEXT_MINIMUM
+        {
+            return foreground;
+        }
         let foreground = theme.readable_on(fill);
         if theme.contrast(foreground, fill) >= 4.5 {
             return foreground;

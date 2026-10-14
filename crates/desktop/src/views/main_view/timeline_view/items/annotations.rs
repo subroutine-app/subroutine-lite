@@ -1,36 +1,23 @@
-use std::{cell::Cell, collections::HashSet, rc::Rc};
+use std::collections::HashSet;
 
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use gpui::{
-    AnyElement, App, Bounds, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, StatefulInteractiveElement as _, Styled, Window, canvas, div, point,
-    prelude::FluentBuilder as _, px, size,
+    AnyElement, App, Context, InteractiveElement, IntoElement, ParentElement, Pixels, Styled,
+    Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_kit::foundation::{Selectable as _, StyledExt as _};
-use gpui_kit::layout::ScrollArea;
-use gpui_kit::overlay::{
-    Hang, Overlay, OverlaySurface, Placement, popover::anchored_slot, surface,
-};
+use gpui_kit::foundation::StyledExt as _;
 use gpui_kit_theme::ActiveTheme;
-use subroutine_core::{AnyItem, ItemType, Marker, SchedulePoint, Signal};
+use subroutine_core::{AnyItem, Marker, SchedulePoint, Signal};
 use uuid::Uuid;
 
-use crate::AppIcon;
-use crate::components::{Button, ButtonVariants, Divider, DragData, DraggedItems, ItemCard, Label};
-use crate::item_manager::ItemManager;
-use crate::selection::{
-    CompleteSelected, CopySelected, CutSelected, DeleteSelected, DuplicateSelected, PasteItems,
-    SelectAllItems, SelectionManager, SelectionScope, TogglePinnedSelected, ToggleQueuedSelected,
-};
+use crate::components::{Divider, ItemCard};
+use crate::selection::{SelectionManager, SelectionScope};
 use crate::views::TOP_EDGE_INSET;
 
-use super::super::{
-    CloseMarkerPanel, EDGE_HORIZON, TimelineView, toolbar::toolbar_right_clearance,
-};
+use super::super::{EDGE_HORIZON, TimelineView, toolbar::toolbar_right_clearance};
 use super::{
     ANNOTATION_CHIP_GAP, ANNOTATION_CHIP_HEIGHT, ANNOTATION_INSET, ANNOTATION_RIGHT_PADDING,
-    ATTACHED_ITEM_LEFT, MIN_ANNOTATION_CHIP_WIDTH, MIN_ANNOTATION_GUTTER,
-    STICKY_OUTER_LABEL_HEIGHT, STICKY_OUTER_LABEL_INSET, annotation_gutter_for,
+    ATTACHED_ITEM_LEFT, MIN_ANNOTATION_CHIP_WIDTH, MIN_ANNOTATION_GUTTER, annotation_gutter_for,
     sticky_outer_label_clearance,
 };
 
@@ -38,11 +25,6 @@ const GHOST_OPACITY: f32 = 0.45;
 const GHOST_LINE_OPACITY: f32 = 0.7;
 
 const LINE_STROKE: Pixels = px(1.);
-const MARKER_BUTTON_WIDTH: Pixels = px(44.);
-const MARKER_PANEL_WIDTH: Pixels = px(340.);
-const MARKER_PANEL_MAX_LIST_HEIGHT: Pixels = px(280.);
-const MARKER_ROW_HEIGHT: Pixels = px(42.);
-const MARKER_ROW_GAP: Pixels = px(4.);
 
 const MAX_ANNOTATION_RANGE: ChronoDuration = ChronoDuration::days(45);
 const MAX_ANNOTATIONS: usize = 128;
@@ -128,58 +110,6 @@ pub(super) fn day_start(date: NaiveDate) -> DateTime<Local> {
     SchedulePoint::Date(date).into()
 }
 
-fn marker_is_active_on(marker: &Marker, date: NaiveDate) -> bool {
-    marker.date <= date && marker.end_date.unwrap_or(marker.date) >= date
-}
-
-fn marker_button_bounds() -> Bounds<Pixels> {
-    Bounds::new(
-        point(
-            STICKY_OUTER_LABEL_INSET,
-            TOP_EDGE_INSET + (STICKY_OUTER_LABEL_HEIGHT - ANNOTATION_CHIP_HEIGHT) / 2.,
-        ),
-        size(MARKER_BUTTON_WIDTH, ANNOTATION_CHIP_HEIGHT),
-    )
-}
-
-fn marker_command_boundary<T: InteractiveElement>(element: T) -> T {
-    element
-        .on_action(|_: &CompleteSelected, _, cx| cx.stop_propagation())
-        .on_action(|_: &CopySelected, _, cx| cx.stop_propagation())
-        .on_action(|_: &CutSelected, _, cx| cx.stop_propagation())
-        .on_action(|_: &DeleteSelected, _, cx| cx.stop_propagation())
-        .on_action(|_: &DuplicateSelected, _, cx| cx.stop_propagation())
-        .on_action(|_: &PasteItems, _, cx| cx.stop_propagation())
-        .on_action(|_: &SelectAllItems, _, cx| cx.stop_propagation())
-        .on_action(|_: &TogglePinnedSelected, _, cx| cx.stop_propagation())
-        .on_action(|_: &ToggleQueuedSelected, _, cx| cx.stop_propagation())
-}
-
-fn sort_marker_rows(markers: &mut [(Marker, bool)], draft: Option<Uuid>) {
-    markers.sort_by_key(|(marker, projection)| {
-        (
-            Some(marker.id) != draft,
-            *projection,
-            marker.date,
-            marker.lineage_id,
-        )
-    });
-}
-
-fn marker_list_height(
-    heights: impl IntoIterator<Item = Pixels>,
-    viewport_height: Pixels,
-) -> Pixels {
-    let rows = heights
-        .into_iter()
-        .enumerate()
-        .map(|(index, height)| height + if index == 0 { px(0.) } else { MARKER_ROW_GAP })
-        .sum::<Pixels>()
-        .max(MARKER_ROW_HEIGHT);
-    rows.min(MARKER_PANEL_MAX_LIST_HEIGHT)
-        .min((viewport_height - marker_button_bounds().bottom() - px(64.)).max(px(0.)))
-}
-
 fn sticky_annotation_top(top: Pixels, bottom: Pixels, height: Pixels) -> Pixels {
     let ceiling = TOP_EDGE_INSET + sticky_outer_label_clearance();
     let floor = (bottom - height - px(4.)).max(top);
@@ -193,7 +123,7 @@ pub(super) fn sticky_chip_top(top: Pixels, bottom: Pixels) -> Pixels {
 #[derive(Default)]
 pub(crate) struct AnnotationCache {
     key: Option<(NaiveDate, NaiveDate, bool, u64)>,
-    markers: Vec<(Marker, bool)>,
+
     signals: Vec<(Signal, bool)>,
 }
 
@@ -230,7 +160,9 @@ impl TimelineView {
         self.annotations_revision = self.annotations_revision.wrapping_add(1);
     }
 
-    fn known_markers(&self) -> impl Iterator<Item = &Marker> {
+    pub(in crate::views::main_view::timeline_view) fn known_markers(
+        &self,
+    ) -> impl Iterator<Item = &Marker> {
         self.markers.iter().chain(self.draft_markers.iter())
     }
 
@@ -280,7 +212,7 @@ impl TimelineView {
         .max(MIN_ANNOTATION_CHIP_WIDTH)
     }
 
-    fn sync_annotations(&mut self) {
+    pub(super) fn sync_annotations(&mut self) {
         let (start, end) = self.drawn_range();
         let project_recurrences = end - start <= MAX_ANNOTATION_RANGE;
         let key = (
@@ -293,19 +225,7 @@ impl TimelineView {
             return;
         }
 
-        let (markers, signals) = if !project_recurrences {
-            let mut markers: Vec<(Marker, bool)> = self
-                .known_markers()
-                .filter(|marker| {
-                    marker.date <= end.date_naive()
-                        && marker.end_date.unwrap_or(marker.date) >= start.date_naive()
-                })
-                .cloned()
-                .map(|marker| (marker, false))
-                .collect();
-            markers.sort_by_key(|(marker, _)| (marker.date, marker.lineage_id));
-            markers.truncate(MAX_ANNOTATIONS);
-
+        let signals = if !project_recurrences {
             let start_utc = start.with_timezone(&Utc);
             let end_utc = end.with_timezone(&Utc);
             let mut signals: Vec<(Signal, bool)> = self
@@ -316,21 +236,17 @@ impl TimelineView {
                 .collect();
             signals.sort_by_key(|(signal, _)| (signal.datetime, signal.lineage_id));
             signals.truncate(MAX_ANNOTATIONS);
-            (markers, signals)
+            signals
         } else {
-            (
-                self.project_markers(start.date_naive(), end.date_naive()),
-                self.project_signals(start.into(), end.into()),
-            )
+            self.project_signals(start.into(), end.into())
         };
         self.annotation_cache = AnnotationCache {
             key: Some(key),
-            markers,
             signals,
         };
     }
 
-    fn project_markers(&self, start: NaiveDate, end: NaiveDate) -> Vec<(Marker, bool)> {
+    pub(super) fn project_markers(&self, start: NaiveDate, end: NaiveDate) -> Vec<(Marker, bool)> {
         let mut projected: Vec<Marker> = self
             .known_markers()
             .flat_map(|marker| marker.projections_between(start, end))
@@ -351,7 +267,6 @@ impl TimelineView {
             .chain(projected.into_iter().map(|marker| (marker, true)))
             .collect();
         visible.sort_by_key(|(marker, _)| (marker.date, marker.lineage_id));
-        visible.truncate(MAX_ANNOTATIONS);
         visible
     }
 
@@ -380,315 +295,6 @@ impl TimelineView {
         visible.dedup_by_key(|(signal, _)| (signal.datetime, signal.lineage_id));
         visible.truncate(MAX_ANNOTATIONS);
         visible
-    }
-
-    fn marker_header_date(&self) -> Option<NaiveDate> {
-        let bounds = self.bounds?;
-        let sample_y = TOP_EDGE_INSET + STICKY_OUTER_LABEL_HEIGHT / 2.;
-        Some(
-            self.position_to_time(sample_y - bounds.size.center().y)
-                .date_naive(),
-        )
-    }
-
-    fn active_header_markers(&self) -> impl Iterator<Item = &(Marker, bool)> {
-        let date = self.marker_header_date();
-        self.annotation_cache
-            .markers
-            .iter()
-            .filter(move |(marker, _)| date.is_some_and(|date| marker_is_active_on(marker, date)))
-    }
-
-    pub(super) fn close_marker_panel(
-        &mut self,
-        restore_focus: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.marker_panel_date.take().is_none() {
-            return;
-        }
-        self.marker_panel_draft = None;
-        let manager = ItemManager::global(cx);
-        if manager
-            .read(cx)
-            .editing_item
-            .as_ref()
-            .is_some_and(|editing| editing.item_type() == ItemType::Marker)
-        {
-            manager.update(cx, |manager, cx| {
-                manager.commit_open_edit(window, cx);
-            });
-        }
-        if restore_focus {
-            self.focus_handle.focus(window, cx);
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn render_marker_header(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        self.sync_annotations();
-        let date = self
-            .marker_panel_date
-            .or_else(|| self.marker_header_date())?;
-        let open = self.marker_panel_date.is_some();
-        let mut markers = if open {
-            self.project_markers(date, date)
-        } else {
-            self.active_header_markers().cloned().collect::<Vec<_>>()
-        };
-
-        if open {
-            for marker in self.known_markers() {
-                if (self.is_being_edited(marker.id, cx)
-                    || (self.marker_panel_draft == Some(marker.id)
-                        && marker_is_active_on(marker, date)))
-                    && !markers.iter().any(|(shown, _)| shown.id == marker.id)
-                {
-                    markers.push((marker.clone(), false));
-                }
-            }
-        }
-        if markers.is_empty() && !open {
-            return None;
-        }
-        sort_marker_rows(&mut markers, self.marker_panel_draft);
-        let count = markers.len();
-        if open
-            && self
-                .marker_panel_draft
-                .is_some_and(|id| !self.is_being_edited(id, cx))
-            && self.focus_handle.is_focused(window)
-        {
-            self.marker_trigger_focus.focus(window, cx);
-        }
-        let bounds = marker_button_bounds();
-        let trigger_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
-        let measured = trigger_bounds.clone();
-        let trigger = Button::new("timeline-markers")
-            .ghost()
-            .xsmall()
-            .compact()
-            .w(bounds.size.width)
-            .h(bounds.size.height)
-            .rounded_lg()
-            .icon(AppIcon::Calendar)
-            .label(count.to_string())
-            .tooltip(format!(
-                "{count} {} · {}",
-                if count == 1 { "marker" } else { "markers" },
-                date.format("%a %b %-d")
-            ))
-            .text_color(cx.theme().colors.text_muted)
-            .when(!open, |button| button.bg(cx.theme().colors.raised))
-            .selected(open)
-            .track_focus(&self.marker_trigger_focus)
-            .key_context("TimelineMarkers")
-            .map(marker_command_boundary)
-            .block_mouse_except_scroll()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                SelectionManager::claim_press(cx);
-                cx.stop_propagation();
-            })
-            .on_action(cx.listener(|view, _: &CloseMarkerPanel, window, cx| {
-                view.close_marker_panel(true, window, cx);
-            }))
-            .on_click(cx.listener(move |view, _, window, cx| {
-                cx.stop_propagation();
-                if view.marker_panel_date.is_some() {
-                    view.close_marker_panel(true, window, cx);
-                } else {
-                    view.marker_panel_date = Some(date);
-                    view.marker_panel_draft = None;
-                    view.marker_panel_scroll.set_offset(point(px(0.), px(0.)));
-                    view.marker_trigger_focus.focus(window, cx);
-                    cx.notify();
-                }
-            }))
-            .child(
-                canvas(
-                    move |bounds, _, _| measured.set(Some(bounds)),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-            .into_any_element();
-
-        let panel = open.then(|| {
-            let list_height = marker_list_height(
-                markers.iter().map(|(marker, projection)| {
-                    if *projection {
-                        MARKER_ROW_HEIGHT
-                    } else {
-                        self.marker_details.height(marker.id, MARKER_ROW_HEIGHT)
-                    }
-                }),
-                window.viewport_size().height,
-            );
-            let rows = markers
-                .into_iter()
-                .map(|(marker, projection)| {
-                    let item = AnyItem::Marker(marker);
-                    let row_height = if projection {
-                        MARKER_ROW_HEIGHT
-                    } else {
-                        self.marker_details.height(item.id(), MARKER_ROW_HEIGHT)
-                    };
-                    let focused = window.use_keyed_state(
-                        ("timeline-marker-focus-reveal", item.id_u64()),
-                        cx,
-                        |_, _| (false, px(0.)),
-                    );
-                    let scroll = self.marker_panel_scroll.clone();
-                    div()
-                        .h(row_height)
-                        .flex_none()
-                        .w_full()
-                        .opacity(if projection { GHOST_OPACITY } else { 1.0 })
-                        .child(
-                            ItemCard::new_with_id(
-                                ("timeline-marker-panel", item.id_u64()),
-                                &item,
-                                None,
-                                window,
-                                cx,
-                            )
-                            .size_full()
-                            .when(!projection, |card| {
-                                card.details(self.marker_details.get(item.id()))
-                            })
-                            .title_only(true)
-                            .border(false)
-                            .actionable(!projection)
-                            .draggable(!projection, None)
-                            .on_focus_resolved(move |bounds, handle, window, cx| {
-                                let is_focused = handle
-                                    .is_some_and(|handle| handle.contains_focused(window, cx));
-                                let (was_focused, previous_height) =
-                                    focused.update(cx, |previous, _| {
-                                        std::mem::replace(
-                                            previous,
-                                            (is_focused, bounds.size.height),
-                                        )
-                                    });
-                                let mut reveal = bounds;
-                                reveal.size.height = reveal
-                                    .size
-                                    .height
-                                    .min((scroll.bounds().size.height - px(8.)).max(px(0.)));
-                                if is_focused
-                                    && (!was_focused || previous_height != bounds.size.height)
-                                    && scroll.reveal_bounds(reveal, gpui::Edges::all(px(4.)))
-                                {
-                                    window.request_animation_frame();
-                                }
-                            })
-                            .block_mouse_except_scroll(),
-                        )
-                        .into_any_element()
-                })
-                .collect::<Vec<_>>();
-            let body = surface(
-                "timeline-markers.surface",
-                cx.theme(),
-                OverlaySurface::FLOATING,
-            )
-            .w(MARKER_PANEL_WIDTH.min((window.viewport_size().width - px(24.)).max(px(0.))))
-            .p_2()
-            .column()
-            .gap_1()
-            .key_context("TimelineMarkers")
-            .map(marker_command_boundary)
-            .on_action(cx.listener(|view, _: &CloseMarkerPanel, window, cx| {
-                view.close_marker_panel(true, window, cx);
-            }))
-            .on_mouse_down_out(cx.listener(
-                move |view, event: &gpui::MouseDownEvent, window, cx| {
-                    if trigger_bounds
-                        .get()
-                        .is_none_or(|bounds| !bounds.contains(&event.position))
-                    {
-                        view.close_marker_panel(false, window, cx);
-                    }
-                },
-            ))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                SelectionManager::claim_press(cx);
-                cx.stop_propagation();
-            })
-            .on_drag_move::<DragData<DraggedItems>>(cx.listener(|view, _, _, cx| {
-                view.marker_panel_date = None;
-                view.marker_panel_draft = None;
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .row()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .child(Label::new(format!("Markers · {}", date.format("%a %b %-d"))).text_sm())
-                    .child(
-                        Button::new("timeline-markers.close")
-                            .ghost()
-                            .xsmall()
-                            .compact()
-                            .icon(AppIcon::Close)
-                            .tooltip("Close markers")
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                cx.stop_propagation();
-                                view.close_marker_panel(true, window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                ScrollArea::new("timeline-markers.list")
-                    .vertical()
-                    .height(list_height.as_f32())
-                    .bound_to(self.marker_panel_scroll.clone())
-                    .child(
-                        div()
-                            .id("timeline-markers.entries")
-                            .w_full()
-                            .h(list_height)
-                            .overflow_y_scroll()
-                            .track_scroll(&self.marker_panel_scroll)
-                            .child(
-                                div()
-                                    .column()
-                                    .w_full()
-                                    .gap(MARKER_ROW_GAP)
-                                    .children(rows)
-                                    .when(count == 0, |list| {
-                                        list.child(
-                                            Label::new("No markers for this day")
-                                                .text_sm()
-                                                .text_color(cx.theme().colors.text_muted),
-                                        )
-                                    }),
-                            ),
-                    ),
-            );
-            Overlay::new("timeline-markers.overlay")
-                .placement(Placement::Below)
-                .hang(Hang::Start)
-                .window_snap_margin(px(8.))
-                .child(div().pt_1().child(body))
-                .into_any_element()
-        });
-        Some(
-            div()
-                .absolute()
-                .left(bounds.left())
-                .top(bounds.top())
-                .child(anchored_slot(Placement::Below, Hang::Start, trigger, panel))
-                .into_any_element(),
-        )
     }
 
     pub(crate) fn render_signal_ticks(
