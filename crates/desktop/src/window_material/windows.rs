@@ -1,21 +1,136 @@
 use std::time::Duration;
 
-use gpui::{App, Global, Task};
+use anyhow::Context as _;
+use gpui::{App, Global, Hsla, Task, Window, WindowAppearance, WindowBackgroundAppearance};
+use gpui_kit_theme::{ActiveTheme as _, Appearance};
+use raw_window_handle::RawWindowHandle;
 use windows::{
     Foundation::{EventHandler, TypedEventHandler},
     System::Power::{EnergySaverStatus, PowerManager},
     UI::ViewManagement::{AccessibilitySettings, UISettings},
     Wdk::System::SystemServices::RtlGetVersion,
     Win32::{
-        Graphics::Dwm::DwmIsCompositionEnabled,
-        System::{
-            LibraryLoader::{GetModuleHandleW, GetProcAddress},
-            SystemInformation::OSVERSIONINFOW,
+        Foundation::HWND,
+        Graphics::Dwm::{
+            DWM_SYSTEMBACKDROP_TYPE, DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMWA_SYSTEMBACKDROP_TYPE,
+            DWMWA_USE_IMMERSIVE_DARK_MODE, DwmIsCompositionEnabled, DwmSetWindowAttribute,
         },
+        System::SystemInformation::OSVERSIONINFOW,
         UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION},
     },
-    core::{IInspectable, Result, s, w},
+    core::{BOOL, IInspectable, Result},
 };
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Backdrop {
+    #[default]
+    Opaque,
+    Mica,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Request {
+    backdrop: Backdrop,
+    appearance: Appearance,
+    system_appearance: WindowAppearance,
+}
+
+#[derive(Default)]
+pub(crate) struct WindowMaterial {
+    request: Option<Request>,
+    backdrop: Backdrop,
+}
+
+impl WindowMaterial {
+    pub(crate) fn background(&mut self, window: &mut Window, cx: &App) -> Hsla {
+        let request = Request {
+            backdrop: if crate::settings::Settings::global(cx).frosted_background
+                && !cx.theme().reduce_transparency
+                && allows_transparency(cx)
+            {
+                Backdrop::Mica
+            } else {
+                Backdrop::Opaque
+            },
+            appearance: cx.theme().appearance,
+            // GPUI reapplies system DWM colors when this changes, even with an app override.
+            system_appearance: window.appearance(),
+        };
+        if self.request != Some(request) {
+            self.backdrop = match apply_backdrop(request, window, cx) {
+                Ok(backdrop) => backdrop,
+                Err(error) => {
+                    tracing::warn!(%error, "Native window backdrop unavailable; using an opaque background");
+                    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+                    Backdrop::Opaque
+                }
+            };
+            self.request = Some(request);
+            window.refresh();
+        }
+        match self.backdrop {
+            Backdrop::Opaque => cx.theme().colors.canvas.alpha(1.0),
+            // Mica is itself opaque. Only the root paint exposes it, not the desktop.
+            Backdrop::Mica => gpui::black().alpha(0.0),
+        }
+    }
+}
+
+fn apply_backdrop(request: Request, window: &mut Window, cx: &App) -> anyhow::Result<Backdrop> {
+    if !cx.has_global::<SystemTransparency>() {
+        window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+        return Ok(Backdrop::Opaque);
+    }
+    let handle = raw_window_handle::HasWindowHandle::window_handle(window)?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        anyhow::bail!("expected a Win32 window handle");
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut _);
+    apply_native_backdrop(request, window, hwnd).inspect_err(|_| {
+        if let Err(error) = set_backdrop(hwnd, DWMSBT_NONE) {
+            tracing::warn!(%error, "Failed to clear rejected native backdrop");
+        }
+    })?;
+    Ok(request.backdrop)
+}
+
+fn apply_native_backdrop(request: Request, window: &mut Window, hwnd: HWND) -> anyhow::Result<()> {
+    let dark_mode = BOOL::from(request.appearance == Appearance::Dark);
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            (&dark_mode as *const BOOL).cast(),
+            size_of::<BOOL>() as u32,
+        )
+    }
+    .context("set native window appearance")?;
+
+    // GPUI 27103c3's Mica setter ignores DWM failures and Opaque does not clear
+    // DWMWA_SYSTEMBACKDROP_TYPE. Own the checked DWM lifecycle until it does.
+    match request.backdrop {
+        Backdrop::Mica => {
+            window.set_background_appearance(WindowBackgroundAppearance::MicaBackdrop);
+            set_backdrop(hwnd, DWMSBT_MAINWINDOW).context("enable Mica")?;
+        }
+        Backdrop::Opaque => {
+            window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+            set_backdrop(hwnd, DWMSBT_NONE).context("clear native backdrop")?;
+        }
+    }
+    Ok(())
+}
+
+fn set_backdrop(hwnd: HWND, backdrop: DWM_SYSTEMBACKDROP_TYPE) -> Result<()> {
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            (&backdrop as *const DWM_SYSTEMBACKDROP_TYPE).cast(),
+            size_of::<DWM_SYSTEMBACKDROP_TYPE>() as u32,
+        )
+    }
+}
 
 struct SystemTransparency {
     settings: SettingsObserver,
@@ -25,8 +140,8 @@ struct SystemTransparency {
 
 impl Global for SystemTransparency {}
 
-pub(super) fn init(cx: &mut App) {
-    if cx.has_global::<SystemTransparency>() || !supports_acrylic() {
+pub(crate) fn init(cx: &mut App) {
+    if cx.has_global::<SystemTransparency>() || !supports_mica() {
         return;
     }
 
@@ -79,27 +194,22 @@ pub(super) fn allows_transparency(cx: &App) -> bool {
     })
 }
 
-fn supports_acrylic() -> bool {
+fn supports_mica() -> bool {
     let mut version = OSVERSIONINFOW {
         dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
         ..Default::default()
     };
-    if !unsafe { RtlGetVersion(&mut version) }.is_ok()
-        || (
+    unsafe { RtlGetVersion(&mut version) }.is_ok()
+        && supports_system_backdrop(
             version.dwMajorVersion,
             version.dwMinorVersion,
             version.dwBuildNumber,
-        ) < (10, 0, 17763)
-    {
-        return false;
-    }
+        )
+}
 
-    // GPUI owns acrylic rendering; only probe its required entry point here.
-    unsafe {
-        GetModuleHandleW(w!("user32.dll")).is_ok_and(|module| {
-            GetProcAddress(module, s!("SetWindowCompositionAttribute")).is_some()
-        })
-    }
+fn supports_system_backdrop(major: u32, minor: u32, build: u32) -> bool {
+    // The documented DWM API starts at Windows 11 22H2, not the original 22000 release.
+    (major, minor, build) >= (10, 0, 22621)
 }
 
 struct SettingsObserver {
@@ -183,6 +293,15 @@ fn notification_token(event: &str, result: Result<i64>) -> Option<i64> {
 mod tests {
     use super::*;
     use windows::core::{Error, HRESULT};
+
+    #[test]
+    fn mica_requires_the_documented_dwm_api() {
+        assert!(!supports_system_backdrop(10, 0, 19045));
+        assert!(!supports_system_backdrop(10, 0, 22000));
+        assert!(!supports_system_backdrop(10, 0, 22620));
+        assert!(supports_system_backdrop(10, 0, 22621));
+        assert!(supports_system_backdrop(10, 0, 26100));
+    }
 
     #[test]
     fn successful_notification_keeps_its_cleanup_token() {

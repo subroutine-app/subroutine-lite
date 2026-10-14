@@ -1131,24 +1131,20 @@ impl Render for SettingsView {
             .row(
                 SettingsRow::new(
                     "settings.appearance.frosted-background",
-                    "Frosted background",
+                    "Native window backdrop",
                 )
-                .description(if cfg!(any(target_os = "macos", target_os = "windows")) {
-                    "Blur the content behind the window."
+                .description(if cfg!(target_os = "windows") {
+                    "Use Mica, a subtle wallpaper-derived window background."
                 } else {
-                    "Available on macOS and Windows."
+                    "Windows only. macOS uses an opaque content background with native window chrome."
                 })
-                .info(if cfg!(target_os = "windows") {
-                    "Requires Windows 10 version 1809 or newer and Transparency effects. High Contrast, Energy Saver, remote sessions, unsupported systems, and maximized or full-screen windows use a solid background."
-                } else {
-                    "System and theme Reduce Transparency settings take precedence."
-                })
-                .search_terms(["blur", "glass", "acrylic", "transparency"])
+                .info("Requires Windows 11 version 22H2 or newer. Unsupported systems, disabled transparency, High Contrast, Energy Saver, and remote sessions use a solid theme background. Focus and window size do not change this preference.")
+                .search_terms(["mica", "backdrop", "transparency"])
                 .switch(
                     Switch::new("settings-frosted-background")
-                        .named("Frosted background")
-                        .on(settings.frosted_background)
-                        .disabled(!cfg!(any(target_os = "macos", target_os = "windows")))
+                        .named("Native window backdrop")
+                        .on(cfg!(target_os = "windows") && settings.frosted_background)
+                        .disabled(!cfg!(target_os = "windows"))
                         .large()
                         .on_change(|enabled, _window, cx| {
                             Settings::update(cx, |settings| {

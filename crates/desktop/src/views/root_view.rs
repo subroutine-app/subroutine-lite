@@ -201,22 +201,9 @@ impl Focusable for RootView {
     }
 }
 
-impl RootView {
-    fn update_window_material(&mut self, window: &mut Window, cx: &mut App) -> gpui::Hsla {
-        let tint = WindowMaterial::for_window(cx).animated_tint(window, cx);
-        // Keep native blur behind the wash until the fade reaches full opacity.
-        let material = WindowMaterial::from_tint(tint);
-        if material != self.window_material {
-            material.apply(window);
-            self.window_material = material;
-        }
-        tint
-    }
-}
-
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let window_tint = self.update_window_material(window, cx);
+        let window_tint = self.window_material.background(window, cx);
         if let Some(status) = self.render_status(cx) {
             let root = div()
                 .absolute()

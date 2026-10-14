@@ -232,6 +232,8 @@ pub fn init(cx: &mut App) {
                 if Settings::global(cx).appearance == AppearancePreference::System {
                     activate_preferred_for(window.appearance(), cx);
                 }
+                // The native Windows theme handler also runs with an explicit app appearance.
+                window.refresh();
             })
             .detach();
     })
