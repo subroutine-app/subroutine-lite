@@ -5,7 +5,7 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, DragMoveEvent, ElementId, FontWeight, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
     ParentElement, Pixels, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder,
-    px, relative, size,
+    px, relative, rems, size,
 };
 use gpui_kit::foundation::StyledExt as _;
 use gpui_kit_theme::ActiveTheme;
@@ -30,7 +30,7 @@ use crate::{
 
 use super::super::{format_item_time, is_calendar_item_on};
 use super::{
-    CalendarView, GridCreation,
+    CalendarView, GridCreation, MAX_WEEK_HEIGHT, MIN_WEEK_HEIGHT,
     borders::GridBorders,
     date_context_menu, date_range_context_menu,
     markers::{MarkerLayout, marker_capacity, marker_content_height, marker_preview},
@@ -509,6 +509,11 @@ impl CalendarView {
         let start = scroll_position - horizon;
         let end = scroll_position + horizon;
         let interval = self.week_height;
+        let date_scale = 0.75
+            + 0.25
+                * ((interval - MIN_WEEK_HEIGHT) / (MAX_WEEK_HEIGHT - MIN_WEEK_HEIGHT))
+                    .clamp(0., 1.);
+        let date_badge_size = DATE_BADGE_SIZE * date_scale;
         let first_row = (start / interval).floor() as i64;
         let first_row_top = interval * first_row as f32 - start;
         let start_week = self.week_at_row(first_row);
@@ -521,9 +526,9 @@ impl CalendarView {
         let range_end = range_start + chrono::Duration::weeks(num_weeks as i64);
         self.day_button_layouts
             .retain(|date, _| range_start <= *date && *date < range_end);
-        let content_top = DATE_BADGE_SIZE + px(10.) + focus_ring_width;
+        let content_top = date_badge_size + px(10.) + focus_ring_width;
         let preview_height =
-            interval - DATE_BADGE_SIZE - px(11.) - focus_ring_width * 2. - CREATE_ROW_HEIGHT;
+            interval - date_badge_size - px(11.) - focus_ring_width * 2. - CREATE_ROW_HEIGHT;
         let marker_limit = marker_capacity(preview_height);
         let manager = ItemManager::global(cx);
         let draft = match manager.read(cx).view_draft(DraftView::Calendar) {
@@ -626,13 +631,12 @@ impl CalendarView {
 
                         let date_label = div()
                             .row()
-                            .gap_0p5()
-                            .text_base()
+                            .gap(rems(0.125 * date_scale))
+                            .text_size(rems(date_scale))
                             .text_color(cx.theme().colors.text)
                             .font_weight(FontWeight::LIGHT)
                             .min_w_0()
                             .max_w_full()
-                            .when(narrow, |this| this.text_sm())
                             .when(date.day() == 1 && !narrow, |this| {
                                 this.child(
                                     Label::new(date.format("%b").to_string())
@@ -643,7 +647,7 @@ impl CalendarView {
                             })
                             .child(
                                 Label::new(date.format("%-d").to_string())
-                                    .size(DATE_BADGE_SIZE)
+                                    .size(date_badge_size)
                                     .flex()
                                     .items_center()
                                     .justify_center()
@@ -885,7 +889,7 @@ impl CalendarView {
                                         ))
                                         .ghost()
                                         .compact()
-                                        .h_auto()
+                                        .h(date_badge_size)
                                         .w_full()
                                         .p_0()
                                         .justify_end()
