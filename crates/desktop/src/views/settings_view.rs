@@ -23,6 +23,9 @@ use gpui_kit_theme::{ActiveTheme, ControlSize, Radius, Space, Surface};
 #[path = "sync_status.rs"]
 mod sync_status;
 use self::sync_status::SyncStatusView;
+#[path = "import_settings.rs"]
+mod import_settings;
+use self::import_settings::ImportSettings;
 
 use crate::components::{
     Button, ButtonVariants as _, CloseOverlay, Label, elastic_overscroll::ElasticOverscroll,
@@ -74,16 +77,18 @@ enum SettingsCategory {
     Keymap,
     Timeline,
     Calendar,
+    Import,
 }
 
 impl SettingsCategory {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Account,
         Self::General,
         Self::Appearance,
         Self::Keymap,
         Self::Timeline,
         Self::Calendar,
+        Self::Import,
     ];
 
     const fn id(self) -> &'static str {
@@ -94,6 +99,7 @@ impl SettingsCategory {
             Self::Keymap => "keymap",
             Self::Timeline => "timeline",
             Self::Calendar => "calendar",
+            Self::Import => "import",
         }
     }
 
@@ -105,6 +111,7 @@ impl SettingsCategory {
             Self::Keymap => "Keymap",
             Self::Timeline => "Timeline",
             Self::Calendar => "Calendar",
+            Self::Import => "Import",
         }
     }
 
@@ -116,6 +123,7 @@ impl SettingsCategory {
             Self::Keymap => Icon::Keyboard,
             Self::Timeline => Icon::ClockCountdown,
             Self::Calendar => Icon::Calendar,
+            Self::Import => Icon::Calendar,
         }
     }
 }
@@ -237,6 +245,7 @@ pub struct SettingsView {
     focus_handle: FocusHandle,
     end_focus: FocusHandle,
     sync_status: Entity<SyncStatusView>,
+    import_settings: Entity<ImportSettings>,
     search_input: Entity<SearchInput>,
     active_category: SettingsCategory,
     category_focus: [FocusHandle; SettingsCategory::ALL.len()],
@@ -297,6 +306,10 @@ impl SettingsView {
 
     fn show_category(&mut self, category: SettingsCategory, cx: &mut Context<Self>) {
         self.active_category = category;
+        if category == SettingsCategory::Import {
+            self.import_settings
+                .update(cx, |panel, cx| panel.activate(cx));
+        }
         self.search_input
             .update(cx, |search, cx| search.set_value("", cx));
         cx.notify();
@@ -846,10 +859,14 @@ impl SettingsView {
         .detach();
 
         let sync_status = cx.new(SyncStatusView::new);
+        let import_settings = cx.new(|cx| ImportSettings::new(window, cx));
+        cx.observe(&import_settings, |_, _, cx| cx.notify())
+            .detach();
         Self {
             focus_handle,
             end_focus: cx.focus_handle().tab_index(isize::MAX),
             sync_status,
+            import_settings,
             search_input,
             active_category: SettingsCategory::default(),
             category_focus: SettingsCategory::ALL.map(|_| cx.focus_handle()),
@@ -1493,7 +1510,24 @@ impl Render for SettingsView {
                 sections.extend([planning, timeline_behavior]);
             }
             (false, SettingsCategory::Calendar) => sections.push(calendar),
+            (false, SettingsCategory::Import) => {}
         }
+        if searching || active_category == SettingsCategory::Import {
+            sections.extend(
+                self.import_settings
+                    .update(cx, |panel, cx| panel.sections(searching, cx)),
+            );
+        }
+
+        #[cfg(feature = "private-workiq")]
+        let advanced_import =
+            (!searching && active_category == SettingsCategory::Import).then(|| {
+                self.import_settings.update(cx, |panel, cx| {
+                    panel.advanced(px(label_width), cx).into_any_element()
+                })
+            });
+        #[cfg(not(feature = "private-workiq"))]
+        let advanced_import = None::<gpui::AnyElement>;
 
         let sidebar = self
             .render_categories(active_category, searching, window, cx)
@@ -1604,7 +1638,8 @@ impl Render for SettingsView {
                                                     div().into_any_element()
                                                 })
                                             }),
-                                    ),
+                                    )
+                                    .children(advanced_import),
                             ),
                     ),
             )

@@ -22,7 +22,7 @@ def public_metadata(info):
     return info
 
 
-def package(build, target, release):
+def package(build, target, release, features=""):
     executable = build / "subroutine-lite"
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise SystemExit(f"Expected executable was not produced: {executable}")
@@ -51,7 +51,7 @@ def package(build, target, release):
             subprocess.run(["desktop-file-validate", str(desktop)], check=True)
         notices = bundle / "share/doc/subroutine-lite"
         notices.mkdir(parents=True)
-        write_licenses(notices, target, release)
+        write_licenses(notices, target, release, features)
         shutil.copyfile(RESOURCES / "linux/install", bundle / "install")
         (bundle / "install").chmod(0o755)
         temporary_archive = staging / archive.name
@@ -70,5 +70,6 @@ if __name__ == "__main__":
     parser.add_argument("build", type=Path)
     parser.add_argument("target", choices=("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"))
     parser.add_argument("--release", action="store_true")
+    parser.add_argument("--features", default="")
     args = parser.parse_args()
-    package(args.build, args.target, args.release)
+    package(args.build, args.target, args.release, args.features)

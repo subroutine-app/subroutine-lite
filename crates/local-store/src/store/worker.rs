@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use std::sync::mpsc;
+use std::{path::PathBuf, sync::mpsc};
 use subroutine_core::{
     AllData, ApiErrorBody, ClientMutation, DataDelta, Marker, MutationReceipt, OptimisticPatch,
 };
@@ -18,6 +18,11 @@ pub(super) enum Command {
     ApplyDelta(Box<DataDelta>, Reply<Projection>),
     ApplyLocalPatch(Box<OptimisticPatch>, Reply<Projection>),
     CompleteHolidaySetup(Vec<Marker>, Reply<Projection>),
+    ApplyProviderImport(
+        subroutine_import::provider::SyncOutcome,
+        Reply<crate::ProviderImportResult>,
+    ),
+    ImportLocalWorkspace(PathBuf, Reply<Projection>),
 
     SetEventBusyOverride(Uuid, Option<bool>, Reply<Projection>),
     Enqueue(Box<ClientMutation>, Reply<Projection>),
@@ -58,8 +63,14 @@ impl Command {
                 respond(reply, database.install_snapshot(*data, expected))
             }
             Command::ApplyDelta(delta, reply) => respond(reply, database.apply_delta(*delta)),
+            Command::ApplyProviderImport(outcome, reply) => {
+                respond(reply, database.apply_provider_import(outcome))
+            }
             Command::ApplyLocalPatch(patch, reply) => {
                 respond(reply, database.apply_local_patch(*patch))
+            }
+            Command::ImportLocalWorkspace(path, reply) => {
+                respond(reply, database.import_local_workspace(&path))
             }
             Command::CompleteHolidaySetup(markers, reply) => {
                 respond(reply, database.complete_holiday_setup(markers))

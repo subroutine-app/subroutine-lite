@@ -4,6 +4,7 @@ Param(
     [Alias('a')][ValidateSet('x86_64', 'aarch64')][string]$Architecture,
     [switch]$Install,
     [switch]$Offline,
+    [string]$Features = '',
     [switch]$Help
 )
 
@@ -11,13 +12,14 @@ $ErrorActionPreference = 'Stop'
 # Check native exit codes ourselves; probes may fail.
 $PSNativeCommandUseErrorActionPreference = $false
 if ($Help) {
-    Write-Output 'Usage: script/bundle-windows.ps1 [-Architecture x86_64|aarch64] [-Install] [-Offline] [-Help]'
+    Write-Output 'Usage: script/bundle-windows.ps1 [-Architecture x86_64|aarch64] [-Install] [-Offline] [-Features FEATURES] [-Help]'
     Write-Output 'Unsigned release Subroutine Lite installer; -Install also installs/updates and launches it.'
     Write-Output 'Requires PowerShell 7, Rust/rustup, Visual Studio C++ tools + Windows SDK, Inno Setup 6.3+.'
     Write-Output 'Requires Python 3.12+ (python, then python3) and cargo-about 0.9.2 with its cli feature.'
     Write-Output 'Finds Visual Studio and Inno in standard locations; also checks PATH for ISCC.exe.'
     Write-Output 'Downloads missing Rust targets/crates unless -Offline; licenses are always offline.'
     Write-Output '-Install requires a stopped app. Never force-closes apps or restarts Windows.'
+    Write-Output '-Features includes Cargo features, e.g. private-workiq.'
     exit 0
 }
 if (-not $IsWindows) { throw 'bundle-windows.ps1 requires Windows.' }
@@ -167,8 +169,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Could not install Rust target $target" }
     }
 
+    $featureArgs = @()
+    if ($Features) { $featureArgs = @('--features', $Features) }
     # Licenses need the locked graph for all platforms.
-    $metadataJson = & cargo metadata --locked --format-version 1
+    $metadataJson = & cargo metadata --locked --format-version 1 @featureArgs
     if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata or fetch the locked dependencies.' }
     $metadata = ($metadataJson -join "`n") | ConvertFrom-Json
     $package = $metadata.packages | Where-Object { $_.name -eq 'desktop' } | Select-Object -First 1
@@ -182,7 +186,7 @@ try {
     $outputDir = Join-Path $buildDir 'bundle/windows'
     $resources = Join-Path $root 'crates/desktop/resources/windows'
 
-    & cargo build --locked --release --package desktop --bin subroutine-lite --target $target --target-dir $targetDir
+    & cargo build --locked --release --package desktop --bin subroutine-lite --target $target --target-dir $targetDir @featureArgs
     if ($LASTEXITCODE -ne 0) { throw 'Subroutine Lite build failed.' }
     $exe = Join-Path $buildDir 'subroutine-lite.exe'
     $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
@@ -196,7 +200,7 @@ try {
     try {
         Copy-Item -LiteralPath $exe -Destination $staging
         Copy-Item -LiteralPath (Join-Path $resources 'Subroutine.ico') -Destination $staging
-        & $python (Join-Path $root 'crates/desktop/resources/packaging/licenses.py') (Join-Path $staging 'notices') --target $target --release
+        & $python (Join-Path $root 'crates/desktop/resources/packaging/licenses.py') (Join-Path $staging 'notices') --target $target --release @featureArgs
         if ($LASTEXITCODE -ne 0) { throw 'License generation failed.' }
         & $inno "/DResourcesDir=$staging" "/DOutputDir=$staging" "/DVersion=$version" "/DArchitecture=$Architecture" (Join-Path $resources 'subroutine-lite.iss')
         if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }

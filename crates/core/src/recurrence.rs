@@ -249,11 +249,7 @@ impl Recurrence {
     }
 }
 
-pub(crate) fn occurrence_id(
-    lineage_id: uuid::Uuid,
-    item_kind: &str,
-    point: SchedulePoint,
-) -> uuid::Uuid {
+pub fn occurrence_id(lineage_id: uuid::Uuid, item_kind: &str, point: SchedulePoint) -> uuid::Uuid {
     let point = match point {
         SchedulePoint::DateTime(datetime) => format!("time:{}", datetime.to_rfc3339()),
         SchedulePoint::Date(date) => format!("date:{date}"),

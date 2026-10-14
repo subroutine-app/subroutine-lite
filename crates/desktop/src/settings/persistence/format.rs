@@ -88,6 +88,8 @@ pub(super) struct PersistedSettings {
     recent_commands: Vec<String>,
 
     #[serde(default)]
+    integrations: super::super::IntegrationSettings,
+    #[serde(default)]
     desktop_layout: PersistedDesktopLayout,
     #[serde(default)]
     window_state: Option<WindowState>,
@@ -139,6 +141,7 @@ impl PersistedSettings {
             keymap: settings.keymap.overrides().clone(),
 
             recent_commands: settings.recent_commands.clone(),
+            integrations: settings.integrations.clone(),
             desktop_layout: PersistedDesktopLayout::from_layout(&settings.desktop_layout),
             window_state: settings.window_state,
             _legacy_calendar_month_borders: IgnoredAny,
@@ -162,6 +165,7 @@ impl PersistedSettings {
 
         self.desktop_layout.apply_to(&mut settings.desktop_layout);
         settings.window_state = self.window_state;
+        settings.integrations = self.integrations;
         Ok(())
     }
 

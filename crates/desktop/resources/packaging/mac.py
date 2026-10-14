@@ -14,7 +14,7 @@ APP_ID = "com.subroutine.SubroutineLite"
 APP_NAME = "Subroutine Lite.app"
 
 
-def package(app, target, release, installer):
+def package(app, target, release, installer, features=""):
     try:
         metadata = plistlib.loads((app / "Contents/Info.plist").read_bytes())
         expected = {
@@ -42,9 +42,17 @@ def package(app, target, release, installer):
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise SystemExit(f"Expected bundle was not produced: {app}: {error}") from error
 
+    metadata.update({
+        "NSCalendarsUsageDescription": "Import your calendars into Subroutine Lite.",
+        "NSCalendarsFullAccessUsageDescription": "Read your calendars to import events into Subroutine Lite.",
+        "NSRemindersUsageDescription": "Import your reminders into Subroutine Lite.",
+        "NSRemindersFullAccessUsageDescription": "Read your reminders to import tasks into Subroutine Lite.",
+    })
+    (app / "Contents/Info.plist").write_bytes(plistlib.dumps(metadata))
+
     resources = app / "Contents/Resources"
     resources.mkdir(exist_ok=True)
-    write_licenses(resources, target, release or installer)
+    write_licenses(resources, target, release or installer, features)
 
     # Seal the complete bundle, including licenses, before copying it into a pkg.
     subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(app)], check=True)
@@ -87,5 +95,6 @@ if __name__ == "__main__":
     parser.add_argument("--target", required=True, choices=("aarch64-apple-darwin", "x86_64-apple-darwin"))
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--installer", action="store_true")
+    parser.add_argument("--features", default="")
     args = parser.parse_args()
-    package(args.app, args.target, args.release, args.installer)
+    package(args.app, args.target, args.release, args.installer, args.features)

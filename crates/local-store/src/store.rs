@@ -1,3 +1,4 @@
+mod provider_import;
 mod worker;
 
 use chrono::{DateTime, Utc};
@@ -117,6 +118,10 @@ impl LocalStore {
 
     pub fn complete_holiday_setup(&self, markers: Vec<Marker>) -> Result<Projection> {
         self.call(|reply| Command::CompleteHolidaySetup(markers, reply))
+    }
+
+    pub fn import_local_workspace(&self, path: impl AsRef<Path>) -> Result<Projection> {
+        self.call(|reply| Command::ImportLocalWorkspace(path.as_ref().to_path_buf(), reply))
     }
 
     pub fn enqueue(&self, mutation: ClientMutation) -> Result<Projection> {

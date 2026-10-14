@@ -9,6 +9,7 @@ pub use db::{
         stale::{StaleResolution, StaleResolutionKind},
     },
     projection::{BlockedConflict, HolidaySetup, Projection},
+    provider_import::ProviderImportResult,
     schema::StoreDiagnostics,
     sync::SyncState,
 };

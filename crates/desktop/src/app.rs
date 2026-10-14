@@ -112,6 +112,7 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+    crate::imports::sync::start(cx);
     ItemManager::initialize_global(cx);
     SelectionManager::initialize_global(cx);
     notifications::init(cx);

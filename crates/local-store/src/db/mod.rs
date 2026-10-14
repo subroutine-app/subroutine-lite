@@ -1,8 +1,11 @@
 mod identity;
+mod import;
+mod import_resources;
 
 mod local;
 pub(crate) mod outbox;
 pub(crate) mod projection;
+pub(crate) mod provider_import;
 pub(crate) mod recovery;
 mod rows;
 pub(crate) mod schema;
@@ -64,6 +67,7 @@ impl Database {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM outbox", [])?;
+        tx.execute("DELETE FROM local_imports", [])?;
         tx.execute("DELETE FROM integration_entries", [])?;
         tx.execute("DELETE FROM canonical_resources", [])?;
         tx.execute(

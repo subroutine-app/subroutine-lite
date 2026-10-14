@@ -9,12 +9,14 @@ use crate::{
 };
 
 mod global;
+mod integrations;
 
 mod layout;
 mod persistence;
 mod preferences;
 
 pub use global::GlobalSettings;
+pub use integrations::IntegrationSettings;
 
 pub use layout::{DesktopLayoutSettings, PrimaryView};
 pub use persistence::SettingsPersistenceIssue;
@@ -44,6 +46,7 @@ pub struct Settings {
     pub selection: SelectionConfig,
     pub notifications: NotificationSettings,
     pub account_sync: AccountSyncSettings,
+    pub integrations: IntegrationSettings,
     pub queue_batch_mode: bool,
     pub focus_carousel_orientation: FocusCarouselOrientation,
     focus_timing_threshold: Duration,
@@ -76,6 +79,7 @@ impl Default for Settings {
             selection: SelectionConfig::default(),
             notifications: NotificationSettings::default(),
             account_sync: AccountSyncSettings::default(),
+            integrations: IntegrationSettings::default(),
             queue_batch_mode: true,
             focus_carousel_orientation: FocusCarouselOrientation::default(),
             focus_timing_threshold: Duration::seconds(DEFAULT_FOCUS_TIMING_THRESHOLD_SECONDS),

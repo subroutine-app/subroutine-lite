@@ -5,11 +5,11 @@ def --wrapped checked [command: string, ...args: string] {
     }
 }
 
-def install-linux [] {
+def install-linux [feature_args: list<string>] {
     $env.CARGO_TARGET_DIR = (
         $env.CARGO_TARGET_DIR? | default 'target' | path expand
     )
-    checked sh script/bundle-linux --release
+    checked sh script/bundle-linux --release ...$feature_args
 
     let compiler = (^rustc -vV | complete)
     if $compiler.exit_code != 0 {
@@ -33,16 +33,19 @@ def install-linux [] {
 
 def main [
     --offline
+    --features: string = ""
 ] {
     cd $env.FILE_PWD
     if $offline {
         $env.CARGO_NET_OFFLINE = 'true'
     }
+    let feature_args = if ($features | is-empty) { [] } else { ['--features' $features] }
     match $nu.os-info.name {
-        'macos' => { checked sh script/bundle-mac --release --install }
-        'linux' => { install-linux }
+        'macos' => { checked sh script/bundle-mac --release --install ...$feature_args }
+        'linux' => { install-linux $feature_args }
         'windows' => {
-            checked pwsh -NoProfile -ExecutionPolicy Bypass -File script/bundle-windows.ps1 -Install
+            let feature_args = if ($features | is-empty) { [] } else { ['-Features' $features] }
+            checked pwsh -NoProfile -ExecutionPolicy Bypass -File script/bundle-windows.ps1 -Install ...$feature_args
         }
         _ => { error make {msg: $'Unsupported platform: ($nu.os-info.name). Expected macOS, Linux, or Windows.'} }
     }

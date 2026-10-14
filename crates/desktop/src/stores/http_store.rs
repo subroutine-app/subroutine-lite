@@ -20,6 +20,7 @@ mod actions;
 mod history;
 mod holidays;
 mod items;
+mod provider_imports;
 mod replay;
 mod sync;
 mod transport;
@@ -266,6 +267,18 @@ impl AppDatabaseStore {
     }
 
     fn replace_projection(&mut self, projection: Projection, cx: &mut Context<Self>) {
+        if let Some(error) = self
+            .persistence
+            .as_ref()
+            .and_then(WorkspacePersistence::take_import_error)
+        {
+            let message = format!(
+                "Couldn’t import signed-out data. {error}. Account sync can continue; the source data is retained. Retry Sync after resolving the problem."
+            );
+            tracing::warn!(%error, "signed-out data import failed");
+            self.log_sync(SyncDirection::Status, &message, cx);
+            cx.emit(SaveFailed { message });
+        }
         self.authoritative_snapshot = projection.authoritative_snapshot;
         self.holiday_setup = projection.holiday_setup;
         if let Some(conflict) = &projection.blocked_conflict

@@ -3,7 +3,9 @@ use subroutine_core::{AllData, DataDelta};
 use uuid::Uuid;
 
 use super::{
-    Database, non_nil_uuid,
+    Database,
+    import::enqueue_imports,
+    non_nil_uuid,
     outbox::{outbox_count, retire_confirmed},
     parse_uuid,
     projection::commit_projection,
@@ -72,6 +74,7 @@ impl Database {
             tx.execute("DELETE FROM integration_entries", [])?;
         }
         retire_confirmed(&tx, incoming_dataset, data.seq)?;
+        enqueue_imports(&tx, &self.identity)?;
         commit_projection(tx)
     }
 
@@ -110,6 +113,7 @@ impl Database {
             [delta.seq],
         )?;
         retire_confirmed(&tx, Some(incoming_dataset), delta.seq)?;
+        enqueue_imports(&tx, &self.identity)?;
         commit_projection(tx)
     }
 }

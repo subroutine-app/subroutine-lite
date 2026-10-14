@@ -3,6 +3,7 @@ members = [
     "crates/auth",
     "crates/core",
     "crates/holidays",
+    "crates/import",
     "crates/parser",
     "crates/local-store",
     "crates/server",

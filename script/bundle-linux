@@ -2,20 +2,31 @@
 set -eu
 
 usage() {
-    printf '%s\n' 'Usage: script/bundle-linux [--release]' \
+    printf '%s\n' 'Usage: script/bundle-linux [--release] [--features FEATURES]' \
         'Native Linux tar.gz + per-user install script; debug by default.' \
+        '--features Cargo features to include, e.g. private-workiq.' \
         'Requires Python 3, Rust, cached dependencies and native GPUI libraries (not bundled).' \
         'Release licenses need cargo-about 0.9.2.' \
         'No tool downloads, install or launch.'
 }
 
 profile=debug
-for argument in "$@"; do
-    case "$argument" in
+features=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
         --release) profile=release ;;
+        --features)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                printf '%s\n' '--features requires a non-empty value.' >&2
+                exit 2
+            fi
+            features=$2
+            shift
+            ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
+    shift
 done
 if [ "$(uname -s)" != Linux ]; then
     printf '%s\n' 'bundle-linux requires Linux.' >&2
@@ -37,5 +48,6 @@ esac
 export CARGO_NET_OFFLINE=true
 set --
 if [ "$profile" = release ]; then set -- --release; fi
+if [ -n "$features" ]; then set -- "$@" --features "$features"; fi
 cargo build --offline --locked --package desktop --bin subroutine-lite --target "$target" "$@"
 python3 crates/desktop/resources/packaging/linux.py "$CARGO_TARGET_DIR/$target/$profile" "$target" "$@"

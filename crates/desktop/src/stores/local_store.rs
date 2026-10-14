@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Utc};
@@ -23,6 +23,15 @@ pub(super) struct WorkspacePersistence {
     root: PathBuf,
     server_origin: Option<String>,
     store: Arc<LocalStore>,
+    local_import: Arc<Mutex<LocalImport>>,
+}
+
+#[derive(Default)]
+enum LocalImport {
+    #[default]
+    Pending,
+    Complete,
+    Failed(String),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,6 +63,7 @@ impl WorkspacePersistence {
             root,
             server_origin,
             store: Arc::new(store),
+            local_import: Arc::default(),
         })
     }
 
@@ -81,8 +91,51 @@ impl WorkspacePersistence {
         }
     }
 
+    pub(super) fn local_store(&self) -> &Arc<LocalStore> {
+        &self.store
+    }
+
     pub(super) fn is_remote(&self) -> bool {
         matches!(self.store.identity(), WorkspaceIdentity::Remote { .. })
+    }
+
+    fn import_local_workspace(&self) {
+        if !self.is_remote()
+            || matches!(
+                *self
+                    .local_import
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+                LocalImport::Complete
+            )
+        {
+            return;
+        }
+        let imported = WorkspaceLocator::new(self.root.join(LOCAL_STORE_DIRECTORY))
+            .path_for(&WorkspaceSpec::Local)
+            .and_then(|path| self.store.import_local_workspace(path));
+        let state = match imported {
+            Ok(_) => LocalImport::Complete,
+            Err(error) => LocalImport::Failed(error.to_string()),
+        };
+        *self
+            .local_import
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = state;
+    }
+
+    pub(super) fn take_import_error(&self) -> Option<String> {
+        let mut state = self
+            .local_import
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let LocalImport::Failed(error) = &mut *state {
+            let error = std::mem::take(error);
+            *state = LocalImport::Pending;
+            Some(error)
+        } else {
+            None
+        }
     }
 
     pub(super) fn state(&self) -> Result<SyncState, String> {
@@ -104,12 +157,14 @@ impl WorkspacePersistence {
         data: AllData,
         expected: SyncState,
     ) -> Result<Projection, String> {
+        self.import_local_workspace();
         self.store
             .install_snapshot(data, expected)
             .map_err(|error| error.to_string())
     }
 
     pub(super) fn apply_delta(&self, delta: DataDelta) -> Result<Projection, String> {
+        self.import_local_workspace();
         self.store
             .apply_delta(delta)
             .map_err(|error| error.to_string())

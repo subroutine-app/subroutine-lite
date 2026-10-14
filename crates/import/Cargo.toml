@@ -1,0 +1,30 @@
+[package]
+name = "import"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+subroutine-core = { package = "core", path = "../core" }
+anyhow.workspace = true
+chrono.workspace = true
+chronoutil.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+todoist-api = { git = "https://github.com/romaintb/todoist-api", rev = "441a8b7130a82023a504343c2afc98fe05d549fa", optional = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+eventkit-rs = { version = "0.5", optional = true }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo"], optional = true }
+
+[features]
+default = []
+eventkit = ["dep:eventkit-rs", "dep:objc2-foundation"]
+google-calendar = ["dep:reqwest", "dep:tokio"]
+outlook = ["dep:reqwest", "dep:tokio"]
+todoist = ["dep:todoist-api", "dep:tokio"]
+workiq = ["dep:tokio"]

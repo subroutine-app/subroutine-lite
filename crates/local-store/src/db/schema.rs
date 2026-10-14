@@ -12,7 +12,11 @@ pub(crate) const APPLICATION_ID: i32 = 0x5355_4252; // "SUBR"
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) const MIGRATION_1: &str = include_str!("schema.sql");
-const MIGRATIONS: &[&str] = &[MIGRATION_1, include_str!("schema_v2.sql")];
+const MIGRATIONS: &[&str] = &[
+    MIGRATION_1,
+    include_str!("schema_v2.sql"),
+    include_str!("schema_v3.sql"),
+];
 pub(crate) const SCHEMA_VERSION: i32 = MIGRATIONS.len() as i32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

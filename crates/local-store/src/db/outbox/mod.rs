@@ -1,14 +1,13 @@
 mod blocked;
 pub(crate) mod conflict;
+mod enqueue;
 mod receipts;
 mod rows;
 pub(crate) mod stale;
 
 use chrono::{DateTime, Utc};
 use rusqlite::{TransactionBehavior, params};
-use subroutine_core::{
-    ApiErrorBody, ApiErrorCode, ClientMutation, MUTATION_PROTOCOL_VERSION, MutationReceipt,
-};
+use subroutine_core::{ApiErrorBody, ApiErrorCode, ClientMutation, MutationReceipt};
 use uuid::Uuid;
 
 use super::{
@@ -16,9 +15,9 @@ use super::{
     projection::{commit_projection, load_projection},
     sync::load_sync_state,
 };
-use crate::{LocalStoreError, Projection, Result, WorkspaceIdentity};
+use crate::{LocalStoreError, Projection, Result};
 pub(super) use blocked::block_outbox;
-use conflict::patches_overlap;
+pub(super) use enqueue::enqueue_mutation;
 pub(super) use receipts::retire_confirmed;
 pub(super) use rows::{load_oldest_outbox, load_outbox_entries, outbox_count};
 use rows::{load_outbox, require_outbox_change};
@@ -61,66 +60,11 @@ impl OutboxEntry {
 }
 
 impl Database {
-    pub(crate) fn enqueue(&mut self, mut mutation: ClientMutation) -> Result<Projection> {
-        let patch_json = serde_json::to_vec(&mutation.optimistic_patch)?;
+    pub(crate) fn enqueue(&mut self, mutation: ClientMutation) -> Result<Projection> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let state = load_sync_state(&tx)?;
-        if !matches!(self.identity, WorkspaceIdentity::Remote { .. }) {
-            return Err(LocalStoreError::InvalidMutation(
-                "a replay-safe server mutation requires a remote workspace".into(),
-            ));
-        }
-        if !state.authoritative_snapshot {
-            return Err(LocalStoreError::InvalidMutation(
-                "remote mutations require an authoritative snapshot".into(),
-            ));
-        }
-        if mutation.request.protocol_version != MUTATION_PROTOCOL_VERSION {
-            return Err(LocalStoreError::InvalidMutation(format!(
-                "unsupported mutation protocol version {}",
-                mutation.request.protocol_version
-            )));
-        }
-        if mutation.request.client_id != self.identity.client_id() {
-            return Err(LocalStoreError::InvalidMutation(
-                "request client identity does not match this workspace".into(),
-            ));
-        }
-        if state.dataset_id != Some(mutation.request.dataset_id) {
-            return Err(LocalStoreError::InvalidMutation(
-                "request dataset does not match canonical state".into(),
-            ));
-        }
-        if state.canonical_seq != mutation.request.base_seq {
-            return Err(LocalStoreError::InvalidMutation(format!(
-                "request base sequence {} does not match canonical sequence {}",
-                mutation.request.base_seq, state.canonical_seq
-            )));
-        }
-
-        for entry in load_outbox_entries(&tx)? {
-            if patches_overlap(&mutation.optimistic_patch, &entry.mutation.optimistic_patch) {
-                mutation.request.base_seq = mutation
-                    .request
-                    .base_seq
-                    .min(entry.mutation.request.base_seq);
-            }
-        }
-        let request_json = serde_json::to_vec(&mutation.request)?;
-        tx.execute(
-            "INSERT INTO outbox (
-                mutation_id, request_json, patch_json, created_at_ms
-             ) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                mutation.request.mutation_id.to_string(),
-                request_json,
-                patch_json,
-                Utc::now().timestamp_millis()
-            ],
-        )?;
-
+        enqueue_mutation(&tx, &self.identity, mutation)?;
         commit_projection(tx)
     }
 

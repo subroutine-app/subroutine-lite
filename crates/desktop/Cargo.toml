@@ -9,6 +9,10 @@ publish = false
 name = "subroutine-lite"
 path = "src/main.rs"
 
+[features]
+default = []
+private-workiq = ["subroutine-import/workiq"]
+
 [build-dependencies]
 find-msvc-tools = "0.1.14"
 
@@ -38,6 +42,8 @@ gpui_kit_semantics = {
 
 subroutine-core = { package = "core", path = "../core" }
 subroutine-holidays = { path = "../holidays" }
+subroutine-import = { package = "import", path = "../import", features = ["google-calendar", "outlook", "todoist"] }
+oauth2 = { workspace = true }
 sys-locale = "0.3"
 parser = { path = "../parser" }
 flume = { workspace = true }
@@ -93,6 +99,7 @@ gpui_linux = {
 }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+subroutine-import = { package = "import", path = "../import", features = ["eventkit"] }
 gpui_macos = {
     package = "gpui-box-macos",
     git = "https://github.com/subroutine-app/gpui-box.git",

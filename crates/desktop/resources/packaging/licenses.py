@@ -24,7 +24,7 @@ LEGAL_NAME = re.compile(
 )
 
 
-def gather(target):
+def gather(target, features=""):
     install = "Install cargo-about first: cargo install cargo-about --version 0.9.2 --locked --features cli"
     version = subprocess.run(
         ["cargo", "about", "--version"],
@@ -56,6 +56,7 @@ def gather(target):
                 "json",
                 "--output-file",
                 str(output),
+                *(["--features", features] if features else []),
             ],
             cwd=ROOT,
             check=True,
@@ -197,9 +198,9 @@ def render(report, target):
     return "\n".join(parts)
 
 
-def write_licenses(destination, target, release):
+def write_licenses(destination, target, release, features=""):
     try:
-        generated = render(gather(target), target) if release else None
+        generated = render(gather(target, features), target) if release else None
         destination.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(
             prefix=".licenses-", dir=destination
@@ -230,5 +231,6 @@ if __name__ == "__main__":
     parser.add_argument("destination", type=Path)
     parser.add_argument("--target", required=True)
     parser.add_argument("--release", action="store_true")
+    parser.add_argument("--features", default="")
     args = parser.parse_args()
-    write_licenses(args.destination, args.target, args.release)
+    write_licenses(args.destination, args.target, args.release, args.features)
