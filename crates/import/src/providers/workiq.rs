@@ -155,8 +155,8 @@ impl Provider for WorkIqProvider {
 
     fn ensure_authorized(&mut self) -> Result<()> {
         let me = self.fetch("/me?$select=id,displayName").map_err(|error| {
-            tracing::warn!(%error, "workiq is not signed in");
-            error.context("workiq is not authorized — run `workiq auth login`")
+            tracing::warn!(%error, "workiq authorization check failed");
+            error.context("could not verify workiq authorization")
         })?;
 
         let display_name = me.get("displayName").and_then(Value::as_str);
@@ -290,8 +290,22 @@ fn parse_response(stdout: &str, stderr: &str) -> Result<Value> {
         bail!("workiq produced no output");
     }
 
-    let value: Value = serde_json::from_str(body)
-        .with_context(|| format!("workiq returned output that is not JSON: {}", clip(body)))?;
+    let value: Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        // The CLI exits 0 and prints this setup banner even with --log-level None.
+        Err(_) if body.contains("workiq accept-eula") => {
+            bail!(
+                "WorkIQ requires acceptance of its End User License Agreement (EULA). \
+                 Review it at https://github.com/microsoft/work-iq, then run \
+                 `workiq accept-eula` in a terminal and retry the import."
+            );
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("workiq returned output that is not JSON: {}", clip(body))
+            });
+        }
+    };
 
     let Some(results) = value.get("results").and_then(Value::as_array) else {
         return Ok(value);
@@ -315,7 +329,76 @@ fn clip(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    const EULA_BANNER: &str = "
+        ==============================================================
+        In order to use this tool you must accept the End User License
+        Agreement (EULA) found at:
+        https://github.com/microsoft/work-iq
+
+        To accept EULA, please execute the following command:
+
+            workiq accept-eula
+
+        ==============================================================
+    ";
+
+    #[test]
+    fn a_successful_fetch_is_read_from_stdout_and_a_rejection_from_stderr() {
+        let payload = parse_response(r#"{"value":[1]}"#, "").unwrap();
+        assert_eq!(payload["value"][0], json!(1));
+
+        let error = parse_response(
+            "",
+            r#"{"results":[{"data":null,"statusCode":400,"error":"not in the policy allowlist"}]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "rejected with status 400: not in the policy allowlist"
+        );
+    }
+
+    #[test]
+    fn a_single_result_envelope_is_unwrapped_to_its_payload() {
+        let payload =
+            parse_response(r#"{"results":[{"data":{"id":"me"},"statusCode":200}]}"#, "").unwrap();
+        assert_eq!(payload["id"], json!("me"));
+    }
+
+    #[test]
+    fn an_eula_banner_on_either_stream_explains_the_required_setup() {
+        for (stdout, stderr) in [(EULA_BANNER, ""), ("", EULA_BANNER)] {
+            let error = parse_response(stdout, stderr).unwrap_err().to_string();
+            assert!(error.contains("End User License Agreement"), "{error}");
+            assert!(error.contains("workiq accept-eula"), "{error}");
+            assert!(!error.contains("not JSON"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_payload_mentioning_eula_acceptance_is_not_a_setup_error() {
+        let expected = json!({"value": [{"subject": "workiq accept-eula"}]});
+        assert_eq!(parse_response(&expected.to_string(), "").unwrap(), expected);
+    }
+
+    #[test]
+    fn unexpected_output_keeps_its_parse_error_and_diagnostic_text() {
+        let error = parse_response("unexpected CLI output", "").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not JSON: unexpected CLI output")
+        );
+        assert!(error.downcast_ref::<serde_json::Error>().is_some());
+        assert_eq!(
+            parse_response("", "").unwrap_err().to_string(),
+            "workiq produced no output"
+        );
+    }
 
     fn fixture_child(mode: &str) -> Child {
         Command::new(std::env::current_exe().unwrap())
@@ -342,8 +425,24 @@ mod tests {
             .as_str()
         {
             "wait" => std::thread::sleep(Duration::from_secs(120)),
+            "eula" => {
+                println!("{EULA_BANNER}");
+                std::process::exit(0);
+            }
             mode => panic!("unknown child fixture mode: {mode}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_successful_exit_with_an_eula_banner_is_still_a_setup_error() {
+        let mut child = fixture_child("eula");
+        let output = capture_output(&mut child, Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let error = parse_output(output).unwrap_err().to_string();
+        assert!(error.contains("workiq accept-eula"), "{error}");
+        assert!(!error.contains("not JSON"), "{error}");
     }
 
     #[tokio::test]

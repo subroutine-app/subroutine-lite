@@ -1139,7 +1139,7 @@ impl Render for SettingsView {
                     "Available on macOS and Windows."
                 })
                 .info(if cfg!(target_os = "windows") {
-                    "Requires Windows 10 version 1809 or newer and Transparency effects. High Contrast, Energy Saver, remote sessions, and unsupported systems use a solid background."
+                    "Requires Windows 10 version 1809 or newer and Transparency effects. High Contrast, Energy Saver, remote sessions, unsupported systems, and maximized or full-screen windows use a solid background."
                 } else {
                     "System and theme Reduce Transparency settings take precedence."
                 })
