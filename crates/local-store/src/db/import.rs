@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use rusqlite::{Transaction, TransactionBehavior, params};
 use subroutine_core::{
@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::{
     Database, import_resources::import_resources, outbox::enqueue_mutation,
-    projection::load_projection, sync::load_sync_state,
+    projection::load_projection, rows::load_rows, sync::load_sync_state,
 };
 use crate::{LocalStoreError, Projection, Result, WorkspaceIdentity, WorkspaceSpec};
 
@@ -125,6 +125,73 @@ fn batches(resources: Vec<ResourceValue>) -> Result<ImportBatches> {
     Ok(batches)
 }
 
+fn known_provider_items(tx: &Transaction<'_>) -> Result<HashSet<(String, String)>> {
+    let mut data = load_projection(tx)?.data;
+
+    data.actions.extend(load_rows(tx, "action")?);
+    data.events.extend(load_rows(tx, "event")?);
+    data.markers.extend(load_rows(tx, "marker")?);
+    let mut known = data
+        .actions
+        .into_iter()
+        .map(|value| (value.source_provider, value.source_external_id))
+        .chain(
+            data.events
+                .into_iter()
+                .map(|value| (value.source_provider, value.source_external_id)),
+        )
+        .chain(
+            data.markers
+                .into_iter()
+                .map(|value| (value.source_provider, value.source_external_id)),
+        )
+        .filter_map(|(provider, external_id)| provider.zip(external_id))
+        .collect::<HashSet<_>>();
+    let mut statement = tx.prepare("SELECT provider_id, external_id FROM integration_entries")?;
+    let entries = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    for entry in entries {
+        known.insert(entry?);
+    }
+    Ok(known)
+}
+
+fn provider_identity(resource: &ResourceValue) -> Option<(String, String)> {
+    let (provider, external_id) = match resource {
+        ResourceValue::Action(value) => (&value.source_provider, &value.source_external_id),
+        ResourceValue::Event(value) => (&value.source_provider, &value.source_external_id),
+        ResourceValue::Marker(value) => (&value.source_provider, &value.source_external_id),
+        ResourceValue::Routine(_)
+        | ResourceValue::Signal(_)
+        | ResourceValue::ActionTemplate(_)
+        | ResourceValue::EventTemplate(_)
+        | ResourceValue::MarkerTemplate(_)
+        | ResourceValue::SignalTemplate(_) => return None,
+    };
+    provider.clone().zip(external_id.clone())
+}
+
+fn transfer_batch(
+    resources: Vec<ResourceValue>,
+    known: &HashSet<(String, String)>,
+    incoming: &mut HashSet<(String, String)>,
+) -> Result<Vec<ResourceValue>> {
+    let mut writes = Vec::new();
+    for resource in resources {
+        if let Some(identity) = provider_identity(&resource) {
+            if known.contains(&identity) {
+                continue;
+            }
+            if !incoming.insert(identity) {
+                return Err(LocalStoreError::InvalidMutation(
+                    "multiple signed-out items share a provider identity; workspace transfer left pending for resolution".into(),
+                ));
+            }
+        }
+        writes.push(resource);
+    }
+    Ok(writes)
+}
+
 pub(super) fn enqueue_imports(tx: &Transaction<'_>, identity: &WorkspaceIdentity) -> Result<()> {
     let state = load_sync_state(tx)?;
     let Some(dataset_id) = state.dataset_id.filter(|_| state.authoritative_snapshot) else {
@@ -141,9 +208,18 @@ pub(super) fn enqueue_imports(tx: &Transaction<'_>, identity: &WorkspaceIdentity
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
     };
+    if imports.is_empty() {
+        return Ok(());
+    }
+    let mut known = known_provider_items(tx)?;
     for (export_id, encoded) in imports {
         let batches: ImportBatches = serde_json::from_slice(&encoded)?;
+        let mut incoming = HashSet::new();
         for resources in batches {
+            let resources = transfer_batch(resources, &known, &mut incoming)?;
+            if resources.is_empty() {
+                continue;
+            }
             let patch = OptimisticPatch {
                 writes: resources.clone(),
                 ..Default::default()
@@ -165,6 +241,7 @@ pub(super) fn enqueue_imports(tx: &Transaction<'_>, identity: &WorkspaceIdentity
                 },
             )?;
         }
+        known.extend(incoming);
         tx.execute(
             "UPDATE local_imports SET batches_json = NULL WHERE export_id = ?1",
             [&export_id],
