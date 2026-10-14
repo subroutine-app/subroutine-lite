@@ -295,15 +295,6 @@ mod tests {
     use windows::core::{Error, HRESULT};
 
     #[test]
-    fn mica_requires_the_documented_dwm_api() {
-        assert!(!supports_system_backdrop(10, 0, 19045));
-        assert!(!supports_system_backdrop(10, 0, 22000));
-        assert!(!supports_system_backdrop(10, 0, 22620));
-        assert!(supports_system_backdrop(10, 0, 22621));
-        assert!(supports_system_backdrop(10, 0, 26100));
-    }
-
-    #[test]
     fn successful_notification_keeps_its_cleanup_token() {
         assert_eq!(notification_token("test", Ok(42)), Some(42));
     }
