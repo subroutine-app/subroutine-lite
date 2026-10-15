@@ -10,6 +10,7 @@ use crate::AppIcon;
 use crate::components::Button;
 use crate::components::ButtonVariants as _;
 use crate::components::ext::StyledRefineExt as _;
+use crate::presentation::UxColor;
 use gpui_kit::foundation::{Disableable as _, FocusRing as _};
 
 use gpui_kit::foundation::Sizable;
@@ -467,7 +468,7 @@ impl MonthSelect {
                     .justify_start()
                     .icon(AppIcon::Calendar)
                     .label(format!("Today · {}", today.format("%b %-d, %Y")))
-                    .text_color(cx.theme().colors.accent)
+                    .text_color(UxColor::CurrentTime.text(cx.theme()))
                     .on_click(window.listener_for(&self.state, |_, _, _, cx| {
                         cx.emit(MonthSelectEvent::Today);
                     })),

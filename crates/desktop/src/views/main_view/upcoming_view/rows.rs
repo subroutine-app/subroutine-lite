@@ -18,6 +18,7 @@ use crate::{
         transition::{self, WindowTransitionExt as _},
     },
     item_manager::ItemManager,
+    presentation::UxColor,
     selection::SelectionManager,
     settings::Settings,
 };
@@ -355,7 +356,11 @@ impl UpcomingView {
                     .truncate()
                     .text_sm()
                     .font_weight(FontWeight::BOLD)
-                    .text_color(if today { colors.accent } else { colors.text }),
+                    .text_color(if today {
+                        UxColor::CurrentTime.text(cx.theme())
+                    } else {
+                        colors.text
+                    }),
             )
             .when_some(
                 match section {

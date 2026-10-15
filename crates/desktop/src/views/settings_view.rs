@@ -37,6 +37,7 @@ use crate::{
     app::{SignIn, SignOut},
     auth::{AuthSession, AuthenticationState},
     notifications,
+    presentation::UxColor,
     selection::SelectionModifier,
     settings::{
         AppearancePreference, FocusCarouselOrientation, NotificationPreview, Settings,
@@ -399,7 +400,11 @@ impl SettingsView {
                     .map(|(index, category)| {
                         let ident = categories_id.child(category.id());
                         let current = active_category == category && !searching;
-                        let color = if current { theme.colors.accent } else { muted };
+                        let color = if current {
+                            UxColor::Selected.text(&theme)
+                        } else {
+                            muted
+                        };
                         let focus = self.category_focus[index]
                             .clone()
                             .tab_stop(self.category_tab_stop == Some(category));

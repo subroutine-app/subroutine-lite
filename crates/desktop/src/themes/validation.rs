@@ -1,169 +1,131 @@
-use gpui_kit::tokens::{TokenDocument, TokenError, contrast};
-
-pub(crate) const FILL_TEXT_MINIMUM: f32 = 3.5;
+use gpui_kit::tokens::{TokenDocument, TokenError};
 
 pub(super) fn parse(json: &str) -> Result<TokenDocument, TokenError> {
-    let tokens: TokenDocument = serde_json::from_str(json)?;
-    match tokens.validate() {
-        Ok(()) => return Ok(tokens),
-        Err(TokenError::Contrast(_)) if tokens.meta.id == "subroutine-dark" => {}
-        Err(error) => return Err(error),
-    }
-
-    let failures: Vec<_> = contrast::report(&tokens)
-        .into_iter()
-        .map(|mut check| {
-            if matches!(
-                (check.foreground.as_str(), check.background.as_str()),
-                ("color.text.onAccent", "color.semantic.accent")
-                    | ("color.text.onPrimaryFill", "color.interactive.primaryFill")
-            ) {
-                check.minimum = FILL_TEXT_MINIMUM;
-            }
-            check
-        })
-        .filter(|check| !check.passes())
-        .collect();
-    require_empty(failures, TokenError::Contrast)?;
-
-    // validate() stops at contrast; keep its remaining stages in sync when upgrading GPUI Box.
-    require_empty(
-        contrast::separation_failures(&tokens),
-        TokenError::Separation,
-    )?;
-    require_empty(contrast::line_failures(&tokens), TokenError::Line)?;
-    require_empty(
-        contrast::placeholder_failures(&tokens),
-        TokenError::Placeholder,
-    )?;
-    require_empty(
-        contrast::distinction_failures(&tokens),
-        TokenError::Distinction,
-    )?;
-    require_empty(contrast::series_failures(&tokens), TokenError::Perceptual)?;
-    require_empty(contrast::canvas_failures(&tokens), TokenError::Perceptual)?;
-    Ok(tokens)
-}
-
-fn require_empty<T: std::fmt::Debug>(
-    failures: Vec<T>,
-    error: fn(String) -> TokenError,
-) -> Result<(), TokenError> {
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(error(
-            failures
-                .iter()
-                .map(|failure| format!("  {failure:?}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ))
-    }
+    TokenDocument::parse(json)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::{SUBROUTINE_DARK_JSON, SUBROUTINE_LIGHT_JSON};
     use super::*;
-    use gpui_kit::tokens::{
-        Appearance, Color, InteractiveColor, SemanticColor, TextTone, contrast_ratio,
-    };
+    use crate::presentation::UxColor;
+    use gpui_kit_theme::{Density, Theme, Variant};
 
-    fn parse_tokens(tokens: &TokenDocument) -> Result<TokenDocument, TokenError> {
-        parse(&serde_json::to_string(tokens).unwrap())
-    }
+    #[test]
+    fn subroutine_roles_stay_readable_across_surfaces_and_interaction_states() {
+        for json in [SUBROUTINE_LIGHT_JSON, SUBROUTINE_DARK_JSON] {
+            let tokens = parse(json).expect("Subroutine theme must pass all token checks");
+            let theme = Theme::from_tokens(&tokens, Density::Comfortable);
+            let colors = &theme.colors;
+            let surfaces = [
+                colors.backdrop,
+                colors.canvas,
+                colors.sunken,
+                colors.panel,
+                colors.raised,
+                colors.overlay,
+                colors.control,
+                colors.control_hover,
+                colors.control_pressed,
+            ];
+            for role in [
+                UxColor::Selected,
+                UxColor::Context,
+                UxColor::Action,
+                UxColor::Attention,
+                UxColor::Stable,
+                UxColor::Critical,
+                UxColor::CurrentTime,
+            ] {
+                if role != UxColor::Attention {
+                    assert_ne!(
+                        role.text(&theme),
+                        colors.text,
+                        "{}: {role:?} lost its hue",
+                        tokens.meta.id
+                    );
+                }
+                for surface in surfaces {
+                    assert!(
+                        theme.contrast(role.color(&theme), surface) >= 3.0,
+                        "{}: {role:?} marker",
+                        tokens.meta.id,
+                    );
+                    for wash in [role.wash(&theme), colors.hover, colors.active] {
+                        assert!(
+                            theme.contrast(role.text(&theme), surface.blend(wash)) >= 4.5,
+                            "{}: {role:?} text on wash or interaction state",
+                            tokens.meta.id,
+                        );
+                    }
+                }
+                assert!(
+                    theme.contrast(role.on_fill(&theme), role.color(&theme)) >= 4.5,
+                    "{}: {role:?} fill label",
+                    tokens.meta.id,
+                );
+            }
 
-    fn dark_with_relaxed_fill() -> TokenDocument {
-        let mut tokens = parse(SUBROUTINE_DARK_JSON).unwrap();
-        tokens.color.interactive.primary_fill = "#C0524E".into();
-        assert!(matches!(tokens.validate(), Err(TokenError::Contrast(_))));
-        parse_tokens(&tokens).expect("dark fill passes the scoped contrast floor")
+            let selected_text = UxColor::Selected.text(&theme);
+            assert_eq!(selected_text, colors.accent_strong);
+            for wash in [
+                colors.selected,
+                colors.selected.blend(colors.hover),
+                colors.selected.blend(colors.active),
+            ] {
+                for surface in surfaces {
+                    assert!(
+                        theme.contrast(selected_text, surface.blend(wash)) >= 4.5,
+                        "{}: selected control text",
+                        tokens.meta.id,
+                    );
+                }
+            }
+
+            let primary = theme.variant_colors(Variant::Filled, &colors.primary_fill.into());
+            for fill in [
+                primary.background,
+                primary.background_hover,
+                primary.background_active,
+            ] {
+                assert!(
+                    theme.contrast(colors.text_on_primary_fill, fill) >= 4.5,
+                    "{}: primary button label",
+                    tokens.meta.id,
+                );
+            }
+            assert_ne!(colors.primary_fill, colors.accent);
+        }
     }
 
     #[test]
-    fn subroutine_fill_labels_follow_theme_appearance() {
-        for (json, primary, current_time) in [
-            (SUBROUTINE_DARK_JSON, "#C65B57", "#DC3540"),
-            (SUBROUTINE_LIGHT_JSON, "#B0413E", "#CE2738"),
-        ] {
-            let tokens = parse(json).expect("Subroutine theme must register");
-            let palette = &tokens.color.palette;
-            assert_eq!(palette["brandUi"]["primaryFill"], primary);
-            assert_eq!(palette["brandUi"]["currentTime"], current_time);
-            for (foreground, background) in [
-                (
-                    tokens.text(TextTone::OnPrimaryFill),
-                    tokens.interactive(InteractiveColor::PrimaryFill),
-                ),
-                (
-                    tokens.text(TextTone::OnAccent),
-                    tokens.semantic(SemanticColor::Accent),
-                ),
-                (
-                    Color::parse("onCurrentTime", &palette["brandUi"]["onCurrentTime"]).unwrap(),
-                    Color::parse("currentTime", &palette["brandUi"]["currentTime"]).unwrap(),
-                ),
+    fn completion_controls_remain_readable_in_gpui_box_themes() {
+        for tokens in gpui_kit::tokens::all() {
+            let theme = Theme::from_tokens(tokens, Density::Comfortable);
+            let text = UxColor::Stable.text(&theme);
+            for wash in [
+                gpui::transparent_black(),
+                theme.colors.hover,
+                theme.colors.active,
             ] {
-                let minimum = match tokens.meta.appearance {
-                    Appearance::Dark => {
-                        assert!(foreground.luminance() < background.luminance());
-                        FILL_TEXT_MINIMUM
-                    }
-                    Appearance::Light => {
-                        assert!(foreground.luminance() > background.luminance());
-                        4.5
-                    }
-                };
-                assert!(contrast_ratio(foreground, background) >= minimum);
+                assert!(
+                    theme.contrast(text, theme.colors.overlay.blend(wash)) >= 4.5,
+                    "{}: completion control",
+                    tokens.meta.id,
+                );
             }
         }
     }
 
     #[test]
-    fn contrast_exception_is_limited_to_subroutine_fill_labels() {
-        let tokens = dark_with_relaxed_fill();
-
-        let mut too_faint = tokens.clone();
-        too_faint.color.text.on_primary_fill = "{brand.charcoal}".into();
-        assert!(matches!(
-            parse_tokens(&too_faint),
-            Err(TokenError::Contrast(_))
-        ));
-
-        for id in ["custom-dark", "subroutine-light"] {
-            let mut other_theme = tokens.clone();
-            other_theme.meta.id = id.into();
+    fn subroutine_themes_do_not_bypass_fill_contrast_validation() {
+        for json in [SUBROUTINE_LIGHT_JSON, SUBROUTINE_DARK_JSON] {
+            let mut tokens = parse(json).unwrap();
+            tokens.color.text.on_primary_fill = tokens.color.interactive.primary_fill.clone();
             assert!(matches!(
-                parse_tokens(&other_theme),
-                Err(TokenError::Contrast(_))
+                parse(&serde_json::to_string(&tokens).unwrap()),
+                Err(TokenError::Contrast(_)),
             ));
         }
-
-        let mut body_text = tokens;
-        body_text.color.text.primary = "#888888".into();
-        assert!(matches!(
-            parse_tokens(&body_text),
-            Err(TokenError::Contrast(_))
-        ));
-    }
-
-    #[test]
-    fn contrast_exception_preserves_structural_and_later_checks() {
-        let tokens = dark_with_relaxed_fill();
-
-        let mut invalid = tokens.clone();
-        invalid.color.text.on_primary_fill = "{missing.color}".into();
-        assert!(matches!(
-            parse_tokens(&invalid),
-            Err(TokenError::Invalid { .. })
-        ));
-
-        let mut invisible_line = tokens;
-        invisible_line.color.interactive.divider = "#00000000".into();
-        assert!(matches!(
-            parse_tokens(&invisible_line),
-            Err(TokenError::Line(_))
-        ));
     }
 }

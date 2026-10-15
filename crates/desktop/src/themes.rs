@@ -9,8 +9,6 @@ use crate::settings::{AppearancePreference, Settings};
 
 mod validation;
 
-pub(crate) use validation::FILL_TEXT_MINIMUM;
-
 const STATE_FILE: &str = "theme-state.json";
 
 fn state_path() -> Option<PathBuf> {

@@ -189,7 +189,7 @@ impl RenderOnce for Checkbox {
         let radius = px(cx.theme().radii.control).min(px(4.));
 
         let checked_border = crate::presentation::UxColor::Stable.color(cx.theme());
-        let checked_bg = checked_border.mix(gpui::transparent_black(), 0.12);
+        let checked_bg = crate::presentation::UxColor::Stable.wash(cx.theme());
 
         let box_toggle_state = window
             .use_keyed_state((self.id.clone(), "box-toggle"), cx, |_, _| checked)

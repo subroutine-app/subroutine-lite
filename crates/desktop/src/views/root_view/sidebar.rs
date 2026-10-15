@@ -10,6 +10,7 @@ use crate::{
     auth::{AuthSession, AuthenticationState},
     components::{Button, ButtonVariants as _, DragData, DraggedItems, Label},
     icons::Icon,
+    presentation::UxColor,
     stores::AppDatabaseStore,
     views::{SelectedMainView, drag_navigation::is_scheduler, library_drop::LibraryDropTarget},
 };
@@ -347,7 +348,7 @@ impl RootView {
                         } else {
                             style
                                 .bg(cx.theme().colors.selected)
-                                .text_color(cx.theme().colors.accent)
+                                .text_color(UxColor::Selected.text(cx.theme()))
                         }
                     })
                     .on_drag_move::<DragData<DraggedItems>>({
@@ -415,7 +416,7 @@ impl RootView {
                     .drag_over::<DragData<DraggedItems>>(|style, _, _, cx| {
                         style
                             .bg(cx.theme().colors.selected)
-                            .text_color(cx.theme().colors.accent)
+                            .text_color(UxColor::Selected.text(cx.theme()))
                     })
                     .on_drop::<DragData<DraggedItems>>({
                         let root = root.clone();

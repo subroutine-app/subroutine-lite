@@ -10,6 +10,7 @@ use uuid::Uuid;
 use crate::{
     color::ColorExt,
     components::{DragData, Label},
+    presentation::UxColor,
     utils::ButtonColorizeExt,
 };
 
@@ -70,8 +71,8 @@ pub fn create_drag_data(
     let preview_title: SharedString = dragged.primary.title().into();
     let fg = cx.theme().colors.text;
     let muted_fg = cx.theme().colors.text_muted;
-    let badge_fill = cx.theme().colors.primary_fill;
-    let badge_fg = cx.theme().colors.text_on_primary_fill;
+    let badge_fill = UxColor::Selected.color(cx.theme());
+    let badge_fg = UxColor::Selected.on_fill(cx.theme());
     let item_type = dragged.primary.item_type();
     let count = dragged.len();
     let label = if count > 1 {

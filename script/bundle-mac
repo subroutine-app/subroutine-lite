@@ -97,7 +97,8 @@ if [ "$install" = true ]; then
     mkdir -p "$(dirname "$installed_app")"
     ditto "$app" "$installed_app"
     codesign --verify --deep --strict "$installed_app"
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$installed_app"
+    # Match Xcode's registration so local builds are not left launch-disabled.
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R -trusted "$installed_app"
     touch "$installed_app"
     app="$installed_app"
     printf 'Installed: %s\n' "$app"

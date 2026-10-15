@@ -12,20 +12,20 @@
     "palette": {
       "neutral": {
         "0": "#000000",
-        "10": "#121112",
-        "25": "#161516",
-        "50": "#1C1B1C",
-        "100": "#242324",
-        "150": "#292728",
-        "200": "#2E282A",
-        "300": "#383436",
+        "10": "#100F11",
+        "25": "#131214",
+        "50": "#181719",
+        "100": "#211F21",
+        "150": "#262326",
+        "200": "#292629",
+        "300": "#343034",
         "500": "#625B5D",
         "600": "#968D89",
         "700": "#BBB8B7",
         "800": "#DEDCDA",
         "850": "#EBE7E1",
         "900": "#FFFFFC",
-        "ink": "#1C1B1C"
+        "ink": "#181719"
       },
       "indigo": {
         "50": "#edf2ff",
@@ -80,7 +80,7 @@
       },
       "syntax": {
         "keyword": "#D68A85",
-        "string": "#98AB83",
+        "string": "#A4B88E",
         "number": "#EE964B",
         "inline": "#BBB8B7",
         "inlineWash": "#BBB8B7"
@@ -89,11 +89,11 @@
         "read": "#88ABAC",
         "network": "#88ABAC",
         "shell": "#EE964B",
-        "edit": "#98AB83",
+        "edit": "#A4B88E",
         "external": "#BBB8B7"
       },
       "terminal": {
-        "background": "#1C1B1C",
+        "background": "#181719",
         "wash": "#DEDCDA"
       },
       "ansi": {
@@ -255,14 +255,17 @@
         "brick": "#D68A85",
         "brickStrong": "#DFA49F",
         "context": "#88ABAC",
+        "contextStrong": "#AAC9C7",
         "action": "#EE964B",
+        "actionText": "#EE964B",
         "attention": "#F4D35E",
-        "stable": "#98AB83",
-        "critical": "#D98493",
-        "currentTime": "#DC3540",
-        "onCurrentTime": "#080607",
-        "primaryFill": "#C65B57",
-        "onPrimaryFill": "#080607"
+        "stable": "#A4B88E",
+        "critical": "#E2A0AE",
+        "currentTime": "#F04B58",
+        "currentTimeText": "#FF96A0",
+        "onCurrentTime": "#181719",
+        "primaryFill": "#EE964B",
+        "onPrimaryFill": "#2E282A"
       },
       "recognition": {
         "fill": "#88ABAC47",
@@ -297,16 +300,16 @@
       ]
     },
     "surface": {
-      "backdrop": "#121112",
-      "canvas": "#1C1B1C",
-      "sunken": "#161516",
-      "panel": "#242324",
-      "raised": "#2D2B2C",
-      "overlay": "#2E2C2D",
-      "scrim": "#121112CC",
-      "control": "#292728",
-      "controlHover": "#302E2F",
-      "controlPressed": "#201E1F"
+      "backdrop": "{neutral.10}",
+      "canvas": "{neutral.50}",
+      "sunken": "{neutral.25}",
+      "panel": "{neutral.100}",
+      "raised": "{neutral.200}",
+      "overlay": "#2B282B",
+      "scrim": "{neutral.10}/CC",
+      "control": "{neutral.150}",
+      "controlHover": "#302C30",
+      "controlPressed": "#1E1C1E"
     },
     "text": {
       "primary": "#DEDCDA",
@@ -314,31 +317,31 @@
       "faint": "#A8A09C",
       "placeholder": "#968D89",
       "disabled": "#8E8581",
-      "onAccent": "{brand.charcoal}",
+      "onAccent": "{neutral.ink}",
       "onPrimaryFill": "{brandUi.onPrimaryFill}"
     },
     "interactive": {
       "hover": "#DEDCDA12",
-      "active": "{brandUi.brick}/24",
-      "selected": "{brandUi.brick}/2E",
+      "active": "{brandUi.context}/24",
+      "selected": "{brandUi.context}/2E",
       "hairline": "{neutral.900}/14",
       "hairlineStrong": "#C8C0BE88",
       "track": "#C8C0BE88",
       "divider": "{neutral.900}/10",
-            "choiceIndicator": "{neutral.700}",
+      "choiceIndicator": "{brandUi.context}",
       "controlHairline": "#C8C0BE24",
       "controlHighlight": "#FFFFFC14",
-      "focus": "{brandUi.brick}",
+      "focus": "{brandUi.context}",
       "primaryFill": "{brandUi.primaryFill}",
       "whiteFill": "#DEDCDA",
       "whiteFillHover": "#EBE7E1",
       "whiteFillActive": "#D5D2CF"
     },
     "semantic": {
-      "accent": "{brandUi.brick}",
-      "accentStrong": "{brandUi.brickStrong}",
+      "accent": "{brandUi.context}",
+      "accentStrong": "{brandUi.contextStrong}",
       "danger": "{brandUi.critical}",
-      "warning": "{brandUi.action}",
+      "warning": "{brandUi.attention}",
       "success": "{brandUi.stable}",
       "info": "{brandUi.context}"
     },
@@ -355,12 +358,12 @@
       ]
     },
     "node": {
-      "headerWash": "{brandUi.brick}/0A",
+      "headerWash": "{brandUi.context}/0A",
       "portIdle": "#8E8581",
-      "portHover": "{brandUi.brick}",
+      "portHover": "{brandUi.context}",
       "portConnected": "{brandUi.stable}",
-      "edge": "#BBB8B7",
-      "edgeTarget": "{brandUi.brick}",
+      "edge": "#8E8581",
+      "edgeTarget": "{brandUi.context}",
       "edgeActive": "{brandUi.action}",
       "edgeFlowHighlight": "{brandUi.action}",
       "edgeFeedback": "{brandUi.attention}/B8",
@@ -369,9 +372,9 @@
       "auraSuccess": "{brandUi.stable}",
       "auraAttention": "{brandUi.attention}",
       "auraDanger": "{brandUi.critical}",
-      "labelWash": "#242324F0",
+      "labelWash": "{neutral.100}/F0",
       "grid": "#746D6A50",
-      "gridStrong": "{brandUi.brick}/50",
+      "gridStrong": "{brandUi.context}/50",
       "gridAxis": "#C8C0BE60"
     },
     "agent": {
@@ -402,7 +405,7 @@
     },
     "terminal": {
       "background": "{terminal.background}",
-      "selection": "{brandUi.brick}/2E",
+      "selection": "{brandUi.context}/2E",
       "ansi": [
         "{ansi.0}",
         "{ansi.1}",
@@ -803,7 +806,7 @@
     "nodeEdgeSelectedWidthScale": 2.4,
     "nodeEdgeGlowWidthScale": 5.5,
     "railWidth": 3,
-    "semanticWashFaintAlpha": 0.06,
+    "semanticWashFaintAlpha": 0.09,
     "semanticWashAlpha": 0.1,
     "semanticWashStrongAlpha": 0.16,
     "semanticBorderAlpha": 0.4,

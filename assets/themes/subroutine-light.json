@@ -14,10 +14,10 @@
         "0": "#000000",
         "10": "#DEDCDA",
         "25": "#E4E2DF",
-        "50": "#EFEFED",
-        "100": "#F8F8F7",
-        "150": "#FCFCFB",
-        "200": "#FEFEFD",
+        "50": "#EEECE6",
+        "100": "#F7F6F2",
+        "150": "#FCFBF7",
+        "200": "#FFFEFA",
         "300": "#D5D2CF",
         "500": "#9B9491",
         "600": "#77716E",
@@ -93,7 +93,7 @@
         "external": "#514E4F"
       },
       "terminal": {
-        "background": "#F8F8F7",
+        "background": "#F7F6F2",
         "wash": "#2E282A"
       },
       "ansi": {
@@ -255,13 +255,16 @@
         "brick": "#B0413E",
         "brickStrong": "#812F2D",
         "context": "#3F6566",
+        "contextStrong": "#2E5253",
         "action": "#925B2D",
+        "actionText": "#855026",
         "attention": "#9A8122",
         "stable": "#536342",
         "critical": "#A4031F",
-        "currentTime": "#CE2738",
+        "currentTime": "#D12C3D",
+        "currentTimeText": "#B21C30",
         "onCurrentTime": "#FFFFFC",
-        "primaryFill": "#B0413E",
+        "primaryFill": "#B35A24",
         "onPrimaryFill": "#FFFFFC"
       },
       "recognition": {
@@ -297,16 +300,16 @@
       ]
     },
     "surface": {
-      "backdrop": "#EFEFED",
-      "canvas": "#F8F8F7",
-      "sunken": "#EFEFED",
-      "panel": "#FCFCFB",
-      "raised": "#FEFEFD",
-      "overlay": "#FEFEFD",
+      "backdrop": "{neutral.50}",
+      "canvas": "{neutral.100}",
+      "sunken": "{neutral.50}",
+      "panel": "{neutral.150}",
+      "raised": "{neutral.200}",
+      "overlay": "{neutral.200}",
       "scrim": "{brand.charcoal}",
-      "control": "#FAFAF9",
-      "controlHover": "#FEFEFD",
-      "controlPressed": "#EAEAE8"
+      "control": "#FAF9F5",
+      "controlHover": "{neutral.200}",
+      "controlPressed": "#E9E6DF"
     },
     "text": {
       "primary": "{brand.charcoal}",
@@ -314,31 +317,31 @@
       "faint": "#656062",
       "placeholder": "#77716E",
       "disabled": "#88817E",
-      "onAccent": "{brandUi.onPrimaryFill}",
+      "onAccent": "#FFFFFC",
       "onPrimaryFill": "{brandUi.onPrimaryFill}"
     },
     "interactive": {
       "hover": "{brand.charcoal}/0F",
-      "active": "{brand.brick}/1C",
-      "selected": "{brand.brick}/20",
+      "active": "{brandUi.context}/1C",
+      "selected": "{brandUi.context}/20",
       "hairline": "{brand.charcoal}/1A",
       "hairlineStrong": "#514E4FA8",
       "track": "#514E4FA8",
       "divider": "{brand.charcoal}/14",
-            "choiceIndicator": "{neutral.700}",
+      "choiceIndicator": "{brandUi.context}",
       "controlHairline": "#514E4F24",
       "controlHighlight": "#FFFFFCCC",
-      "focus": "{brandUi.brick}",
+      "focus": "{brandUi.context}",
       "primaryFill": "{brandUi.primaryFill}",
       "whiteFill": "#FFFFFC",
-      "whiteFillHover": "#F8F8F7",
-      "whiteFillActive": "#EFEFED"
+      "whiteFillHover": "{neutral.100}",
+      "whiteFillActive": "{neutral.50}"
     },
     "semantic": {
-      "accent": "{brandUi.brick}",
-      "accentStrong": "{brandUi.brickStrong}",
+      "accent": "{brandUi.context}",
+      "accentStrong": "{brandUi.contextStrong}",
       "danger": "{brandUi.critical}",
-      "warning": "{brandUi.action}",
+      "warning": "{brandUi.attention}",
       "success": "{brandUi.stable}",
       "info": "{brandUi.context}"
     },
@@ -355,12 +358,12 @@
       ]
     },
     "node": {
-      "headerWash": "{brand.brick}/0F",
+      "headerWash": "{brandUi.context}/0F",
       "portIdle": "#88817E",
-      "portHover": "{brandUi.brick}",
+      "portHover": "{brandUi.context}",
       "portConnected": "{brandUi.stable}",
       "edge": "#88817E",
-      "edgeTarget": "{brandUi.brick}",
+      "edgeTarget": "{brandUi.context}",
       "edgeActive": "{brandUi.action}",
       "edgeFlowHighlight": "{brandUi.action}",
       "edgeFeedback": "{brandUi.attention}/B8",
@@ -369,9 +372,9 @@
       "auraSuccess": "{brandUi.stable}",
       "auraAttention": "{brandUi.attention}",
       "auraDanger": "{brandUi.critical}",
-      "labelWash": "#FEFEFDF0",
+      "labelWash": "{neutral.200}/F0",
       "grid": "#514E4F14",
-      "gridStrong": "{brand.brick}/29",
+      "gridStrong": "{brandUi.context}/29",
       "gridAxis": "#514E4F4D"
     },
     "agent": {
@@ -402,7 +405,7 @@
     },
     "terminal": {
       "background": "{terminal.background}",
-      "selection": "{brand.brick}/20",
+      "selection": "{brandUi.context}/20",
       "ansi": [
         "{ansi.0}",
         "{ansi.1}",
@@ -803,7 +806,7 @@
     "nodeEdgeSelectedWidthScale": 2.4,
     "nodeEdgeGlowWidthScale": 5.5,
     "railWidth": 3,
-    "semanticWashFaintAlpha": 0.06,
+    "semanticWashFaintAlpha": 0.09,
     "semanticWashAlpha": 0.1,
     "semanticWashStrongAlpha": 0.16,
     "semanticBorderAlpha": 0.4,

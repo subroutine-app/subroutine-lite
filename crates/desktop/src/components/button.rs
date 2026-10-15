@@ -9,6 +9,7 @@ use gpui_kit_theme::{ActiveTheme as _, ControlSize, Radius, Surface, Theme, Vari
 
 use crate::components::ext::StyledRefineExt as _;
 use crate::icons::Icon;
+use crate::presentation::UxColor;
 
 type ClickHandler = dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static;
 
@@ -51,7 +52,7 @@ impl ButtonVariant {
     fn paint(self, theme: &Theme, selected: bool) -> Paint {
         let colors = &theme.colors;
         let transparent = gpui::transparent_black();
-        let critical = crate::presentation::UxColor::Critical.color(theme);
+        let critical = UxColor::Critical.color(theme);
 
         let mut paint = match self {
             Self::Primary => {
@@ -87,7 +88,7 @@ impl ButtonVariant {
             },
             Self::Danger => Paint {
                 background: critical,
-                foreground: colors.text_on_accent,
+                foreground: UxColor::Critical.on_fill(theme),
                 hover: critical,
                 active: critical,
                 border: None,
@@ -96,6 +97,7 @@ impl ButtonVariant {
 
         if selected && matches!(self, Self::Ghost | Self::Outline | Self::Secondary) {
             paint.background = colors.selected;
+            paint.foreground = UxColor::Selected.text(theme);
             paint.hover = colors.selected.blend(colors.hover);
             paint.active = colors.selected.blend(colors.active);
         }

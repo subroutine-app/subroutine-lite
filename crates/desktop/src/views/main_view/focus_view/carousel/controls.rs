@@ -81,7 +81,7 @@ impl FocusView {
                 } else {
                     "Complete"
                 })
-                .text_color(UxColor::Action.text(cx.theme()))
+                .text_color(UxColor::Stable.text(cx.theme()))
                 .tab_stop(active)
                 .disabled(!active || is_completing)
                 .on_click(cx.listener(|view, _, window, cx| view.complete_active(window, cx)))
@@ -98,7 +98,7 @@ impl FocusView {
                 } else {
                     "Complete"
                 })
-                .text_color(UxColor::Action.text(cx.theme()))
+                .text_color(UxColor::Stable.text(cx.theme()))
                 .tab_stop(active)
                 .disabled(!active || is_completing)
                 .on_click(cx.listener(|view, _, window, cx| view.complete_active(window, cx)))
