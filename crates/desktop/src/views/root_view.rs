@@ -103,8 +103,7 @@ actions!(
         GoToTimeline,
         GoToCalendar,
         GoToUpcoming,
-        GoToQueue,
-        GoToFocus,
+        ToggleFocusMode,
         GoToUnqueued,
         GoToUnscheduled,
         GoToRoutines,
@@ -126,6 +125,7 @@ pub fn init(cx: &mut App) {
         key("cmd-shift-n", StartEventCreator, Some(KEY_CONTEXT)),
         key("cmd-alt-n", StartRoutineCreator, Some(KEY_CONTEXT)),
         key("cmd-b", ToggleLeftSidebar, Some(KEY_CONTEXT)),
+        key("cmd-alt-f", ToggleFocusMode, Some(KEY_CONTEXT)),
         key("cmd-alt-b", ToggleRightSidebar, Some(KEY_CONTEXT)),
         key("ctrl-tab", NextTab, Some(VIEW_SWITCH_KEY_CONTEXT)),
         key("ctrl-shift-tab", PreviousTab, Some(VIEW_SWITCH_KEY_CONTEXT)),
@@ -224,6 +224,7 @@ impl Render for RootView {
         self.restore_navigation_focus(window, cx);
 
         let content_owns_top_material = self.content_owns_top_material(cx);
+        let show_navigation_toggle = !self.focus_mode_active(cx);
         let left_panel_open =
             self.navigation_panel_open(cx) || self.navigation_drawer == NavigationDrawer::Compact;
         let left_panel_width = self.layout_state.read(cx).animated_left_px;
@@ -291,18 +292,20 @@ impl Render for RootView {
                             window.start_window_move();
                         }),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .top(if cfg!(target_os = "macos") {
-                            px(14.)
-                        } else {
-                            px(10.)
-                        })
-                        .left(toggle_left)
-                        .window_control_area(WindowControlArea::Client)
-                        .child(self.render_navigation_toggle(left_panel_open, cx)),
-                )
+                .when(show_navigation_toggle, |root| {
+                    root.child(
+                        div()
+                            .absolute()
+                            .top(if cfg!(target_os = "macos") {
+                                px(14.)
+                            } else {
+                                px(10.)
+                            })
+                            .left(toggle_left)
+                            .window_control_area(WindowControlArea::Client)
+                            .child(self.render_navigation_toggle(left_panel_open, cx)),
+                    )
+                })
             })
             .children(self.render_overlay(window, cx))
             .when(cfg!(target_os = "windows"), |root| {
@@ -313,10 +316,12 @@ impl Render for RootView {
                 .child(Self::render_windows_title(Self::windows_title_left(
                     left_panel_width,
                 )))
-                .child(Self::render_windows_navigation_toggle(
-                    self.render_navigation_toggle(left_panel_open, cx),
-                    toggle_left,
-                ))
+                .when(show_navigation_toggle, |root| {
+                    root.child(Self::render_windows_navigation_toggle(
+                        self.render_navigation_toggle(left_panel_open, cx),
+                        toggle_left,
+                    ))
+                })
             })
             .child(self.toasts.clone())
             .child(self.context_menu.entity().clone());

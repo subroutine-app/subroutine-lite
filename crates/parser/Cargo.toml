@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 chrono.workspace = true
+chrono-tz = "0.10"
 serde.workspace = true
 logos.workspace = true
 subroutine-core = { package = "core", path = "../core" }

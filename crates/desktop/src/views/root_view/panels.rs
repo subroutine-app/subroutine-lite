@@ -172,6 +172,8 @@ impl RootView {
         let progress = slide.animate(window, cx);
         if !self.library_drawer_open && progress <= f32::EPSILON {
             if let Some(route) = self.pending_full_source_route.take() {
+                self.main_view
+                    .update(cx, |main, cx| main.leave_focus_mode(cx));
                 self.route = route;
                 self.prepare_source_route(route, cx);
                 self.pending_navigation_focus = true;

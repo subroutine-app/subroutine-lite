@@ -32,8 +32,6 @@ use notices::NoticeSlot;
 
 use temporal::{EventMoment, SignalMoment};
 
-pub(crate) use notices::event_notice_card;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum FocusMode {
     #[default]

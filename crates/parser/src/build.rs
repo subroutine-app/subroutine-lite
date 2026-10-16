@@ -186,10 +186,29 @@ fn recurrence(draft: &ParseDraft) -> Result<Option<Recurrence>, ParserBuildError
 pub fn recurrence_to_rule(
     spec: Option<&RecurrenceSpec>,
 ) -> Result<Option<Recurrence>, ParserBuildError> {
-    let Some(spec) = spec else {
-        return Ok(None);
-    };
-    let rule = match spec {
+    spec.map(|spec| {
+        Recurrence::in_local_timezone(recurrence_rule(spec)?)
+            .map_err(|reason| ParserBuildError::InvalidRecurrence(reason.into()))
+    })
+    .transpose()
+}
+
+/// Builds a recurrence without consulting the process's local timezone.
+pub fn recurrence_to_rule_in_timezone(
+    spec: Option<&RecurrenceSpec>,
+    timezone: chrono_tz::Tz,
+) -> Result<Option<Recurrence>, ParserBuildError> {
+    spec.map(|spec| {
+        Ok(Recurrence {
+            timezone: Some(timezone),
+            ..Recurrence::new(recurrence_rule(spec)?)
+        })
+    })
+    .transpose()
+}
+
+pub(crate) fn recurrence_rule(spec: &RecurrenceSpec) -> Result<RecurrenceRule, ParserBuildError> {
+    Ok(match spec {
         RecurrenceSpec::EveryDays(n) => relative_rule(RecurrenceUnit::Days, *n)?,
         RecurrenceSpec::EveryWeeks(n) => relative_rule(RecurrenceUnit::Weeks, *n)?,
         RecurrenceSpec::EveryMonths(n) => relative_rule(RecurrenceUnit::Months, *n)?,
@@ -210,10 +229,7 @@ pub fn recurrence_to_rule(
             }
             RecurrenceRule::WeeklyDays(days.iter().collect())
         }
-    };
-    Recurrence::in_local_timezone(rule)
-        .map(Some)
-        .map_err(|reason| ParserBuildError::InvalidRecurrence(reason.into()))
+    })
 }
 
 fn relative_rule(unit: RecurrenceUnit, n: i64) -> Result<RecurrenceRule, ParserBuildError> {

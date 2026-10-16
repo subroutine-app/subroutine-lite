@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, Utc};
+use chrono::{Duration, NaiveDate, NaiveTime, TimeZone};
 
 use crate::{
     ast::{EntityKind, HighlightKind, ParseDraft, RecurrenceSpec, WhenSpec},
@@ -6,7 +6,7 @@ use crate::{
 };
 
 use super::{
-    ParseError,
+    ParseError, TemporalContext,
     duration::try_nl_duration,
     recurrence::{
         bounds::{
@@ -64,14 +64,12 @@ impl Match {
     }
 }
 
-pub(super) fn longest_match(
+pub(super) fn longest_match<Tz: TimeZone>(
     tokens: &[SpannedToken],
     i: usize,
-    now: DateTime<Local>,
-    granularity: Duration,
+    context: &TemporalContext<Tz>,
     draft: &ParseDraft,
     has_recurrence: bool,
-    default_date: Option<NaiveDate>,
 ) -> Result<Option<Match>, ParseError> {
     if is_escaped(tokens, i) {
         return Ok(None);
@@ -84,7 +82,7 @@ pub(super) fn longest_match(
         }
     };
 
-    let today = super::time::local_datetime(now.with_timezone(&Utc))?.date();
+    let today = context.today;
     if has_recurrence && let Some((date, len)) = try_nl_recurrence_end(tokens, i, today)? {
         consider(len, Clause::EndDate(date));
     }
@@ -100,15 +98,8 @@ pub(super) fn longest_match(
         consider(len, Clause::Time(time));
     }
 
-    if let Some((when, len)) = try_nl_when(
-        tokens,
-        i,
-        draft.kind.clone(),
-        now.with_timezone(&Utc),
-        today,
-        granularity,
-        default_date,
-    )? && draft.when.is_none()
+    if let Some((when, len)) = try_nl_when(tokens, i, draft.kind.clone(), context)?
+        && draft.when.is_none()
     {
         consider(len, Clause::When(when));
     }

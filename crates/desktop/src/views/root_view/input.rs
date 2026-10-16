@@ -1,12 +1,12 @@
 use super::{
     ChooseTheme, CurrentOverlay, EditSelectedItem, FocusNext, FocusPrevious, GoToCalendar,
-    GoToFocus, GoToHome, GoToQueue, GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued,
-    GoToUnscheduled, GoToUpcoming, NavigationDestination, NextTab, OpenConfigurationFolder,
-    OpenItemInspector, OpenSavedItemInspector, PreviousTab, Redo, RootView, StartCommandPalette,
-    StartEventCreator, StartItemCreator, StartItemCreatorOnDate, StartMarkerCreator,
-    StartMarkerCreatorOnRange, StartQueuedActionCreator, StartRoutine, StartRoutineCreator,
-    StartSignalCreator, SyncNow, ToggleLeftSidebar, ToggleRightSidebar, Undo, UseSavedAction,
-    UseSavedEvent, ViewScheduledItem,
+    GoToHome, GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued, GoToUnscheduled,
+    GoToUpcoming, NavigationDestination, NextTab, OpenConfigurationFolder, OpenItemInspector,
+    OpenSavedItemInspector, PreviousTab, Redo, RootView, StartCommandPalette, StartEventCreator,
+    StartItemCreator, StartItemCreatorOnDate, StartMarkerCreator, StartMarkerCreatorOnRange,
+    StartQueuedActionCreator, StartRoutine, StartRoutineCreator, StartSignalCreator, SyncNow,
+    ToggleFocusMode, ToggleLeftSidebar, ToggleRightSidebar, Undo, UseSavedAction, UseSavedEvent,
+    ViewScheduledItem,
     navigation::{ViewDirection, WorkspaceRoute},
     navigation_drawer::NavigationDrawer,
 };
@@ -195,19 +195,8 @@ impl RootView {
                 cx,
             );
         }))
-        .on_action(cx.listener(|view, _: &GoToQueue, window, cx| {
-            view.navigate_to_view(
-                NavigationDestination::Main(SelectedMainView::Queue),
-                window,
-                cx,
-            );
-        }))
-        .on_action(cx.listener(|view, _: &GoToFocus, window, cx| {
-            view.navigate_to_view(
-                NavigationDestination::Main(SelectedMainView::Focus),
-                window,
-                cx,
-            );
+        .on_action(cx.listener(|view, _: &ToggleFocusMode, window, cx| {
+            view.toggle_focus_mode(window, cx);
         }))
         .on_action(cx.listener(|view, _: &GoToUnqueued, window, cx| {
             view.navigate_to_view(NavigationDestination::Unqueued, window, cx);

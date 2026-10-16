@@ -34,6 +34,18 @@ pub(super) fn try_date_anchor(
     }
 
     if let Some((amount, unit, len)) = try_relative_amount(tokens, start)? {
+        if matches!(unit.as_str(), "month" | "months" | "year" | "years") {
+            let months = if matches!(unit.as_str(), "year" | "years") {
+                amount.checked_mul(12)
+            } else {
+                Some(amount)
+            };
+            let date = months
+                .and_then(|months| u32::try_from(months).ok())
+                .and_then(|months| today.checked_add_months(chrono::Months::new(months)))
+                .ok_or_else(|| ParseError::date(&token.text, "resulting date is out of range"))?;
+            return Ok(Some((date, len)));
+        }
         let days = match unit.as_str() {
             "day" | "days" => Some(amount),
             "week" | "weeks" => Some(
@@ -101,6 +113,10 @@ pub(super) fn try_relative_amount(
                 | "days"
                 | "week"
                 | "weeks"
+                | "month"
+                | "months"
+                | "year"
+                | "years"
                 | "hour"
                 | "hours"
                 | "hr"

@@ -1375,10 +1375,12 @@ impl CalendarView {
             self.scroll_cancelled = false;
         }
 
+        let animating = transition.is_animating(cx);
         let weeks = transition.animate(window, cx);
-        if transition.is_animating(cx) {
+        if animating {
             self.scroll_offset = interval * weeks;
-        } else {
+        }
+        if !transition.is_animating(cx) {
             self.scroll_target = None;
         }
     }

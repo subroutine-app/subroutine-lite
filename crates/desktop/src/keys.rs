@@ -16,12 +16,12 @@ use crate::{
     },
     themes::ToggleThemeMode,
     views::{
-        ChooseTheme, EditSelectedItem, GoToCalendar, GoToFocus, GoToHome, GoToNow, GoToQueue,
-        GoToRoutines, GoToSavedItems, GoToTimeline, GoToUnqueued, GoToUnscheduled, GoToUpcoming,
+        ChooseTheme, EditSelectedItem, GoToCalendar, GoToHome, GoToNow, GoToRoutines,
+        GoToSavedItems, GoToTimeline, GoToUnqueued, GoToUnscheduled, GoToUpcoming,
         MAIN_VIEW_KEY_CONTEXT, NextTab, OpenConfigurationFolder, PreviousTab, Redo,
         RefreshPipeline, StartEventCreator, StartItemCreator, StartMarkerCreator, StartRoutine,
-        StartRoutineCreator, StartSignalCreator, SyncNow, ToggleLeftSidebar, ToggleRightSidebar,
-        Undo, UseSavedAction, UseSavedEvent,
+        StartRoutineCreator, StartSignalCreator, SyncNow, ToggleFocusMode, ToggleLeftSidebar,
+        ToggleRightSidebar, Undo, UseSavedAction, UseSavedEvent,
     },
 };
 
@@ -78,8 +78,7 @@ pub enum ConfigurableCommand {
     GoToTimeline,
     GoToCalendar,
     GoToUpcoming,
-    GoToQueue,
-    GoToFocus,
+    ToggleFocusMode,
     GoToUnqueued,
     GoToUnscheduled,
     GoToRoutines,
@@ -105,7 +104,7 @@ pub enum ConfigurableCommand {
 }
 
 impl ConfigurableCommand {
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 45] = [
         Self::ShowSettings,
         Self::SyncNow,
         Self::OpenConfigurationFolder,
@@ -128,8 +127,7 @@ impl ConfigurableCommand {
         Self::GoToTimeline,
         Self::GoToCalendar,
         Self::GoToUpcoming,
-        Self::GoToQueue,
-        Self::GoToFocus,
+        Self::ToggleFocusMode,
         Self::GoToUnqueued,
         Self::GoToUnscheduled,
         Self::GoToRoutines,
@@ -179,8 +177,7 @@ impl ConfigurableCommand {
             Self::GoToTimeline => "navigation.go-to-timeline",
             Self::GoToCalendar => "navigation.go-to-calendar",
             Self::GoToUpcoming => "navigation.go-to-queue",
-            Self::GoToQueue => "navigation.go-to-execution-queue",
-            Self::GoToFocus => "navigation.go-to-focus",
+            Self::ToggleFocusMode => "navigation.go-to-focus",
             Self::GoToUnqueued => "navigation.go-to-unqueued",
             Self::GoToUnscheduled => "navigation.go-to-unscheduled",
             Self::GoToRoutines => "navigation.go-to-routines",
@@ -231,8 +228,7 @@ impl ConfigurableCommand {
             Self::GoToTimeline => "Go to Timeline",
             Self::GoToCalendar => "Go to Calendar",
             Self::GoToUpcoming => "Go to Upcoming",
-            Self::GoToQueue => "Go to Queue",
-            Self::GoToFocus => "Go to Focus",
+            Self::ToggleFocusMode => "Toggle Focus mode",
             Self::GoToUnqueued => "Go to Unqueued",
             Self::GoToUnscheduled => "Go to Unscheduled",
             Self::GoToRoutines => "Go to Routines",
@@ -306,8 +302,6 @@ impl ConfigurableCommand {
             Self::GoToHome
             | Self::GoToTimeline
             | Self::GoToCalendar
-            | Self::GoToQueue
-            | Self::GoToFocus
             | Self::GoToUnqueued
             | Self::GoToUnscheduled
             | Self::GoToRoutines
@@ -345,13 +339,12 @@ impl ConfigurableCommand {
             | Self::GoToHome
             | Self::GoToTimeline
             | Self::GoToCalendar
-            | Self::GoToQueue
-            | Self::GoToFocus
             | Self::GoToUnqueued
             | Self::GoToUnscheduled
             | Self::GoToRoutines
             | Self::GoToSavedItems
             | Self::GoToUpcoming => &[],
+            Self::ToggleFocusMode => &["cmd-alt-f"],
             Self::ToggleLeftSidebar => &["cmd-b"],
             Self::ToggleRightSidebar => &["cmd-alt-b"],
             Self::Undo => &["cmd-z"],
@@ -394,13 +387,12 @@ impl ConfigurableCommand {
             Self::GoToHome
             | Self::GoToTimeline
             | Self::GoToCalendar
-            | Self::GoToQueue
-            | Self::GoToFocus
             | Self::GoToUnqueued
             | Self::GoToUnscheduled
             | Self::GoToRoutines
             | Self::GoToSavedItems
             | Self::GoToUpcoming => &["navigate", "view", "switch"],
+            Self::ToggleFocusMode => &["focus", "mode", "toggle", "enter", "exit"],
             Self::ToggleLeftSidebar => &["navigation", "sidebar", "rail"],
             Self::ToggleRightSidebar | Self::EditSelectedItem => &["editor", "details", "item"],
             Self::NextTab | Self::PreviousTab => &["tab", "view", "switch"],
@@ -453,8 +445,7 @@ impl ConfigurableCommand {
             Self::GoToTimeline => Box::new(GoToTimeline),
             Self::GoToCalendar => Box::new(GoToCalendar),
             Self::GoToUpcoming => Box::new(GoToUpcoming),
-            Self::GoToQueue => Box::new(GoToQueue),
-            Self::GoToFocus => Box::new(GoToFocus),
+            Self::ToggleFocusMode => Box::new(ToggleFocusMode),
             Self::GoToUnqueued => Box::new(GoToUnqueued),
             Self::GoToUnscheduled => Box::new(GoToUnscheduled),
             Self::GoToRoutines => Box::new(GoToRoutines),
@@ -505,8 +496,7 @@ impl ConfigurableCommand {
             Self::GoToTimeline => GoToTimeline::name_for_type(),
             Self::GoToCalendar => GoToCalendar::name_for_type(),
             Self::GoToUpcoming => GoToUpcoming::name_for_type(),
-            Self::GoToQueue => GoToQueue::name_for_type(),
-            Self::GoToFocus => GoToFocus::name_for_type(),
+            Self::ToggleFocusMode => ToggleFocusMode::name_for_type(),
             Self::GoToUnqueued => GoToUnqueued::name_for_type(),
             Self::GoToUnscheduled => GoToUnscheduled::name_for_type(),
             Self::GoToRoutines => GoToRoutines::name_for_type(),
@@ -557,8 +547,7 @@ impl ConfigurableCommand {
             Self::GoToTimeline => key(chord, GoToTimeline, self.context()),
             Self::GoToCalendar => key(chord, GoToCalendar, self.context()),
             Self::GoToUpcoming => key(chord, GoToUpcoming, self.context()),
-            Self::GoToQueue => key(chord, GoToQueue, self.context()),
-            Self::GoToFocus => key(chord, GoToFocus, self.context()),
+            Self::ToggleFocusMode => key(chord, ToggleFocusMode, self.context()),
             Self::GoToUnqueued => key(chord, GoToUnqueued, self.context()),
             Self::GoToUnscheduled => key(chord, GoToUnscheduled, self.context()),
             Self::GoToRoutines => key(chord, GoToRoutines, self.context()),
@@ -842,37 +831,102 @@ fn force_click_modifier_for(is_macos: bool, modifiers: &Modifiers) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::views::SelectedMainView;
 
     #[test]
-    fn legacy_planner_navigation_remains_distinct_from_execution_queue() {
-        for (id, view) in [
-            ("queue", SelectedMainView::Upcoming),
-            ("execution-queue", SelectedMainView::Queue),
-        ] {
-            assert_eq!(SelectedMainView::from_id(id), Some(view));
-            assert_eq!(view.id(), id);
-        }
-
+    fn upcoming_keeps_legacy_id_without_execution_queue_command() {
         let upcoming = ConfigurableCommand::from_id("navigation.go-to-queue").unwrap();
-        let queue = ConfigurableCommand::from_id("navigation.go-to-execution-queue").unwrap();
         assert_eq!(upcoming, ConfigurableCommand::GoToUpcoming);
-        assert_eq!(queue, ConfigurableCommand::GoToQueue);
+        assert_eq!(upcoming.id(), "navigation.go-to-queue");
         assert_eq!(upcoming.action_name(), GoToUpcoming::name_for_type());
-        assert_eq!(queue.action_name(), GoToQueue::name_for_type());
+        assert_eq!(
+            ConfigurableCommand::from_id("navigation.go-to-execution-queue"),
+            None
+        );
 
         let mut keymap = KeymapConfig::from_overrides(BTreeMap::from([(
             "navigation.go-to-queue".into(),
             vec!["ctrl-alt-u".into()],
         )]))
         .unwrap();
+        assert!(
+            keymap
+                .add("navigation.go-to-execution-queue", "ctrl-alt-q")
+                .is_err()
+        );
         assert_eq!(keymap.effective(upcoming), ["ctrl-alt-u"]);
-        assert!(keymap.effective(queue).is_empty());
 
-        keymap
-            .add("navigation.go-to-execution-queue", "ctrl-alt-q")
+        let commands = keymap
+            .palette_commands(&["navigation.go-to-execution-queue".into()], |_| {
+                PaletteCommandState::default()
+            });
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.id().as_ref() == upcoming.id())
+        );
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.id().as_ref() != "navigation.go-to-execution-queue")
+        );
+    }
+
+    #[test]
+    fn focus_mode_uses_toggle_action_in_shortcuts_and_palette() {
+        let focus = ConfigurableCommand::from_id("navigation.go-to-focus").unwrap();
+        assert_eq!(focus, ConfigurableCommand::ToggleFocusMode);
+        assert_eq!(focus.id(), "navigation.go-to-focus");
+        assert_eq!(focus.defaults(), ["cmd-alt-f"]);
+        assert_eq!(focus.context(), Some(ITEMS_KEY_CONTEXT));
+        assert_eq!(focus.context_label(), "Items");
+        assert!(!focus.targets_main_view());
+        assert_eq!(focus.action_name(), ToggleFocusMode::name_for_type());
+        assert_eq!(focus.action().name(), ToggleFocusMode::name_for_type());
+
+        let binding = focus.binding("cmd-alt-f");
+        assert_eq!(binding.action().name(), ToggleFocusMode::name_for_type());
+        assert_eq!(
+            binding.match_keystrokes(&[Keystroke::parse(&platform("cmd-alt-f")).unwrap()]),
+            Some(false)
+        );
+
+        let keymap = KeymapConfig::default();
+        assert_eq!(keymap.effective(focus), [platform("cmd-alt-f")]);
+        let commands = keymap.palette_commands(&[], |_| PaletteCommandState::default());
+        let command = commands
+            .iter()
+            .find(|command| command.id().as_ref() == focus.id())
             .unwrap();
-        assert_eq!(keymap.effective(upcoming), ["ctrl-alt-u"]);
-        assert_eq!(keymap.effective(queue), ["ctrl-alt-q"]);
+        assert_eq!(command.label().as_ref(), "Toggle Focus mode");
+        assert!(command.is_available());
+    }
+
+    #[test]
+    fn focus_mode_keeps_saved_shortcut_overrides() {
+        let focus = ConfigurableCommand::ToggleFocusMode;
+        let keymap = KeymapConfig::from_overrides(BTreeMap::from([(
+            "navigation.go-to-focus".into(),
+            vec!["ctrl-alt-g".into()],
+        )]))
+        .unwrap();
+        assert_eq!(keymap.effective(focus), ["ctrl-alt-g"]);
+        assert_eq!(keymap.overrides()["navigation.go-to-focus"], ["ctrl-alt-g"]);
+
+        let changes = keymap_transition(&KeymapConfig::default(), &keymap);
+        assert_eq!(changes.len(), 2);
+        assert!(
+            changes[0]
+                .action()
+                .partial_eq(&Unbind(ToggleFocusMode::name_for_type().into()))
+        );
+        assert_eq!(
+            changes[0].match_keystrokes(&[Keystroke::parse(&platform("cmd-alt-f")).unwrap()]),
+            Some(false)
+        );
+        assert_eq!(changes[1].action().name(), ToggleFocusMode::name_for_type());
+        assert_eq!(
+            changes[1].match_keystrokes(&[Keystroke::parse("ctrl-alt-g").unwrap()]),
+            Some(false)
+        );
     }
 }

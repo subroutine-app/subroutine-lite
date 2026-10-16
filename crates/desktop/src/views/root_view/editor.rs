@@ -27,7 +27,7 @@ fn item_card_inspector_scope(
         SelectedMainView::Timeline => Some(SelectionScope::Timeline),
         SelectedMainView::Calendar => Some(SelectionScope::Calendar),
         SelectedMainView::Upcoming => Some(SelectionScope::Upcoming),
-        SelectedMainView::Queue => None,
+
         SelectedMainView::Focus => Some(SelectionScope::Focus),
     })
 }

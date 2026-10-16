@@ -15,30 +15,22 @@ pub(super) enum ViewDirection {
 }
 
 impl NavigationDestination {
-    const ALL: [Self; 11] = [
+    const TABS: [Self; 4] = [
         Self::Home,
-        Self::Main(SelectedMainView::Upcoming),
-        Self::Main(SelectedMainView::Queue),
         Self::Main(SelectedMainView::Timeline),
+        Self::Main(SelectedMainView::Upcoming),
         Self::Main(SelectedMainView::Calendar),
-        Self::Main(SelectedMainView::Focus),
-        Self::Unqueued,
-        Self::Unscheduled,
-        Self::Routines,
-        Self::SavedItems,
-        Self::Search,
     ];
 
-    fn step(self, direction: ViewDirection) -> Self {
-        let index = Self::ALL
+    fn step(self, direction: ViewDirection) -> Option<Self> {
+        let index = Self::TABS
             .iter()
-            .position(|destination| *destination == self)
-            .expect("every workspace destination belongs to the view cycle");
+            .position(|destination| *destination == self)?;
         let offset = match direction {
             ViewDirection::Next => 1,
             ViewDirection::Previous => -1,
         };
-        Self::ALL[(index as isize + offset).rem_euclid(Self::ALL.len() as isize) as usize]
+        Some(Self::TABS[(index as isize + offset).rem_euclid(Self::TABS.len() as isize) as usize])
     }
 
     fn id(self) -> &'static str {
@@ -133,12 +125,45 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let destination = self.active_navigation_destination(cx).step(direction);
+        let destination = self
+            .active_navigation_destination(cx)
+            .step(direction)
+            .or_else(|| Self::primary_navigation_destination(cx).step(direction))
+            .expect("the remembered primary view belongs to the tab cycle");
+        self.navigate_to_view(destination, window, cx);
+    }
+
+    fn primary_navigation_destination(cx: &App) -> NavigationDestination {
+        match Settings::global(cx).desktop_layout.primary_view() {
+            PrimaryView::Home => NavigationDestination::Home,
+            PrimaryView::Main(view) => NavigationDestination::Main(view),
+        }
+    }
+
+    pub(super) fn focus_mode_active(&self, cx: &App) -> bool {
+        self.route == WorkspaceRoute::Main
+            && self.main_view.read(cx).selected_view() == SelectedMainView::Focus
+    }
+
+    pub(super) fn toggle_focus_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.current_overlay.is_some() {
+            return;
+        }
+        let destination = if self.focus_mode_active(cx) {
+            Self::primary_navigation_destination(cx)
+        } else {
+            NavigationDestination::Main(SelectedMainView::Focus)
+        };
         self.navigate_to_view(destination, window, cx);
     }
 
     pub(super) fn prepare_shell_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let left_panel_open =
+            Settings::global(cx).desktop_layout.left_panel_open && !self.focus_mode_active(cx);
         let changed_mode = self.layout_state.update(cx, |layout, _| {
+            if let Some(panel) = layout.left_panel.as_mut() {
+                panel.open = left_panel_open;
+            }
             let was_compact = layout.is_compact();
             layout.prepare_layout(gpui::Bounds::new(
                 gpui::Point::default(),
@@ -172,6 +197,8 @@ impl RootView {
                 });
             if let Some(route) = route {
                 self.library_drawer_open = false;
+                self.main_view
+                    .update(cx, |main, cx| main.leave_focus_mode(cx));
                 self.route = route;
                 self.pending_navigation_focus = true;
             }
@@ -188,7 +215,7 @@ impl RootView {
     }
 
     pub(super) fn open_navigation_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let compact = self.layout_state.read(cx).is_compact();
+        let compact = self.layout_state.read(cx).is_compact() || self.focus_mode_active(cx);
         if self.current_overlay.is_some()
             || self.navigation_panel_open(cx)
             || self.navigation_drawer == NavigationDrawer::Compact
@@ -243,8 +270,8 @@ impl RootView {
     }
 
     pub(super) fn toggle_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.layout_state.read(cx).is_compact() {
-            if self.navigation_drawer == NavigationDrawer::Compact {
+        if self.layout_state.read(cx).is_compact() || self.focus_mode_active(cx) {
+            if self.navigation_drawer != NavigationDrawer::Closed {
                 self.close_navigation_drawer(window, cx);
             } else {
                 self.open_navigation_drawer(window, cx);
@@ -376,6 +403,9 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.navigation_drawer == NavigationDrawer::Compact {
+            self.dismiss_navigation_drawer(cx);
+        }
         if self.layout_state.read(cx).is_compact() {
             self.open_source_full_view(route, window, cx);
             return;
@@ -411,6 +441,8 @@ impl RootView {
         self.library_drawer_open = false;
         if self.layout_state.read(cx).is_compact() {
             self.pending_full_source_route = None;
+            self.main_view
+                .update(cx, |main, cx| main.leave_focus_mode(cx));
             self.route = route;
             self.prepare_source_route(route, cx);
             self.pending_navigation_focus = true;
@@ -463,6 +495,8 @@ impl RootView {
             SelectionManager::clear_global(cx);
             self.library_drawer_open = false;
             self.pending_full_source_route = None;
+            self.main_view
+                .update(cx, |main, cx| main.leave_focus_mode(cx));
             self.route = WorkspaceRoute::Home;
             self.home_view.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
@@ -556,42 +590,41 @@ mod tests {
     fn view_cycle_keeps_sidebar_order_and_wraps() {
         let expected = [
             NavigationDestination::Home,
-            NavigationDestination::Main(SelectedMainView::Upcoming),
-            NavigationDestination::Main(SelectedMainView::Queue),
             NavigationDestination::Main(SelectedMainView::Timeline),
+            NavigationDestination::Main(SelectedMainView::Upcoming),
             NavigationDestination::Main(SelectedMainView::Calendar),
-            NavigationDestination::Main(SelectedMainView::Focus),
-            NavigationDestination::Unqueued,
-            NavigationDestination::Unscheduled,
-            NavigationDestination::Routines,
-            NavigationDestination::SavedItems,
-            NavigationDestination::Search,
         ];
+        assert_eq!(
+            &expected[1..],
+            SelectedMainView::TABS
+                .map(NavigationDestination::Main)
+                .as_slice()
+        );
         for (index, destination) in expected.into_iter().enumerate() {
             assert_eq!(
                 destination.step(ViewDirection::Next),
-                expected[(index + 1) % expected.len()]
+                Some(expected[(index + 1) % expected.len()])
             );
             assert_eq!(
                 destination.step(ViewDirection::Previous),
-                expected[(index + expected.len() - 1) % expected.len()]
+                Some(expected[(index + expected.len() - 1) % expected.len()])
             );
         }
     }
 
     #[test]
-    fn only_home_and_main_destinations_are_remembered() {
-        for destination in NavigationDestination::ALL {
-            let expected = match destination {
-                NavigationDestination::Home => Some(PrimaryView::Home),
-                NavigationDestination::Main(view) => Some(PrimaryView::Main(view)),
-                NavigationDestination::Search
-                | NavigationDestination::Unqueued
-                | NavigationDestination::Unscheduled
-                | NavigationDestination::Routines
-                | NavigationDestination::SavedItems => None,
-            };
-            assert_eq!(PrimaryView::from_id(destination.id()), expected);
+    fn secondary_destinations_are_not_tabs_or_remembered_primary_views() {
+        for destination in [
+            NavigationDestination::Main(SelectedMainView::Focus),
+            NavigationDestination::Search,
+            NavigationDestination::Unqueued,
+            NavigationDestination::Unscheduled,
+            NavigationDestination::Routines,
+            NavigationDestination::SavedItems,
+        ] {
+            assert_eq!(destination.step(ViewDirection::Next), None);
+            assert_eq!(destination.step(ViewDirection::Previous), None);
+            assert_eq!(PrimaryView::from_id(destination.id()), None);
         }
     }
 }

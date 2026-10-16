@@ -7,7 +7,7 @@ use gpui::{
     IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, SharedString, Stateful,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, size,
 };
-use gpui_kit::foundation::{Disableable as _, FocusRing as _, Selectable as _, StyledExt as _};
+use gpui_kit::foundation::{Disableable as _, Selectable as _, StyledExt as _};
 use gpui_kit_theme::ActiveTheme;
 use subroutine_core::{AnyItem, SchedulePoint};
 use uuid::Uuid;
@@ -287,7 +287,16 @@ impl UpcomingView {
                 row.cursor_pointer()
                     .focusable()
                     .tab_stop(true)
-                    .focus_ring(cx.theme())
+                    .focus_visible(|style| {
+                        // Adjacent cards share this row's edge, so the ring must stay inside it.
+                        style.shadow(
+                            cx.theme()
+                                .focus_ring()
+                                .into_iter()
+                                .map(gpui::BoxShadow::inset)
+                                .collect::<Vec<_>>(),
+                        )
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                         SelectionManager::claim_press(cx);
                     })
@@ -673,15 +682,7 @@ impl UpcomingView {
                 if !reveal {
                     return;
                 }
-                let viewport = scroll.bounds();
-                let offset = if bounds.top() < viewport.top() {
-                    viewport.top() - bounds.top()
-                } else if bounds.bottom() > viewport.bottom() {
-                    viewport.bottom() - bounds.bottom()
-                } else {
-                    px(0.)
-                };
-                if scroll.scroll_by_y(offset) != px(0.) {
+                if scroll.reveal_bounds(bounds) {
                     window.refresh();
                 }
             })

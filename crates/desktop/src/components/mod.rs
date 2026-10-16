@@ -17,6 +17,7 @@ mod marquee;
 pub mod menu;
 mod month_selector;
 mod overlay;
+pub(crate) mod scroll_motion;
 pub mod scrollbar;
 mod sidebar_panel;
 pub mod text_input;

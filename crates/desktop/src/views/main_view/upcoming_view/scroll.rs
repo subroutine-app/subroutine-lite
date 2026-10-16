@@ -1,6 +1,4 @@
-use std::ops::Range;
-
-use gpui::{Pixels, point, px};
+use gpui::{Pixels, px};
 
 use crate::components::virtual_list::VirtualListScrollHandle;
 
@@ -37,20 +35,4 @@ impl RowAnchor {
         };
         Some((index, offset))
     }
-}
-
-pub(super) fn restore_offset(
-    handle: &VirtualListScrollHandle,
-    offset: Pixels,
-    mut range: Range<usize>,
-    row_count: usize,
-) -> Range<usize> {
-    handle.scroll_by_y(-offset);
-    let viewport = handle.bounds();
-    let bottom = point(viewport.left(), viewport.bottom() - px(1.));
-    let end = handle
-        .row_at_position(bottom)
-        .map_or(row_count, |(index, _)| (index + 2).min(row_count));
-    range.end = range.end.max(end);
-    range
 }

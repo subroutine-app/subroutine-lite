@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 mod agenda;
 mod headers;
+mod navigation;
 mod rows;
 mod scroll;
 mod sections;
@@ -1193,7 +1194,11 @@ impl UpcomingView {
         if viewport.width <= px(0.) || viewport.height <= px(0.) {
             return div().size_full().into_any_element();
         }
-        let dragging = self.marquee.is_active() || self.dragged_items.is_some();
+        let dragging =
+            self.marquee.is_active() || self.dragged_items.is_some() || cx.has_active_drag();
+        if dragging {
+            self.scroll_handle.cancel_scroll();
+        }
         let rebuild = self.agenda_stale || self.today != Local::now().date_naive();
         let anchor =
             (!rebuild && !dragging && !self.sections.is_animating() && self.reveal.is_none())
@@ -1263,16 +1268,6 @@ impl UpcomingView {
             "upcoming-agenda",
             self.layout.sizes.clone(),
             move |view, visible_range, window, cx| {
-                let visible_range = if let Some((_, offset)) = anchor {
-                    scroll::restore_offset(
-                        &view.scroll_handle,
-                        offset,
-                        visible_range,
-                        view.layout.rows.len(),
-                    )
-                } else {
-                    visible_range
-                };
                 view.apply_edge_scroll(window, cx);
                 visible_range
                     .map(|ix| {
@@ -1308,10 +1303,12 @@ impl UpcomingView {
         )
         .size_full()
         .track_scroll(&self.scroll_handle)
-        .when_some(
-            reveal.or_else(|| anchor.map(|(row, _)| (row, ScrollStrategy::Top))),
-            |list, (row, strategy)| list.scroll_to_item(row, strategy),
-        );
+        .when_some(anchor, |list, (row, within)| {
+            list.restore_anchor(row, within)
+        })
+        .when_some(reveal, |list, (row, strategy)| {
+            list.scroll_to_item(row, strategy)
+        });
 
         let body = div()
             .id("upcoming-body")
@@ -1331,6 +1328,7 @@ impl UpcomingView {
 
         self.tab_root(div().row(), cx)
             .size_full()
+            .on_key_down(cx.listener(Self::on_navigation_key))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|view, event, window, cx| {

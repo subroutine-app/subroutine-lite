@@ -3,13 +3,17 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Div, Edges, ElementId, Entity, FocusHandle,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render, RenderOnce,
-    ScrollHandle, ScrollStrategy, Size, StatefulInteractiveElement, Styled, Window,
-    container_query, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, Bounds, Context, Div, ElementId, Entity, FocusHandle, InteractiveElement,
+    IntoElement, ParentElement, Pixels, Point, Render, RenderOnce, ScrollHandle, ScrollStrategy,
+    Size, StatefulInteractiveElement, Styled, Window, container_query, div,
+    prelude::FluentBuilder as _, px,
 };
 
-use crate::components::{elastic_overscroll::ElasticOverscroll, ext::ElementExt as _};
+use crate::components::{
+    elastic_overscroll::ElasticOverscroll,
+    ext::ElementExt as _,
+    scroll_motion::{ScrollMotion, scroll_ranges},
+};
 
 const OVERSCAN: usize = 4;
 
@@ -45,6 +49,7 @@ impl ScrollFocus {
         bounds: Bounds<Pixels>,
         row_focus: Option<&FocusHandle>,
         scroll: &ScrollHandle,
+        motion: &ScrollMotion,
         inset: Pixels,
         window: &mut Window,
         cx: &mut App,
@@ -55,6 +60,7 @@ impl ScrollFocus {
         let row_focus = row_focus.clone();
         let target = target.clone();
         let state = self.0.clone();
+        let motion = motion.clone();
         let scroll = scroll.clone();
         let offset = scroll.offset();
         window.on_next_frame(move |window, cx| {
@@ -72,13 +78,7 @@ impl ScrollFocus {
             let mut bounds = bounds;
             bounds.origin += scroll.offset() - offset;
             bounds.size.height = bounds.size.height.min(available);
-            if scroll.reveal_bounds(
-                bounds,
-                Edges {
-                    top: inset,
-                    ..Edges::default()
-                },
-            ) {
+            if motion.reveal(&scroll, bounds, scroll.bounds(), inset) {
                 window.refresh();
             }
         });
@@ -90,13 +90,20 @@ pub struct VirtualListScrollHandle {
     base: ScrollHandle,
     metrics: Rc<RefCell<Metrics>>,
     elastic: Rc<RefCell<ElasticOverscroll>>,
+    motion: ScrollMotion,
 }
 
 #[derive(Default)]
 struct Metrics {
     offsets: Vec<Pixels>,
     bounds: Bounds<Pixels>,
-    pending_scroll: Option<(usize, ScrollStrategy)>,
+    pending_scroll: Option<ScrollRequest>,
+}
+
+#[derive(Clone, Copy)]
+enum ScrollRequest {
+    Reveal(usize, ScrollStrategy),
+    Anchor(usize, Pixels),
 }
 
 impl Metrics {
@@ -145,18 +152,26 @@ impl VirtualListScrollHandle {
         if metrics.bounds.size.width <= px(0.) || viewport <= px(0.) {
             return;
         }
-        let Some((ix, strategy)) = metrics.pending_scroll else {
+        let Some(request) = metrics.pending_scroll else {
             return;
+        };
+        let ix = match request {
+            ScrollRequest::Reveal(ix, _) | ScrollRequest::Anchor(ix, _) => ix,
         };
         let (Some(top), Some(height)) = (metrics.offset_of(ix), metrics.height_of(ix)) else {
             return;
         };
         metrics.pending_scroll = None;
-        let current = -self.base.offset().y;
+        if let ScrollRequest::Anchor(_, within) = request {
+            let target = -(top + within).clamp(px(0.), (metrics.total() - viewport).max(px(0.)));
+            self.motion.rebase(&self.base, target);
+            return;
+        }
+        let current = -self.motion.target(&self.base);
 
-        let target = match strategy {
-            ScrollStrategy::Top => top,
-            ScrollStrategy::Center => top - (viewport - height) / 2.,
+        let target = match request {
+            ScrollRequest::Reveal(_, ScrollStrategy::Top) => top,
+            ScrollRequest::Reveal(_, ScrollStrategy::Center) => top - (viewport - height) / 2.,
             _ => {
                 if height > viewport || top < current {
                     top
@@ -170,8 +185,7 @@ impl VirtualListScrollHandle {
 
         let max = (metrics.total() - viewport).max(px(0.));
         let clamped = target.clamp(px(0.), max);
-        self.base
-            .set_offset(Point::new(self.base.offset().x, -clamped));
+        self.motion.set(&self.base, -clamped);
     }
 
     pub fn bounds(&self) -> Bounds<Pixels> {
@@ -183,6 +197,7 @@ impl VirtualListScrollHandle {
     }
 
     pub fn scroll_by_y(&self, delta: Pixels) -> Pixels {
+        self.motion.cancel();
         let metrics = self.metrics.borrow();
         if metrics.bounds.size.width <= px(0.) || metrics.bounds.size.height <= px(0.) {
             return px(0.);
@@ -192,6 +207,16 @@ impl VirtualListScrollHandle {
             clamped_scroll_offset(offset.y, delta, metrics.total(), metrics.bounds.size.height);
         self.base.set_offset(Point::new(offset.x, next));
         next - offset.y
+    }
+
+    pub fn reveal_bounds(&self, bounds: Bounds<Pixels>) -> bool {
+        self.motion
+            .reveal(&self.base, bounds, self.bounds(), px(0.))
+    }
+
+    pub fn cancel_scroll(&self) {
+        self.motion.cancel();
+        self.metrics.borrow_mut().pending_scroll = None;
     }
 
     pub fn row_at_position(&self, position: Point<Pixels>) -> Option<(usize, Bounds<Pixels>)> {
@@ -255,14 +280,19 @@ pub struct VirtualList {
     id: ElementId,
     item_sizes: Rc<Vec<Size<Pixels>>>,
     scroll_handle: Option<VirtualListScrollHandle>,
-    scroll_to: Option<(usize, ScrollStrategy)>,
+    scroll_to: Option<ScrollRequest>,
     render: RenderRange,
     notify: Box<dyn Fn(&mut App)>,
 }
 
 impl VirtualList {
     pub fn scroll_to_item(mut self, index: usize, strategy: ScrollStrategy) -> Self {
-        self.scroll_to = Some((index, strategy));
+        self.scroll_to = Some(ScrollRequest::Reveal(index, strategy));
+        self
+    }
+
+    pub fn restore_anchor(mut self, index: usize, within: Pixels) -> Self {
+        self.scroll_to = Some(ScrollRequest::Anchor(index, within));
         self
     }
 
@@ -302,37 +332,51 @@ impl RenderOnce for VirtualList {
                     total += item.height;
                     offsets.push(total);
                 }
-                handle.metrics.borrow_mut().offsets = offsets.clone();
-                let viewport = size.height;
-                let offset = handle.base.offset();
-                let clamped = clamped_scroll_offset(offset.y, px(0.), total, viewport);
-                if clamped != offset.y {
-                    handle.base.set_offset(Point::new(offset.x, clamped));
+                {
+                    let mut metrics = handle.metrics.borrow_mut();
+                    metrics.offsets = offsets.clone();
+                    metrics.bounds.size = size;
                 }
-                handle.apply_pending_scroll();
-                let scrolled = -handle.base.offset().y;
-                let first = offsets
-                    .partition_point(|offset| *offset <= scrolled)
-                    .saturating_sub(1);
-                let last = offsets.partition_point(|offset| *offset < scrolled + viewport);
-                let range = first.saturating_sub(OVERSCAN).min(self.item_sizes.len())
-                    ..(last + OVERSCAN).min(self.item_sizes.len());
+                let viewport = size.height;
 
-                let rows = (self.render)(range.clone(), window, cx);
+                handle.apply_pending_scroll();
+                handle
+                    .motion
+                    .animate(&handle.base, total - viewport, window, cx);
+                let range_at = |offset: Pixels| {
+                    let first = offsets
+                        .partition_point(|top| *top <= -offset)
+                        .saturating_sub(1);
+                    let last = offsets.partition_point(|top| *top < -offset + viewport);
+                    first.saturating_sub(OVERSCAN).min(self.item_sizes.len())
+                        ..(last + OVERSCAN).min(self.item_sizes.len())
+                };
+                // Keep destination controls mounted so focus and typing survive the journey.
+                let ranges = scroll_ranges(
+                    range_at(handle.base.offset().y),
+                    range_at(handle.motion.target(&handle.base)),
+                );
+                let rows: Vec<_> = ranges
+                    .into_iter()
+                    .flat_map(|range| {
+                        let rows = (self.render)(range.clone(), window, cx);
+                        range.zip(rows)
+                    })
+                    .collect();
+                let scrolling = handle.motion.is_animating(&handle.base);
                 let focus = ScrollFocus::new(self.id, window, cx);
                 let overscroll_y = handle.elastic.borrow_mut().advance(cx);
                 let offset = handle.base.offset().y;
                 let placed: Vec<_> = rows
                     .into_iter()
-                    .enumerate()
-                    .map(|(nth, row)| {
-                        let ix = range.start + nth;
+                    .map(|(ix, row)| {
                         let top = offsets[ix];
                         let height = self.item_sizes[ix].height;
                         let visible_top = top + overscroll_y + offset;
                         let visible = visible_top + height > px(0.) && visible_top < viewport;
                         let focus = focus.clone();
                         let scroll = handle.base.clone();
+                        let motion = handle.motion.clone();
                         div()
                             .id(("virtual-list-row", ix))
                             .focusable()
@@ -341,9 +385,9 @@ impl RenderOnce for VirtualList {
                             .top(top)
                             .left_0()
                             .right_0()
-                            .when(!visible, |row| row.invisible())
+                            .when(!visible && !scrolling, |row| row.invisible())
                             .on_focus_resolved(move |bounds, row, window, cx| {
-                                focus.reveal(bounds, row, &scroll, px(0.), window, cx);
+                                focus.reveal(bounds, row, &scroll, &motion, px(0.), window, cx);
                             })
                             .child(row)
                     })
@@ -352,6 +396,7 @@ impl RenderOnce for VirtualList {
                     window.request_animation_frame();
                 }
                 let elastic = handle.elastic.clone();
+                let motion = handle.motion.clone();
                 let notify = self.notify;
 
                 div()
@@ -360,6 +405,7 @@ impl RenderOnce for VirtualList {
                     .overflow_y_scroll()
                     .track_scroll(&handle.base)
                     .on_scroll_wheel(move |event, window, cx| {
+                        motion.cancel();
                         if elastic.borrow_mut().handle_scroll(event, window, cx) {
                             notify(cx);
                         }
@@ -390,7 +436,7 @@ mod tests {
         {
             let mut metrics = handle.metrics.borrow_mut();
             metrics.offsets = (0..=100).map(|ix| px(ix as f32 * 40.)).collect();
-            metrics.pending_scroll = Some((75, ScrollStrategy::Center));
+            metrics.pending_scroll = Some(ScrollRequest::Reveal(75, ScrollStrategy::Center));
         }
         handle.apply_pending_scroll();
         assert_eq!(handle.base.offset().y, px(0.));
@@ -401,8 +447,33 @@ mod tests {
             gpui::size(px(640.), px(320.)),
         ));
         handle.apply_pending_scroll();
-        assert_eq!(handle.base.offset().y, px(-2860.));
+        assert_eq!(handle.base.offset().y, px(0.));
+        assert_eq!(handle.motion.target(&handle.base), px(-2860.));
         assert!(handle.metrics.borrow().pending_scroll.is_none());
+    }
+
+    #[test]
+    fn anchor_restoration_is_immediate_and_rebases_navigation() {
+        let handle = VirtualListScrollHandle::new();
+        handle.set_bounds(Bounds::new(
+            Point::default(),
+            gpui::size(px(640.), px(120.)),
+        ));
+        handle.metrics.borrow_mut().offsets = vec![px(0.), px(100.), px(200.), px(500.)];
+        handle.base.set_offset(Point::new(px(0.), px(-25.)));
+        handle.motion.set(&handle.base, px(-200.));
+        handle.metrics.borrow_mut().pending_scroll = Some(ScrollRequest::Anchor(1, px(25.)));
+
+        handle.apply_pending_scroll();
+        assert_eq!(handle.base.offset().y, px(-125.));
+        assert_eq!(handle.motion.target(&handle.base), px(-300.));
+        assert!(handle.motion.is_animating(&handle.base));
+
+        handle.cancel_scroll();
+        handle.metrics.borrow_mut().pending_scroll = Some(ScrollRequest::Anchor(0, px(25.)));
+        handle.apply_pending_scroll();
+        assert_eq!(handle.base.offset().y, px(-25.));
+        assert!(!handle.motion.is_animating(&handle.base));
     }
 
     #[test]
@@ -415,7 +486,7 @@ mod tests {
         {
             let mut metrics = handle.metrics.borrow_mut();
             metrics.offsets = vec![px(0.), px(40.), px(80.)];
-            metrics.pending_scroll = Some((1, ScrollStrategy::Center));
+            metrics.pending_scroll = Some(ScrollRequest::Reveal(1, ScrollStrategy::Center));
         }
 
         handle.set_bounds(Bounds::new(
@@ -424,7 +495,8 @@ mod tests {
         ));
         handle.metrics.borrow_mut().offsets = vec![px(0.), px(200.), px(240.), px(400.)];
         handle.apply_pending_scroll();
-        assert_eq!(handle.base.offset().y, px(-160.));
+        assert_eq!(handle.base.offset().y, px(0.));
+        assert_eq!(handle.motion.target(&handle.base), px(-160.));
         assert!(handle.metrics.borrow().pending_scroll.is_none());
     }
 }

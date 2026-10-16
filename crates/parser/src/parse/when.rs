@@ -1,6 +1,6 @@
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveTime, TimeZone, Utc};
 
-use super::{ParseError, date::*, time::*};
+use super::{ParseError, TemporalContext, date::*, time::*};
 use crate::ast::{EntityKind, WhenSpec};
 use crate::lexer::{SpannedToken, Token};
 
@@ -17,15 +17,20 @@ pub(super) fn try_nl_time(tokens: &[SpannedToken], i: usize) -> Option<(NaiveTim
         .or_else(|| try_time_token(tokens, i))
 }
 
-pub(super) fn try_nl_when(
+pub(super) fn try_nl_when<Tz: TimeZone>(
     tokens: &[SpannedToken],
     i: usize,
     kind: EntityKind,
-    now: DateTime<Utc>,
-    today: NaiveDate,
-    granularity: Duration,
-    default_date: Option<NaiveDate>,
+    context: &TemporalContext<Tz>,
 ) -> Result<Option<(WhenSpec, usize)>, ParseError> {
+    let TemporalContext {
+        now,
+        today,
+        granularity,
+        default_date,
+        timezone,
+    } = context;
+    let (now, today, granularity, default_date) = (*now, *today, *granularity, *default_date);
     if kind.is_template() {
         return Ok(None);
     }
@@ -38,7 +43,7 @@ pub(super) fn try_nl_when(
         && let Some((date, date_len)) = try_date_anchor(tokens, i + time_len, today)?
     {
         return Ok(Some((
-            WhenSpec::DateTime(date_at(date, time)?),
+            WhenSpec::DateTime(date_at(date, time, timezone)?),
             time_len + date_len,
         )));
     }
@@ -72,7 +77,10 @@ pub(super) fn try_nl_when(
         )
         && let Some(time) = parse_named_time(&next.text.to_ascii_lowercase())
     {
-        return Ok(Some((WhenSpec::DateTime(date_at(today, time)?), 2)));
+        return Ok(Some((
+            WhenSpec::DateTime(date_at(today, time, timezone)?),
+            2,
+        )));
     }
 
     if lower == "now" {
@@ -89,12 +97,15 @@ pub(super) fn try_nl_when(
         _ => None,
     };
     if let Some((date, time)) = named {
-        return Ok(Some((WhenSpec::DateTime(date_at(date, time)?), 1)));
+        return Ok(Some((
+            WhenSpec::DateTime(date_at(date, time, timezone)?),
+            1,
+        )));
     }
 
     if let Some((time, len)) = try_nl_time(tokens, i) {
         return Ok(Some((
-            WhenSpec::DateTime(date_at(default_date.unwrap_or(today), time)?),
+            WhenSpec::DateTime(date_at(default_date.unwrap_or(today), time, timezone)?),
             len,
         )));
     }
@@ -115,7 +126,7 @@ pub(super) fn try_nl_when(
         let len = len + intro;
         if let Some((time, extra)) = try_nl_time(tokens, i + len) {
             return Ok(Some((
-                WhenSpec::DateTime(date_at(date, time)?),
+                WhenSpec::DateTime(date_at(date, time, timezone)?),
                 len + extra,
             )));
         }

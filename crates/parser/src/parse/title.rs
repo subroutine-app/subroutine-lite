@@ -17,7 +17,7 @@ pub(super) fn assemble_title(draft: &mut ParseDraft, tokens: &[SpannedToken], co
             _ if template => tok.text.clone(),
             _ => continue,
         };
-        if !title.is_empty() && (!template || previous_end != Some(tok.span.start)) {
+        if !title.is_empty() && previous_end != Some(tok.span.start) {
             title.push(' ');
         }
         title.push_str(&text);

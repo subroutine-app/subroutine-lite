@@ -1,6 +1,6 @@
 pub(super) mod bounds;
 
-use chrono::{Datelike, NaiveDate, Weekday};
+use chrono::{Datelike, NaiveDate, TimeZone, Weekday};
 
 use super::{
     ParseError,
@@ -119,7 +119,9 @@ fn try_every_clause(
 pub fn try_recurrence_text(text: &str) -> Result<Option<RecurrenceSpec>, ParseError> {
     let lower = text.trim().to_ascii_lowercase();
     let spec = recurrence_spec(&lower).map_err(|error| error.with_input(text))?;
-    crate::build::recurrence_to_rule(spec.as_ref())
+    spec.as_ref()
+        .map(crate::build::recurrence_rule)
+        .transpose()
         .map_err(|error| ParseError::recurrence(text, error.to_string()))?;
     Ok(spec)
 }
@@ -237,7 +239,11 @@ fn parse_day_list(text: &str) -> Vec<Weekday> {
     days
 }
 
-pub(super) fn align_weekdays(draft: &mut ParseDraft, today: NaiveDate) -> Result<(), ParseError> {
+pub(super) fn align_weekdays(
+    draft: &mut ParseDraft,
+    today: NaiveDate,
+    timezone: &impl TimeZone,
+) -> Result<(), ParseError> {
     if draft.kind.is_template() {
         return Ok(());
     }
@@ -245,7 +251,7 @@ pub(super) fn align_weekdays(draft: &mut ParseDraft, today: NaiveDate) -> Result
         return Ok(());
     };
     let date = match draft.when {
-        Some(WhenSpec::DateTime(dt)) => super::time::local_datetime(dt)?.date(),
+        Some(WhenSpec::DateTime(dt)) => super::time::local_datetime(dt, timezone)?.date(),
         Some(WhenSpec::NaiveDate(date)) => date,
         None => today,
     };
@@ -257,9 +263,11 @@ pub(super) fn align_weekdays(draft: &mut ParseDraft, today: NaiveDate) -> Result
         next = add_days(next, 1)?;
         if set.contains(next.weekday()) {
             draft.when = Some(match draft.when {
-                Some(WhenSpec::DateTime(dt)) => {
-                    WhenSpec::DateTime(date_at(next, super::time::local_datetime(dt)?.time())?)
-                }
+                Some(WhenSpec::DateTime(dt)) => WhenSpec::DateTime(date_at(
+                    next,
+                    super::time::local_datetime(dt, timezone)?.time(),
+                    timezone,
+                )?),
                 Some(WhenSpec::NaiveDate(_)) | None => WhenSpec::NaiveDate(next),
             });
             return Ok(());

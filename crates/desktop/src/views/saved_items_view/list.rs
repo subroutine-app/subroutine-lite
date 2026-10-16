@@ -432,11 +432,14 @@ impl SavedItemsList {
             .focusable()
             .tab_stop(false)
             .on_focus_resolved(move |bounds, row, window, cx| {
-                let scroll = scroll_view.read(cx).scroll_handle.clone();
+                let view = scroll_view.read(cx);
+                let scroll = view.scroll_handle.clone();
+                let motion = view.scroll_motion.clone();
                 scroll_focus.reveal(
                     bounds,
                     row,
                     &scroll,
+                    &motion,
                     crate::views::LIBRARY_HEADER_HEIGHT + SIDEBAR_ITEM_GAP,
                     window,
                     cx,

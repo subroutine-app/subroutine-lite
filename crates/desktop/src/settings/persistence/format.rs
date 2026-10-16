@@ -159,6 +159,7 @@ impl PersistedSettings {
         self.apply_creation_and_focus(settings)?;
         self.apply_appearance(settings)?;
         self.keymap.remove("application.show-integrations");
+        self.keymap.remove("navigation.go-to-execution-queue");
         settings.keymap = KeymapConfig::from_overrides(self.keymap)?;
 
         settings.recent_commands = restore_recent_commands(self.recent_commands);
@@ -296,6 +297,36 @@ pub(super) fn decode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_queue_shortcut_does_not_block_settings_restore() {
+        let mut persisted = PersistedSettings::from_settings(&Settings::default());
+        persisted.keymap = BTreeMap::from([
+            (
+                "navigation.go-to-execution-queue".into(),
+                vec!["ctrl-alt-q".into()],
+            ),
+            ("navigation.go-to-queue".into(), vec!["ctrl-alt-u".into()]),
+            ("navigation.go-to-focus".into(), vec!["ctrl-alt-g".into()]),
+        ]);
+        let mut restored = Settings::default();
+        persisted.apply_to(&mut restored).unwrap();
+
+        assert!(
+            !restored
+                .keymap
+                .overrides()
+                .contains_key("navigation.go-to-execution-queue")
+        );
+        assert_eq!(
+            restored.keymap.overrides()["navigation.go-to-queue"],
+            ["ctrl-alt-u"]
+        );
+        assert_eq!(
+            restored.keymap.overrides()["navigation.go-to-focus"],
+            ["ctrl-alt-g"]
+        );
+    }
 
     #[test]
     fn frosted_background_persists_off_and_defaults_on_for_existing_settings() {

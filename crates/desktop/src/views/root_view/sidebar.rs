@@ -104,7 +104,7 @@ fn main_navigation_icon(view: SelectedMainView) -> AppIcon {
         SelectedMainView::Timeline => AppIcon::Timeline,
         SelectedMainView::Calendar => AppIcon::Calendar,
         SelectedMainView::Upcoming => AppIcon::ListChecks,
-        SelectedMainView::Queue => AppIcon::ListOrdered,
+
         SelectedMainView::Focus => AppIcon::ScanEye,
     }
 }
@@ -239,7 +239,7 @@ impl RootView {
                                 self.render_route_button("home", "Home", AppIcon::Home, active, cx)
                                     .map(|button| navigation.button(button)),
                             )
-                            .children(SelectedMainView::ALL.into_iter().map(|view| {
+                            .children(SelectedMainView::TABS.into_iter().map(|view| {
                                 navigation
                                     .button(self.render_main_navigation_button(view, active, cx))
                             })),

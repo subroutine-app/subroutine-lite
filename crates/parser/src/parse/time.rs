@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Offset, TimeZone, Utc};
 
 use super::ParseError;
 
@@ -102,9 +102,13 @@ pub(super) fn default_time() -> NaiveTime {
     NaiveTime::from_hms_opt(9, 0, 0).unwrap()
 }
 
-pub(super) fn date_at(date: NaiveDate, time: NaiveTime) -> Result<DateTime<Utc>, ParseError> {
+pub(super) fn date_at(
+    date: NaiveDate,
+    time: NaiveTime,
+    timezone: &impl TimeZone,
+) -> Result<DateTime<Utc>, ParseError> {
     let ndt = NaiveDateTime::new(date, time);
-    match Local.from_local_datetime(&ndt) {
+    match timezone.from_local_datetime(&ndt) {
         chrono::LocalResult::Single(dt) => Ok(dt.with_timezone(&Utc)),
         chrono::LocalResult::Ambiguous(earliest, _latest) => Ok(earliest.with_timezone(&Utc)),
         chrono::LocalResult::None => Err(ParseError::date(
@@ -114,11 +118,14 @@ pub(super) fn date_at(date: NaiveDate, time: NaiveTime) -> Result<DateTime<Utc>,
     }
 }
 
-pub(super) fn local_datetime(datetime: DateTime<Utc>) -> Result<NaiveDateTime, ParseError> {
-    let local = datetime.with_timezone(&Local);
+pub(super) fn local_datetime(
+    datetime: DateTime<Utc>,
+    timezone: &impl TimeZone,
+) -> Result<NaiveDateTime, ParseError> {
+    let local = datetime.with_timezone(timezone);
     local
         .naive_utc()
-        .checked_add_offset(*local.offset())
+        .checked_add_offset(local.offset().fix())
         .ok_or_else(|| {
             ParseError::date(datetime.to_string(), "local date and time is out of range")
         })

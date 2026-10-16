@@ -9,7 +9,7 @@ mod when;
 #[cfg(test)]
 mod tests;
 
-use chrono::{DateTime, Duration, Local, NaiveDate};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use thiserror::Error;
 
 use crate::{
@@ -127,8 +127,7 @@ pub fn parse_on_date(
     kind: EntityKind,
     date: NaiveDate,
 ) -> Result<ParseDraft, ParseError> {
-    parse_tokens(input, kind, Local::now(), Duration::minutes(5), Some(date))
-        .map_err(|error| error.with_input(input))
+    parse_in_timezone(input, kind, Local::now(), Duration::minutes(5), Some(date))
 }
 
 fn parse_impl(
@@ -145,17 +144,46 @@ pub fn parse_with_context(
     now: DateTime<Local>,
     granularity: Duration,
 ) -> Result<ParseDraft, ParseError> {
-    parse_tokens(input, kind, now, granularity, None).map_err(|error| error.with_input(input))
+    parse_in_timezone(input, kind, now, granularity, None)
 }
 
-fn parse_tokens(
+/// Uses the timezone carried by `now` for all calendar and wall-clock operations.
+/// Explicit dates and relative phrases override `default_date`; bare times use it.
+/// Nonexistent wall times fail, and ambiguous wall times use the earlier instant.
+pub fn parse_in_timezone<Tz: TimeZone>(
     input: &str,
     kind: EntityKind,
-    now: DateTime<Local>,
+    now: DateTime<Tz>,
+    granularity: Duration,
+    default_date: Option<NaiveDate>,
+) -> Result<ParseDraft, ParseError> {
+    parse_tokens(input, kind, now, granularity, default_date)
+        .map_err(|error| error.with_input(input))
+}
+
+struct TemporalContext<Tz> {
+    now: DateTime<Utc>,
+    timezone: Tz,
+    today: NaiveDate,
+    granularity: Duration,
+    default_date: Option<NaiveDate>,
+}
+
+fn parse_tokens<Tz: TimeZone>(
+    input: &str,
+    kind: EntityKind,
+    now: DateTime<Tz>,
     granularity: Duration,
     default_date: Option<NaiveDate>,
 ) -> Result<ParseDraft, ParseError> {
     let default_date = default_date.filter(|_| !kind.is_template());
+    let context = TemporalContext {
+        now: now.to_utc(),
+        timezone: now.timezone(),
+        today: time::local_datetime(now.to_utc(), &now.timezone())?.date(),
+        granularity,
+        default_date,
+    };
     let tokens = lex(input);
     let has_recurrence = has_recurrence_clause(&tokens)?;
     let mut draft = ParseDraft::new(kind.clone(), input);
@@ -177,15 +205,7 @@ fn parse_tokens(
             continue;
         }
 
-        if let Some(matched) = longest_match(
-            &tokens,
-            i,
-            now,
-            granularity,
-            &draft,
-            has_recurrence,
-            default_date,
-        )? {
+        if let Some(matched) = longest_match(&tokens, i, &context, &draft, has_recurrence)? {
             let len = matched.len;
             let kind = matched.apply(&mut draft);
             let start = tokens[i].span.start;
@@ -200,12 +220,13 @@ fn parse_tokens(
 
     assemble_title(&mut draft, &tokens, &consumed);
     draft.when = draft.when.or(default_date.map(WhenSpec::NaiveDate));
-    crate::build::recurrence_to_rule(draft.recurrence.as_ref())
+    draft
+        .recurrence
+        .as_ref()
+        .map(crate::build::recurrence_rule)
+        .transpose()
         .map_err(|error| ParseError::recurrence(input, error.to_string()))?;
-    align_weekdays(
-        &mut draft,
-        time::local_datetime(now.with_timezone(&chrono::Utc))?.date(),
-    )?;
+    align_weekdays(&mut draft, context.today, &context.timezone)?;
     if let Some(duration) = draft.duration {
         let fits = match draft.when {
             Some(crate::ast::WhenSpec::DateTime(start)) => {

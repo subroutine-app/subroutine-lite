@@ -5,7 +5,10 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::components::{
-    MarqueeSelection, elastic_overscroll::ElasticOverscroll, scrollbar::Scrollbar,
+    MarqueeSelection,
+    elastic_overscroll::ElasticOverscroll,
+    scroll_motion::{ScrollMotion, scroll_ranges},
+    scrollbar::Scrollbar,
     virtual_list::ScrollFocus,
 };
 use gpui::{
@@ -281,6 +284,7 @@ pub struct DynamicListState<D: DynamicListDelegate> {
     focus_handle: FocusHandle,
     delegate: D,
     scroll_handle: ScrollHandle,
+    scroll_motion: ScrollMotion,
     viewport: Bounds<Pixels>,
     pending_scroll: Option<ScrollRequest>,
     rows: Vec<RowLayout>,
@@ -312,6 +316,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             focus_handle: cx.focus_handle(),
             delegate,
             scroll_handle: ScrollHandle::new(),
+            scroll_motion: ScrollMotion::default(),
             viewport: Bounds::default(),
             pending_scroll: None,
             rows: Vec::new(),
@@ -395,6 +400,9 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     pub fn set_marquee_active(&mut self, active: bool, cx: &mut Context<Self>) {
         if self.marquee_active != active {
             self.marquee_active = active;
+            if active {
+                self.scroll_motion.cancel();
+            }
             cx.notify();
         }
     }
@@ -413,6 +421,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     }
 
     pub fn scroll_by_y(&mut self, delta: Pixels) -> Pixels {
+        self.scroll_motion.cancel();
         if self.viewport.size.width <= px(0.) || self.viewport.size.height <= px(0.) {
             return px(0.);
         }
@@ -500,6 +509,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     }
 
     fn reset_layout(&mut self) {
+        self.scroll_motion.cancel();
         self.dragging_from = None;
         self.hover_gap = None;
         self.edge_scroll_speed = None;
@@ -566,8 +576,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             return;
         };
         let viewport_height = f32::from(self.viewport.size.height);
-        let mut offset = self.scroll_handle.offset();
-        let scroll_top = (-f32::from(offset.y)).max(0.0);
+        let scroll_top = (-f32::from(self.scroll_motion.target(&self.scroll_handle))).max(0.0);
         let Some(target) = reveal_scroll_target(
             bounds,
             scroll_top,
@@ -578,22 +587,26 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         };
 
         let max_scroll = (self.content_height - viewport_height).max(0.0);
-        offset.y = px(-target.clamp(0.0, max_scroll));
-        self.scroll_handle.set_offset(offset);
+        self.scroll_motion
+            .set(&self.scroll_handle, px(-target.clamp(0.0, max_scroll)));
     }
 
-    fn clamp_scroll(&mut self, cx: &mut Context<Self>) {
-        let mut offset = self.scroll_handle.offset();
-        let previous = offset.y;
-        offset.y = px(clamp_scroll_offset(
-            f32::from(offset.y),
+    fn animate_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.scroll_handle.offset().y;
+        let clamped = px(clamp_scroll_offset(
+            f32::from(previous),
             self.content_height,
             f32::from(self.viewport.size.height),
         ));
-        if offset.y != previous {
-            self.scroll_handle.set_offset(offset);
+        self.scroll_motion.animate(
+            &self.scroll_handle,
+            px(self.content_height) - self.viewport.size.height,
+            window,
+            cx,
+        );
+        if clamped != previous {
             cx.emit(DynamicListEvent::LayoutChanged {
-                scroll_delta: offset.y - previous,
+                scroll_delta: clamped - previous,
             });
         }
     }
@@ -717,7 +730,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
                 gpui::point(offset.x, px(target.min(0.0)))
             };
             if next != offset {
-                self.scroll_handle.set_offset(next);
+                self.scroll_motion.rebase(&self.scroll_handle, next.y);
             }
             if let Some(row) = self.dragging_from.and_then(|ix| self.rows.get(ix)) {
                 self.drag_amount = row.height + gap;
@@ -837,6 +850,8 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     }
 
     fn begin_drag(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.scroll_motion.cancel();
+        self.pending_scroll = None;
         self.dragging_from = Some(ix);
         self.hover_gap = Some(ix);
         self.drag_amount =
@@ -921,14 +936,19 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         }
     }
 
-    fn visible_range(&self) -> std::ops::Range<usize> {
-        if self.rows.is_empty() {
-            return 0..0;
-        }
-        let scroll_top = (-f32::from(self.scroll_handle.offset().y)).max(0.0);
-        let viewport_height = f32::from(self.viewport.size.height);
-
-        visible_rows(&self.rows, scroll_top, viewport_height, self.overscan)
+    fn render_ranges(&self) -> Vec<std::ops::Range<usize>> {
+        let range_at = |offset: Pixels| {
+            visible_rows(
+                &self.rows,
+                (-f32::from(offset)).max(0.0),
+                f32::from(self.viewport.size.height),
+                self.overscan,
+            )
+        };
+        scroll_ranges(
+            range_at(self.scroll_handle.offset().y),
+            range_at(self.scroll_motion.target(&self.scroll_handle)),
+        )
     }
 
     fn render_row(
@@ -984,6 +1004,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             && visible_top < self.viewport.size.height;
         let focus = focus.clone();
         let scroll = self.scroll_handle.clone();
+        let motion = self.scroll_motion.clone();
         let inset = self.content_inset_top;
 
         div()
@@ -993,9 +1014,12 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             )))
             .focusable()
             .tab_stop(false)
-            .when(!visible, |row| row.invisible())
+            .when(
+                !visible && !self.scroll_motion.is_animating(&self.scroll_handle),
+                |row| row.invisible(),
+            )
             .on_focus_resolved(move |bounds, row, window, cx| {
-                focus.reveal(bounds, row, &scroll, inset, window, cx);
+                focus.reveal(bounds, row, &scroll, &motion, inset, window, cx);
             })
             .absolute()
             .top(px(y))
@@ -1086,8 +1110,12 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         if cx.reduce_motion() {
             self.finish_nonessential_motion();
         }
-        self.clamp_scroll(cx);
+        if self.marquee_active || self.dragging_from.is_some() || cx.has_active_drag() {
+            self.scroll_motion.cancel();
+            self.pending_scroll = None;
+        }
         self.apply_pending_scroll();
+        self.animate_scroll(window, cx);
         self.apply_edge_scroll(window, cx);
 
         let overscroll_y = if self.elastic_overscroll {
@@ -1114,10 +1142,10 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             let weak = cx.entity().downgrade();
             let preview_width = drag_preview_width(size.width, self.content_padding);
 
-            let range = self.visible_range();
+            let ranges = self.render_ranges();
             let focus = ScrollFocus::new(self.id.clone(), window, cx);
-            let mut rows = Vec::with_capacity(range.len());
-            for ix in range {
+            let mut rows = Vec::new();
+            for ix in ranges.into_iter().flatten() {
                 rows.push(self.render_row(ix, &weak, preview_width, &focus, window, cx));
             }
 
@@ -1136,6 +1164,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
                     let weak = weak.clone();
                     move |event, window, cx| {
                         weak.update(cx, |this, cx| {
+                            this.scroll_motion.cancel();
                             if this.elastic_overscroll
                                 && this.overscroll.handle_scroll(event, window, cx)
                             {

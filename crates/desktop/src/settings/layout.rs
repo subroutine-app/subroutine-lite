@@ -30,7 +30,9 @@ impl PrimaryView {
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
             "home" => Some(Self::Home),
-            id => SelectedMainView::from_id(id).map(Self::Main),
+            id => SelectedMainView::from_id(id)
+                .filter(|view| SelectedMainView::TABS.contains(view))
+                .map(Self::Main),
         }
     }
 }
@@ -68,6 +70,9 @@ impl DesktopLayoutSettings {
     }
 
     pub fn select_primary_view(&mut self, view: PrimaryView) {
+        if view == PrimaryView::Main(SelectedMainView::Focus) {
+            return;
+        }
         self.primary_view = view;
         if let PrimaryView::Main(view) = view {
             self.selected_main_view = view;
@@ -132,8 +137,9 @@ impl PersistedDesktopLayout {
     }
 
     pub(super) fn apply_to(self, layout: &mut DesktopLayoutSettings) {
-        layout.selected_main_view =
-            SelectedMainView::from_id(&self.selected_main_view).unwrap_or_default();
+        layout.selected_main_view = SelectedMainView::from_id(&self.selected_main_view)
+            .filter(|view| SelectedMainView::TABS.contains(view))
+            .unwrap_or_default();
         layout.select_primary_view(
             self.primary_view
                 .as_deref()
@@ -163,18 +169,13 @@ mod tests {
     }
 
     #[test]
-    fn primary_choices_round_trip_with_stable_main_view_ids() {
+    fn primary_choices_survive_focus_and_round_trip_with_stable_ids() {
         for (primary, primary_id, main_id) in [
             (PrimaryView::Home, "home", "calendar"),
             (
                 PrimaryView::Main(SelectedMainView::Upcoming),
                 "queue",
                 "queue",
-            ),
-            (
-                PrimaryView::Main(SelectedMainView::Queue),
-                "execution-queue",
-                "execution-queue",
             ),
             (
                 PrimaryView::Main(SelectedMainView::Timeline),
@@ -186,11 +187,13 @@ mod tests {
                 "calendar",
                 "calendar",
             ),
-            (PrimaryView::Main(SelectedMainView::Focus), "focus", "focus"),
         ] {
             let mut layout = DesktopLayoutSettings::default();
             layout.select_primary_view(PrimaryView::Main(SelectedMainView::Calendar));
             layout.select_primary_view(primary);
+            layout.select_primary_view(PrimaryView::Main(SelectedMainView::Focus));
+            assert_eq!(layout.primary_view(), primary);
+            assert_eq!(layout.selected_main_view().id(), main_id);
             let encoded =
                 serde_json::to_value(PersistedDesktopLayout::from_layout(&layout)).unwrap();
             assert_eq!(encoded["primary_view"], primary_id);
@@ -207,10 +210,10 @@ mod tests {
     fn legacy_layout_restores_main_view_without_resetting_panels() {
         for (id, view) in [
             ("queue", SelectedMainView::Upcoming),
-            ("execution-queue", SelectedMainView::Queue),
+            ("execution-queue", SelectedMainView::Timeline),
             ("timeline", SelectedMainView::Timeline),
             ("calendar", SelectedMainView::Calendar),
-            ("focus", SelectedMainView::Focus),
+            ("focus", SelectedMainView::Timeline),
             ("unknown", SelectedMainView::Timeline),
         ] {
             let persisted: PersistedDesktopLayout = serde_json::from_value(json!({
@@ -234,28 +237,78 @@ mod tests {
 
     #[test]
     fn primary_hint_wins_or_falls_back_to_legacy_main_view() {
-        for (primary, legacy, expected) in [
-            (Some("home"), "calendar", PrimaryView::Home),
+        for (primary, legacy, expected, expected_main) in [
+            (
+                Some("home"),
+                "calendar",
+                PrimaryView::Home,
+                SelectedMainView::Calendar,
+            ),
+            (
+                Some("home"),
+                "focus",
+                PrimaryView::Home,
+                SelectedMainView::Timeline,
+            ),
+            (
+                Some("home"),
+                "execution-queue",
+                PrimaryView::Home,
+                SelectedMainView::Timeline,
+            ),
             (
                 Some("queue"),
                 "execution-queue",
                 PrimaryView::Main(SelectedMainView::Upcoming),
+                SelectedMainView::Upcoming,
+            ),
+            (
+                Some("calendar"),
+                "focus",
+                PrimaryView::Main(SelectedMainView::Calendar),
+                SelectedMainView::Calendar,
             ),
             (
                 Some("execution-queue"),
                 "queue",
-                PrimaryView::Main(SelectedMainView::Queue),
+                PrimaryView::Main(SelectedMainView::Upcoming),
+                SelectedMainView::Upcoming,
+            ),
+            (
+                Some("focus"),
+                "queue",
+                PrimaryView::Main(SelectedMainView::Upcoming),
+                SelectedMainView::Upcoming,
             ),
             (
                 Some("unknown"),
                 "calendar",
                 PrimaryView::Main(SelectedMainView::Calendar),
+                SelectedMainView::Calendar,
             ),
-            (None, "focus", PrimaryView::Main(SelectedMainView::Focus)),
+            (
+                None,
+                "focus",
+                PrimaryView::Main(SelectedMainView::Timeline),
+                SelectedMainView::Timeline,
+            ),
+            (
+                Some("focus"),
+                "execution-queue",
+                PrimaryView::Main(SelectedMainView::Timeline),
+                SelectedMainView::Timeline,
+            ),
+            (
+                Some("execution-queue"),
+                "focus",
+                PrimaryView::Main(SelectedMainView::Timeline),
+                SelectedMainView::Timeline,
+            ),
             (
                 Some("unknown"),
                 "unknown",
                 PrimaryView::Main(SelectedMainView::Timeline),
+                SelectedMainView::Timeline,
             ),
         ] {
             let persisted = PersistedDesktopLayout {
@@ -266,9 +319,7 @@ mod tests {
             let mut restored = DesktopLayoutSettings::default();
             persisted.apply_to(&mut restored);
             assert_eq!(restored.primary_view(), expected);
-            if let PrimaryView::Main(view) = expected {
-                assert_eq!(restored.selected_main_view(), view);
-            }
+            assert_eq!(restored.selected_main_view(), expected_main);
         }
     }
 }

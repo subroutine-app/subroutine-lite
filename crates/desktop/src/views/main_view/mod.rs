@@ -17,18 +17,13 @@ use subroutine_core::{Action, AnyItem, SchedulePoint};
 mod calendar_view;
 mod focus_view;
 pub(crate) mod queue_system;
-mod queue_view;
 mod tab;
 mod timeline_view;
 mod upcoming_view;
 use calendar_view::*;
+pub(crate) use focus_view::temporal::{EventMoment, TemporalSnapshot};
 use focus_view::*;
-pub(crate) use focus_view::{
-    event_notice_card,
-    temporal::{EventMoment, TemporalSnapshot},
-};
 
-use queue_view::QueueView;
 use tab::MainViewTab;
 pub use tab::SelectedMainView;
 pub(crate) use tab::{
@@ -194,7 +189,6 @@ pub struct MainView {
     timeline_view: Entity<TimelineView>,
     calendar_view: Entity<CalendarView>,
     upcoming_view: Entity<UpcomingView>,
-    queue_view: Entity<QueueView>,
     focus_view: Entity<FocusView>,
 }
 
@@ -210,7 +204,6 @@ impl MainView {
         let timeline_view = cx.new(|cx| TimelineView::new(window, cx));
         let calendar_view = cx.new(|cx| CalendarView::new(layout_state, window, cx));
         let upcoming_view = cx.new(|cx| UpcomingView::new(window, cx));
-        let queue_view = cx.new(|cx| QueueView::new(window, cx));
         let focus_view = cx.new(FocusView::new);
 
         let selected_view = Settings::global(cx).desktop_layout.selected_main_view();
@@ -280,7 +273,6 @@ impl MainView {
             timeline_view,
             calendar_view,
             upcoming_view,
-            queue_view,
             focus_view,
         };
         let settings = Settings::global(cx);
@@ -315,9 +307,6 @@ impl MainView {
             upcoming_view.refresh_markers(markers, cx);
             upcoming_view.refresh_signals(signals.clone(), cx);
         });
-        self.queue_view.update(cx, |queue_view, cx| {
-            queue_view.refresh(focus_actions.clone(), events.clone(), cx);
-        });
         self.focus_view.update(cx, |focus_view, cx| {
             focus_view.refresh_temporal(events, signals, cx);
             focus_view.refresh_actions(focus_actions, cx);
@@ -342,9 +331,6 @@ impl MainView {
                 .update(cx, |view, cx| view.view_command_scope(element, cx)),
             SelectedMainView::Upcoming => self
                 .upcoming_view
-                .update(cx, |view, cx| view.view_command_scope(element, cx)),
-            SelectedMainView::Queue => self
-                .queue_view
                 .update(cx, |view, cx| view.view_command_scope(element, cx)),
             SelectedMainView::Focus => self
                 .focus_view
@@ -382,6 +368,16 @@ impl MainView {
         self.select_view(SelectedMainView::Focus, window, cx);
     }
 
+    pub(crate) fn leave_focus_mode(&mut self, cx: &mut Context<Self>) {
+        if self.selected_view == SelectedMainView::Focus {
+            self.focus_view
+                .update(cx, |focus, cx| focus.clear_drop_target(cx));
+            self.selected_view = Settings::global(cx).desktop_layout.selected_main_view();
+            SelectionManager::cancel_completion_focus(cx);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn finish_item_drag(&mut self, cx: &mut Context<Self>) {
         self.timeline_view
             .update(cx, |timeline, cx| timeline.finish_item_drag(cx));
@@ -391,8 +387,6 @@ impl MainView {
             .update(cx, |upcoming, cx| upcoming.clear_drop_target(cx));
         self.focus_view
             .update(cx, |focus, cx| focus.clear_drop_target(cx));
-        self.queue_view
-            .update(cx, |queue, cx| queue.clear_drop_target(cx));
     }
 
     // Drag-hover changes the visible tab without emitting a deliberate navigation choice.
@@ -426,10 +420,6 @@ impl MainView {
             self.upcoming_view
                 .update(cx, |upcoming, cx| upcoming.clear_drop_target(cx));
         }
-        if self.selected_view == SelectedMainView::Queue && view != SelectedMainView::Queue {
-            self.queue_view
-                .update(cx, |queue, cx| queue.clear_drop_target(cx));
-        }
         if self.selected_view == SelectedMainView::Focus && view != SelectedMainView::Focus {
             self.focus_view
                 .update(cx, |focus, cx| focus.clear_drop_target(cx));
@@ -441,7 +431,6 @@ impl MainView {
                 SelectedMainView::Timeline => Some(SelectionScope::Timeline),
                 SelectedMainView::Calendar => Some(SelectionScope::Calendar),
                 SelectedMainView::Upcoming => Some(SelectionScope::Upcoming),
-                SelectedMainView::Queue => Some(SelectionScope::Queue),
                 SelectedMainView::Focus => Some(SelectionScope::Focus),
             };
             if leaving_scope.is_some_and(|scope| {
@@ -468,7 +457,6 @@ impl MainView {
             SelectedMainView::Timeline => self.timeline_view.read(cx).focus_handle(cx),
             SelectedMainView::Calendar => self.calendar_view.read(cx).focus_handle(cx),
             SelectedMainView::Upcoming => self.upcoming_view.read(cx).focus_handle(cx),
-            SelectedMainView::Queue => self.queue_view.read(cx).focus_handle(cx),
             SelectedMainView::Focus => self.focus_view.read(cx).focus_handle(cx),
         }
     }
@@ -543,7 +531,6 @@ impl Render for MainView {
                 SelectedMainView::Timeline => this.child(self.timeline_view.clone()),
                 SelectedMainView::Calendar => this.child(self.calendar_view.clone()),
                 SelectedMainView::Upcoming => this.child(self.upcoming_view.clone()),
-                SelectedMainView::Queue => this.child(self.queue_view.clone()),
                 SelectedMainView::Focus => this.child(self.focus_view.clone()),
             }))
     }

@@ -27,7 +27,7 @@ use crate::{
 };
 
 use super::main_view::{EventMoment, TemporalSnapshot, queue_system::QueueSnapshot};
-use super::{StartItemCreator, TOP_EDGE_INSET};
+use super::{StartItemCreator, TOP_EDGE_INSET, ToggleFocusMode};
 
 const HOME_PREVIEW_HEIGHT: gpui::Pixels = px(64.);
 
@@ -483,6 +483,7 @@ impl Render for HomeView {
                     .right_8()
                     .row()
                     .gap_2()
+                    .child(home_focus_mode_button().compact().size_10().rounded_full())
                     .child(home_search_button().compact().size_10().rounded_full())
                     .child(home_new_item_button().compact().size_10().rounded_full()),
             )
@@ -542,6 +543,17 @@ fn home_new_item_button() -> Button {
         .tooltip("New item")
         .on_click(|_, window, cx| {
             window.dispatch_action(Box::new(StartItemCreator), cx);
+        })
+}
+
+fn home_focus_mode_button() -> Button {
+    Button::new("home.focus-mode")
+        .ghost()
+        .small()
+        .icon(AppIcon::ScanEye)
+        .tooltip("Focus mode")
+        .on_click(|_, window, cx| {
+            window.dispatch_action(Box::new(ToggleFocusMode), cx);
         })
 }
 

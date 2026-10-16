@@ -15,6 +15,7 @@ use crate::{
         elastic_overscroll::ElasticOverscroll,
         marquee,
         menu::{MenuBuilder, open_context_menu},
+        scroll_motion::ScrollMotion,
     },
     item_manager::{DraftView, ItemManager},
     item_subject::SavedItem,
@@ -50,6 +51,7 @@ pub struct SavedItemsView {
     items: SavedItemsList,
     workspace_generation: u64,
     scroll_handle: ScrollHandle,
+    scroll_motion: ScrollMotion,
     focus_handle: FocusHandle,
     item_focus_handles: HashMap<Uuid, FocusHandle>,
     marquee: MarqueeSelection,
@@ -91,6 +93,7 @@ impl SavedItemsView {
             items,
             workspace_generation: db_store.read(cx).workspace_generation(),
             scroll_handle: ScrollHandle::new(),
+            scroll_motion: ScrollMotion::default(),
             focus_handle: cx.focus_handle(),
             item_focus_handles: HashMap::new(),
             marquee: MarqueeSelection::new(SelectionScope::SavedItems),
@@ -110,6 +113,7 @@ impl SavedItemsView {
         self.item_focus_handles.clear();
         self.refresh_focus_handles(cx);
         self.scroll_handle = ScrollHandle::new();
+        self.scroll_motion.cancel();
         self.overscroll.reset();
         self.marquee.end();
         self.drop_target = None;
@@ -294,6 +298,15 @@ impl Render for SavedItemsView {
             crate::views::LIBRARY_HEADER_HEIGHT + crate::components::SIDEBAR_ITEM_GAP;
         self.marquee
             .scroll(&self.scroll_handle, content_inset_top, window);
+        if self.marquee.is_active() || cx.has_active_drag() {
+            self.scroll_motion.cancel();
+        }
+        self.scroll_motion.animate(
+            &self.scroll_handle,
+            self.scroll_handle.max_offset().y,
+            window,
+            cx,
+        );
         let content = if let Some(empty) = self.items.empty_state() {
             div()
                 .absolute()
@@ -322,6 +335,7 @@ impl Render for SavedItemsView {
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll_handle)
                 .on_scroll_wheel(cx.listener(|view, event, window, cx| {
+                    view.scroll_motion.cancel();
                     if view.overscroll.handle_scroll(event, window, cx) {
                         cx.notify();
                     }
