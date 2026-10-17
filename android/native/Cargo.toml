@@ -1,0 +1,26 @@
+[package]
+name = "subroutine_parser_jni"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+parser = { path = "../../crates/parser" }
+subroutine-core = { package = "core", path = "../../crates/core" }
+chrono = "0.4.42"
+chrono-tz = "0.10"
+jni = "0.21.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"
+panic = "unwind"

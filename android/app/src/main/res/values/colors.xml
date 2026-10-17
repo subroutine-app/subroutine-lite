@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="subroutine_brick">#B0413E</color>
+    <color name="subroutine_charcoal">#2E282A</color>
+    <color name="subroutine_cream">#FAF0CA</color>
+    <color name="subroutine_canvas_light">#F7F6F2</color>
+    <color name="subroutine_canvas_dark">#181719</color>
+    <color name="subroutine_context_light">#3F6566</color>
+    <color name="subroutine_context_dark">#88ABAC</color>
+</resources>
