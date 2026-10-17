@@ -67,29 +67,51 @@ def locked-packages [path: path] {
     }}
 }
 
-# Deploy a committed snapshot; keep the original simple-server and identity service untouched.
+def snapshot-working-tree [source: path] {
+    let files = (
+        checked git --no-pager ls-files --cached --others --exclude-standard -z -- ...$INPUTS
+        | split row (char nul)
+        | where {|file| ($file | is-not-empty) and ($file | path exists) }
+        | uniq
+    )
+    for file in $files {
+        let destination = ($source | path join $file)
+        mkdir ($destination | path dirname)
+        cp $file $destination
+    }
+}
+
+# Build and deploy the Lite API working tree to Fermi.
 def main [
-    --check # Check the selected revision's schema without building or deploying.
-    --build-only # Build and validate the bundle without uploading it.
-    --revision: string = 'HEAD' # Immutable source revision; does not check out or change branches.
+    --offline # Use cached Cargo dependencies only.
+    --check # Check the source snapshot's schema without building or deploying.
+    --build-only # Build and validate the bundle without uploading it; still checks Fermi's schema.
+    --revision: string # Deploy this committed revision instead of the current working tree.
 ] {
     cd $env.FILE_PWD
-    let host = $'felixb@($env.FERMI_IP? | default "fermi")'
-    let commit = (checked git --no-pager rev-parse --verify $'($revision)^{commit}' | str trim)
-    if $revision == 'HEAD' and (checked git --no-pager --no-optional-locks status --porcelain --untracked-files=all -- ...$INPUTS | str trim | is-not-empty) {
-        error make {msg: 'Server build inputs have uncommitted changes. Review them before deployment, or explicitly select a committed --revision. Nothing was deployed.'}
+    if $offline {
+        $env.CARGO_NET_OFFLINE = 'true'
     }
+    let host = $'felixb@($env.FERMI_IP? | default "fermi")'
+    let commit = if $revision != null {
+        checked git --no-pager rev-parse --verify $'($revision)^{commit}' | str trim
+    }
+    let source_kind = if $commit == null { 'working-tree' } else { 'commit' }
 
     let bundle = ($env.FILE_PWD | path join target fermi-deploy $'(date now | format date "%Y%m%dT%H%M%S")-(random uuid)')
     let source = ($bundle | path join source)
     mkdir $source
-    let git_archive = ($bundle | path join committed-source.tar)
-    checked git archive --format=tar $'--output=($git_archive)' $commit ...$INPUTS
-    checked tar -xf $git_archive -C $source
-    rm $git_archive
+    if $commit == null {
+        snapshot-working-tree $source
+    } else {
+        let git_archive = ($bundle | path join committed-source.tar)
+        checked git archive --format=tar $'--output=($git_archive)' $commit ...$INPUTS
+        checked tar -xf $git_archive -C $source
+        rm $git_archive
+    }
     check-schema $host $source
     if $check {
-        print $'Lite pilot migration checksums match revision ($commit).'
+        print $'Lite pilot migration checksums match the ($source_kind) snapshot.'
         return
     }
 
@@ -99,7 +121,7 @@ def main [
     let manifest = (open ($source | path join Cargo.toml) | update workspace.members $MEMBERS)
     $manifest | to toml | save --force ($source | path join Cargo.toml)
 
-    # Build the archived inputs, not a working tree that can change while Cargo runs.
+    # Build the snapshot, not a working tree that can change while Cargo runs.
     $env.CARGO_TARGET_DIR = ($env.CARGO_TARGET_DIR? | default ($env.FILE_PWD | path join target fermi-build) | path expand)
     if $nu.os-info.name == 'macos' { ulimit --file-descriptor-count 8192 }
     cd $source
@@ -133,8 +155,9 @@ def main [
         validation_command: 'cargo test --locked -p server -p core -p subroutine-auth --features subroutine-auth/server',
         rustc: (checked rustc --version | str trim),
         zig: (checked zig version | str trim),
+        source_kind: $source_kind,
         git_commit: $commit,
-        scope: 'Lite API only; immutable committed source, isolated workspace, original registry versions retained; no migrations or identity changes',
+        scope: 'Lite API only; source snapshot, isolated workspace, original registry versions retained; no migrations or identity changes',
         original_workspace_sha256: $original_manifest,
         original_lockfile_sha256: $original_lock,
         workspace_members: $MEMBERS,
@@ -144,7 +167,7 @@ def main [
     $receipt | to json | save $receipt_path
     let receipt_hash = (open --raw $receipt_path | hash sha256)
     if $build_only {
-        print ({bundle: $bundle, git_commit: $commit, artifact_sha256: $receipt.artifact_sha256, receipt_sha256: $receipt_hash} | to json)
+        print ({bundle: $bundle, source_kind: $source_kind, git_commit: $commit, artifact_sha256: $receipt.artifact_sha256, receipt_sha256: $receipt_hash} | to json)
         return
     }
 

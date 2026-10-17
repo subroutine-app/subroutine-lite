@@ -43,8 +43,4 @@ google-services.json
 /deploy/fermi/
 /crates/integration/
 
-/docs/*
-!/docs/PUSH.md
 dev/rauthy/
-android/
-docs/
