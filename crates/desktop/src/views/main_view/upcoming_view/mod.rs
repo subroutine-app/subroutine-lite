@@ -10,21 +10,23 @@ use crate::item_manager::{DiscardDraft, DraftSubmitted, DraftView, ItemManager, 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveTime, Utc};
 use chronoutil::RelativeDuration;
 use gpui::{
-    App, AsyncApp, Bounds, Context, DragMoveEvent, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy,
-    Size, Styled, Task, Window, container_query, div, point, prelude::FluentBuilder as _, px,
+    App, AsyncApp, Context, DragMoveEvent, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollStrategy, Size,
+    Styled, Task, Window, container_query, div, point, prelude::FluentBuilder as _, px,
 };
 use gpui_kit::foundation::StyledExt as _;
 use subroutine_core::{Action, AnyItem, ItemType, Marker, SchedulePoint, Signal};
 use uuid::Uuid;
 
 mod agenda;
+mod drag;
 mod headers;
 mod navigation;
 mod rows;
 mod scroll;
 mod sections;
 use agenda::*;
+use drag::UpcomingDrag;
 use headers::DayHeaders;
 use scroll::RowAnchor;
 use sections::{UpcomingSection, UpcomingSections};
@@ -104,10 +106,7 @@ fn edge_scroll_speed(local_y: Pixels, height: Pixels) -> Option<Pixels> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum UpcomingDropTarget {
     Day(NaiveDate),
-    OnDayItem {
-        date: NaiveDate,
-        item: Uuid,
-    },
+
     Before {
         date: NaiveDate,
         item: Uuid,
@@ -118,60 +117,6 @@ pub(super) enum UpcomingDropTarget {
         item: Uuid,
         anchor: Option<DateTime<Utc>>,
     },
-}
-
-fn upcoming_item_drop_target(
-    item: &AnyItem,
-    bounds: Bounds<Pixels>,
-    position: Point<Pixels>,
-    dragged: &DraggedItems,
-    cx: &App,
-) -> Option<UpcomingDropTarget> {
-    let id = item.id();
-    if !bounds.contains(&position)
-        || dragged.items.is_empty()
-        || dragged.items.iter().any(|dragged| dragged.id() == id)
-    {
-        return None;
-    }
-
-    let date = item.start_date()?;
-    if dragged.source_anchor.is_some()
-        || dragged
-            .items
-            .iter()
-            .any(|item| matches!(item, AnyItem::Marker(_) | AnyItem::Routine(_)))
-    {
-        return Some(UpcomingDropTarget::OnDayItem { date, item: id });
-    }
-
-    let Some(anchor) = item.start().and_then(|start| match start {
-        SchedulePoint::DateTime(start) => Some(start),
-        SchedulePoint::Date(_) => None,
-    }) else {
-        return Some(UpcomingDropTarget::OnDayItem { date, item: id });
-    };
-    let duration = item.duration().or_else(|| {
-        matches!(item, AnyItem::Action(_))
-            .then_some(Settings::global(cx).schedule.default_action_duration)
-    });
-    let after_anchor = duration
-        .map(|duration| (anchor.with_timezone(&Local) + duration).with_timezone(&Utc))
-        .unwrap_or(anchor + Duration::minutes(1));
-    let before = position.y < bounds.origin.y + bounds.size.height / 2.;
-    Some(if before {
-        UpcomingDropTarget::Before {
-            date,
-            item: id,
-            anchor: Some(anchor),
-        }
-    } else {
-        UpcomingDropTarget::After {
-            date,
-            item: id,
-            anchor: Some(after_anchor),
-        }
-    })
 }
 
 #[derive(Clone, Copy)]
@@ -206,7 +151,7 @@ pub struct UpcomingView {
     order: SelectionOrder,
     item_focus_handles: HashMap<Uuid, FocusHandle>,
     drop_target: Option<UpcomingDropTarget>,
-    dragged_items: Option<DraggedItems>,
+    dragged_items: Option<UpcomingDrag>,
     marquee: MarqueeSelection,
     edge_scroll_speed: Option<Pixels>,
     edge_scroll_task: Option<Task<()>>,
@@ -311,7 +256,7 @@ impl UpcomingView {
             headers: DayHeaders::default(),
             marker_edit: None,
             sections: UpcomingSections::default(),
-            show_marker_only_dates: true,
+            show_marker_only_dates: false,
             marker_dates_focus: cx.focus_handle(),
             hovered_section: None,
             mouse_exited: false,
@@ -481,6 +426,9 @@ impl UpcomingView {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        if self.dragged_items.is_some() {
+            self.clear_drop_target(cx);
+        }
         self.agenda_stale = false;
         self.today = Local::now().date_naive();
         self.agenda = Agenda::build_revealing(
@@ -492,7 +440,7 @@ impl UpcomingView {
             self.sections.revealed_dates(),
             self.show_marker_only_dates,
         );
-        self.sections.sync(&self.agenda, self.today);
+        self.sections.sync(&self.agenda);
 
         self.details
             .retain(self.agenda.rows.iter().filter_map(|row| match row {
@@ -527,10 +475,12 @@ impl UpcomingView {
     }
 
     fn row_interactive(&self, ix: usize) -> bool {
-        let source = self.layout.rows[ix];
+        let Some(source) = self.layout.rows[ix].source() else {
+            return false;
+        };
         let row = &self.agenda.rows[source];
         self.sections.is_expanded(row.section())
-            && self.layout.sizes[ix].height == self.row_height(row) + row_top_inset(source)
+            && self.layout.sizes[ix].height == self.row_height(row) + row_top_inset(ix)
     }
 
     fn update_layout(&mut self) {
@@ -539,6 +489,11 @@ impl UpcomingView {
             |item| self.card_height(item),
             |date| self.headers.height(date),
         );
+        if let Some(dragged) = &self.dragged_items {
+            let hidden = dragged.data.items.iter().map(AnyItem::id).collect();
+            let slots = self.drop_slots();
+            self.layout.apply_drop(&self.agenda, &hidden, slots);
+        }
         self.order = SelectionOrder::new(SelectionScope::Upcoming, self.layout.order.clone());
     }
 
@@ -566,9 +521,11 @@ impl UpcomingView {
         self.layout
             .rows
             .iter()
-            .position(|index| {
-                let row = &self.agenda.rows[*index];
-                row.is_heading() && row.section() == section
+            .position(|row| {
+                row.source().is_some_and(|source| {
+                    let row = &self.agenda.rows[source];
+                    row.is_heading() && row.section() == section
+                })
             })
             .map(|row| (row, strategy))
     }
@@ -758,7 +715,7 @@ impl UpcomingView {
         if let Some(row) = self.layout.positions.get(&next) {
             self.reveal = Some(UpcomingReveal::Item {
                 id: next,
-                section: self.agenda.rows[self.layout.rows[*row]].section(),
+                section: self.layout.rows[*row].section(&self.agenda),
             });
             window.refresh();
         }
@@ -806,56 +763,11 @@ impl UpcomingView {
         }
     }
 
-    pub(super) fn set_drop_target(&mut self, target: UpcomingDropTarget, cx: &mut Context<Self>) {
-        self.set_drop_target_option(Some(target), cx);
-    }
-
-    fn drop_target_at(
-        &self,
-        position: Point<Pixels>,
-        dragged: &DraggedItems,
-        cx: &App,
-    ) -> Option<UpcomingDropTarget> {
-        if dragged.items.is_empty() {
-            return None;
-        }
-        let (ix, mut row_bounds) = self.scroll_handle.row_at_position(position)?;
-        let width = row_bounds
-            .size
-            .width
-            .clamp(LIST_VIEW_MIN_WIDTH, LIST_VIEW_MAX_WIDTH);
-        row_bounds.origin.x += ((row_bounds.size.width - width) / 2.).max(px(0.));
-        row_bounds.size.width = width;
-        if !row_bounds.contains(&position) {
-            return None;
-        }
-        let row = self.agenda.rows.get(*self.layout.rows.get(ix)?)?;
-        if !row.is_heading() && !self.row_interactive(ix) {
-            return None;
-        }
-        match row {
-            UpcomingRow::Missed => None,
-            UpcomingRow::Day { date, .. } | UpcomingRow::Create { date, .. } => {
-                Some(UpcomingDropTarget::Day(*date))
-            }
-            UpcomingRow::Item { item, .. } => {
-                upcoming_item_drop_target(item, row_bounds, position, dragged, cx)
-            }
-        }
-    }
-
-    fn handle_drag_move(
-        &mut self,
-        event: &DragMoveEvent<DragData<DraggedItems>>,
-        cx: &mut Context<Self>,
-    ) {
-        self.dragged_items = Some(event.drag(cx).data.clone());
-        self.set_drop_target_option(None, cx);
-        let speed = self.edge_scroll_speed_at(event.event.position);
-        self.set_edge_scroll_speed(speed, cx);
-    }
-
     fn apply_edge_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mouse_exited || !window.is_window_hovered() {
+            self.set_edge_scroll_speed(None, cx);
+            return;
+        }
         let Some(speed) = self.edge_scroll_speed else {
             return;
         };
@@ -869,8 +781,8 @@ impl UpcomingView {
         if self.marquee.is_active() {
             self.marquee.scrolled_by(point(px(0.), moved));
             self.marquee.drag_to(pointer, cx);
-        } else if let Some(dragged) = self.dragged_items.clone() {
-            self.drop_target = self.drop_target_at(pointer, &dragged, cx);
+        } else if self.dragged_items.is_some() {
+            self.retarget_drop(pointer, cx);
         }
     }
 
@@ -925,7 +837,6 @@ impl UpcomingView {
                     .format("%A, %B %-d, %Y at %H:%M")
             ),
             UpcomingDropTarget::Day(date)
-            | UpcomingDropTarget::OnDayItem { date, .. }
             | UpcomingDropTarget::Before { date, .. }
             | UpcomingDropTarget::After { date, .. } => format!(
                 "Schedule in Upcoming on {}. Existing times and multi-day spans stay the same.",
@@ -934,10 +845,7 @@ impl UpcomingView {
         };
         if items.len() > 1
             && dragged.source_anchor.is_some()
-            && matches!(
-                target,
-                UpcomingDropTarget::Day(_) | UpcomingDropTarget::OnDayItem { .. }
-            )
+            && matches!(target, UpcomingDropTarget::Day(_))
         {
             detail.push_str(" Items on different days keep their spacing.");
         }
@@ -962,7 +870,7 @@ fn dropped_starts(
     default_duration: RelativeDuration,
 ) -> Vec<SchedulePoint> {
     match target {
-        UpcomingDropTarget::Day(date) | UpcomingDropTarget::OnDayItem { date, .. } => {
+        UpcomingDropTarget::Day(date) => {
             let source_date = source_anchor.map(NaiveDate::from);
             items
                 .iter()
@@ -1168,6 +1076,9 @@ impl MarqueeView for UpcomingView {
 
 impl Render for UpcomingView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() && self.dragged_items.is_some() {
+            self.clear_drop_target(cx);
+        }
         self.sync_workspace(
             AppDatabaseStore::global(cx).read(cx).workspace_generation(),
             cx,
@@ -1270,34 +1181,7 @@ impl UpcomingView {
             move |view, visible_range, window, cx| {
                 view.apply_edge_scroll(window, cx);
                 visible_range
-                    .map(|ix| {
-                        let source = view.layout.rows[ix];
-                        let height = view.layout.sizes[ix].height;
-                        let inset = row_top_inset(source);
-                        let full_height = view.row_height(&view.agenda.rows[source]) + inset;
-                        div()
-                            .w_full()
-                            .min_w(LIST_VIEW_MIN_WIDTH)
-                            .max_w(LIST_VIEW_MAX_WIDTH)
-                            .mx_auto()
-                            .h(height)
-                            .when(height < full_height, |row| row.overflow_hidden())
-                            .child(
-                                div()
-                                    .column()
-                                    .h(full_height)
-                                    .when(source == 0, |row| {
-                                        row.pt(crate::views::TOP_EDGE_INSET)
-                                            .child(view.section_controls(cx))
-                                    })
-                                    .child(
-                                        div()
-                                            .h(full_height - inset)
-                                            .flex_none()
-                                            .child(view.render_row(ix, window, cx)),
-                                    ),
-                            )
-                    })
+                    .map(|ix| view.render_layout_row(ix, window, cx))
                     .collect()
             },
         )
@@ -1314,10 +1198,6 @@ impl UpcomingView {
             .id("upcoming-body")
             .relative()
             .size_full()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.clear_drop_target(cx)),
-            )
             .when(unavailable.is_none(), |body| {
                 body.child(list).child(self.hover_observer(cx))
             })
@@ -1342,10 +1222,18 @@ impl UpcomingView {
                     }
                 },
             ))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|view, _, _, cx| view.clear_drop_target(cx)),
-            )
+            .on_drop::<DragData<DraggedItems>>(cx.listener(
+                move |view, data: &DragData<DraggedItems>, window, cx| {
+                    if unavailable.is_none()
+                        && let Some(target) = view.drop_target
+                    {
+                        view.commit_drop(&data.data, target, window, cx);
+                        cx.stop_propagation();
+                    } else {
+                        view.clear_drop_target(cx);
+                    }
+                },
+            ))
             .child(body)
             .into_any_element()
     }

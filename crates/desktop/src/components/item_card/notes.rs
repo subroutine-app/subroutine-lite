@@ -1,13 +1,13 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, MouseButton, MouseCancelEvent,
-    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, ScrollHandle, SharedString, Size,
-    StatefulInteractiveElement, Styled, Window, canvas, div, point, prelude::FluentBuilder as _,
-    px,
+    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
+    MouseCancelEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, ScrollHandle,
+    SharedString, Size, StatefulInteractiveElement, Styled, Window, canvas, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_kit::{
-    content::{Markdown, MarkdownEvent},
+    content::{Markdown, MarkdownEvent, MarkdownTabNavigation},
     foundation::{Ident, StyledExt as _, ThemeOverlay},
     layout::{FadeEdges, ScrollFade},
 };
@@ -24,6 +24,34 @@ use crate::{
 };
 
 use super::ItemCardDetails;
+
+pub(super) struct NotesFocus {
+    handle: FocusHandle,
+    expanded: bool,
+}
+
+impl NotesFocus {
+    pub(super) fn new(cx: &mut App) -> Self {
+        Self {
+            handle: cx.focus_handle().tab_stop(false),
+            expanded: false,
+        }
+    }
+
+    pub(super) fn sync(
+        &mut self,
+        expanded: bool,
+        row: &FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> FocusHandle {
+        if self.expanded && !expanded && self.handle.contains_focused(window, cx) {
+            row.focus(window, cx);
+        }
+        self.expanded = expanded;
+        self.handle.clone()
+    }
+}
 
 pub(super) fn item_content(item: &AnyItem) -> Option<SharedString> {
     item.content()
@@ -251,6 +279,7 @@ pub(super) fn render_item_card_notes(
     source: SharedString,
     available_size: Size<Pixels>,
     details: Option<ItemCardDetails>,
+    tab_stop: bool,
     inspector_action: Option<Box<dyn gpui::Action>>,
     header_height: Pixels,
     window: &mut Window,
@@ -317,8 +346,13 @@ pub(super) fn render_item_card_notes(
     };
     let paint = measurement.read(cx).paint(viewport_height, scroll_y);
     let ident = notes_ident(&element_id);
-    let markdown =
-        Markdown::new(ident.child("markdown"), source).on_event(|event, _, cx| match event {
+    let markdown = Markdown::new(ident.child("markdown"), source)
+        .tab_navigation(if expanded && tab_stop {
+            MarkdownTabNavigation::Controls
+        } else {
+            MarkdownTabNavigation::None
+        })
+        .on_event(|event, _, cx| match event {
             MarkdownEvent::LinkClicked { href } => {
                 cx.stop_propagation();
                 cx.open_url(href.as_ref());
@@ -510,4 +544,87 @@ pub(super) fn render_item_card_notes(
             )
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::item_card::ItemCardStates;
+    use gpui::{AppContext as _, Context, Render, TestAppContext};
+
+    struct NotesFocusTestView {
+        row: FocusHandle,
+        child: FocusHandle,
+        outside: FocusHandle,
+        details: ItemCardDetails,
+    }
+
+    impl Render for NotesFocusTestView {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let notes = window
+                .use_keyed_state((ElementId::from("card"), "notes-focus"), cx, |_, cx| {
+                    NotesFocus::new(cx)
+                })
+                .update(cx, |state, cx| {
+                    state.sync(self.details.expanded(), &self.row, window, cx)
+                });
+            div()
+                .size_full()
+                .child(
+                    div().id("row").track_focus(&self.row).child(
+                        div()
+                            .id("notes")
+                            .track_focus(&notes)
+                            .child(div().id("child").track_focus(&self.child)),
+                    ),
+                )
+                .child(div().id("outside").track_focus(&self.outside))
+        }
+    }
+
+    #[gpui::test]
+    fn notes_focus_restores_only_on_focused_collapse(cx: &mut TestAppContext) {
+        let states = ItemCardStates::default();
+        let details = states.get(uuid::Uuid::nil());
+        let handle = cx.add_window(move |_, cx| NotesFocusTestView {
+            row: cx.focus_handle().tab_stop(true),
+            child: cx.focus_handle().tab_stop(false),
+            outside: cx.focus_handle().tab_stop(true),
+            details,
+        });
+        let [row, child, outside] = handle
+            .update(cx, |view, _, _| {
+                [view.row.clone(), view.child.clone(), view.outside.clone()]
+            })
+            .unwrap();
+
+        for (focused, expected) in [(&child, &row), (&outside, &outside)] {
+            handle
+                .update(cx, |view, window, cx| {
+                    view.details.toggle(&view.row, None, window, cx);
+                    cx.notify();
+                })
+                .unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+                window.focus_from_pointer(focused, cx);
+                assert!(states.collapse_all());
+                window.refresh();
+                window.draw(cx).clear(cx);
+                assert_eq!(window.focused(cx).as_ref(), Some(expected));
+
+                window.focus_from_pointer(&child, cx);
+                for _ in 0..2 {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                    assert!(
+                        child.is_focused(window),
+                        "collapsed notes retain pointer focus"
+                    );
+                }
+            })
+            .unwrap();
+        }
+    }
 }

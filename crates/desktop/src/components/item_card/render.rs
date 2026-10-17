@@ -26,9 +26,15 @@ use crate::{
 
 use super::{
     CardMeta, CardPresentation, DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale,
-    PREVIEW_HOVER_GROUP, ToggleItemDetails, availability::projected_event_availability_target,
-    card_background, content::CardContentGeometry, create_drag_data, draft_type::open_type_menu,
-    menu::card_context_menu, neutral_card_colors, notes::item_content,
+    PREVIEW_HOVER_GROUP, ToggleItemDetails,
+    availability::projected_event_availability_target,
+    card_background,
+    content::CardContentGeometry,
+    create_drag_data,
+    draft_type::open_type_menu,
+    menu::card_context_menu,
+    neutral_card_colors,
+    notes::{NotesFocus, item_content},
 };
 
 pub(super) const ITEM_CARD_BORDER: Pixels = px(2.);
@@ -224,6 +230,20 @@ impl RenderOnce for ItemCard {
         } else {
             1.0
         };
+        let has_notes = item_content(&self.item).is_some();
+        let notes_focus = has_notes.then(|| {
+            let expanded = self
+                .details
+                .as_ref()
+                .is_some_and(|details| details.expanded());
+            window
+                .use_keyed_state((self.element_id.clone(), "notes-focus"), cx, |_, cx| {
+                    NotesFocus::new(cx)
+                })
+                .update(cx, |state, cx| {
+                    state.sync(expanded, &self.focus_handle, window, cx)
+                })
+        });
         let has_focus = self.focus_handle.is_focused(window);
         let item = self.item.clone();
         let item_for_menu = self.item.clone();
@@ -296,15 +316,6 @@ impl RenderOnce for ItemCard {
         let bounds_for_prepaint = Rc::clone(&measured_bounds);
         let bounds_for_keyboard_menu = Rc::clone(&measured_bounds);
 
-        let has_notes = item_content(&self.item).is_some();
-        let notes_focus = (preview && has_notes).then(|| {
-            window
-                .use_keyed_state((self.element_id.clone(), "notes-focus"), cx, |_, cx| {
-                    cx.focus_handle().tab_stop(false)
-                })
-                .read(cx)
-                .clone()
-        });
         if let Some(details) = &self.details {
             if !has_notes && details.reset() {
                 let owner = window.current_view();

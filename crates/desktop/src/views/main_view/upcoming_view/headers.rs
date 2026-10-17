@@ -10,6 +10,7 @@ use super::{
 
 pub(super) const HEADER_PADDING: Pixels = px(5.);
 pub(super) const HEADER_GAP: Pixels = px(8.);
+pub(super) const CHEVRON_WIDTH: Pixels = px(28.);
 pub(super) const MARKER_HEIGHT: Pixels = px(28.);
 pub(super) const MARKER_GAP: Pixels = px(4.);
 pub(super) const CONTROLS_HEIGHT: Pixels = px(38.);
@@ -62,7 +63,7 @@ impl DayHeaders {
             let date_width = quantized_date_width(
                 text_width(&label, 0.875, FontWeight::BOLD, window)
                     + weekday_width
-                    + px(16. + 12. + 4. + 8.),
+                    + px(16. + 8.),
             );
             let (date_width, marker_width) = if !sections.add_in_header(agenda, *date) {
                 (
@@ -72,6 +73,7 @@ impl DayHeaders {
             } else {
                 (date_width.min(side_width), side_width)
             };
+            let marker_width = (marker_width - CHEVRON_WIDTH - HEADER_GAP).max(px(1.));
 
             let marker_widths: Vec<_> = markers
                 .iter()

@@ -491,6 +491,7 @@ impl ItemCard {
                 source,
                 geometry.notes_size(header_height, self.content_offset),
                 self.details.clone(),
+                self.tab_stop,
                 self.inspector_action(),
                 header_height
                     + px(6.0)

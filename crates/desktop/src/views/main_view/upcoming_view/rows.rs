@@ -1,32 +1,34 @@
 use crate::AppIcon;
-use crate::components::{Button, ButtonVariants, DragData, DraggedItems, Label};
+use crate::components::{Button, ButtonVariants, Label};
 use crate::icons::Icon;
 use chrono::{Datelike, NaiveDate};
 use gpui::{
-    AnyElement, Context, Div, DragMoveEvent, ElementId, FontWeight, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, size,
+    AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement, Pixels, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Window, div, prelude::FluentBuilder, px, size,
 };
 use gpui_kit::foundation::{Disableable as _, Selectable as _, StyledExt as _};
 use gpui_kit_theme::ActiveTheme;
-use subroutine_core::{AnyItem, SchedulePoint};
+use subroutine_core::AnyItem;
 use uuid::Uuid;
 
 use crate::{
     components::{
-        ItemCard,
+        ItemCard, ItemCardPosition,
         transition::{self, WindowTransitionExt as _},
     },
     item_manager::ItemManager,
     presentation::UxColor,
     selection::SelectionManager,
-    settings::Settings,
+    views::{LIST_VIEW_MAX_WIDTH, LIST_VIEW_MIN_WIDTH},
 };
 
 use super::{
     UpcomingDropTarget, UpcomingSection, UpcomingView,
-    agenda::{AgendaMarker, CreateKind, UpcomingRow},
-    headers::{CONTROLS_HEIGHT, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT},
+    agenda::{AgendaLayoutRow, AgendaMarker, CreateKind, UpcomingRow, row_top_inset},
+    headers::{
+        CHEVRON_WIDTH, CONTROLS_HEIGHT, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT,
+    },
 };
 
 fn card_row(id: impl Into<ElementId>, height: Pixels) -> Stateful<Div> {
@@ -34,19 +36,87 @@ fn card_row(id: impl Into<ElementId>, height: Pixels) -> Stateful<Div> {
 }
 
 impl UpcomingView {
+    pub(super) fn render_layout_row(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let layout_row = self.layout.rows[ix];
+        let height = self.layout.sizes[ix].height;
+        let inset = row_top_inset(ix);
+        let full_height = match layout_row {
+            AgendaLayoutRow::Source(source) => self.row_height(&self.agenda.rows[source]) + inset,
+            _ => height,
+        };
+        let content = match layout_row {
+            AgendaLayoutRow::Source(_) => self.render_row(ix, window, cx),
+            AgendaLayoutRow::Drop { .. } | AgendaLayoutRow::Vacancy(_) => {
+                self.render_drop_slot(ix, cx)
+            }
+        };
+        let section = layout_row.section(&self.agenda);
+        let outlined = matches!(
+            self.drop_target,
+            Some(UpcomingDropTarget::Day(date)) if section == UpcomingSection::Day(date)
+        );
+
+        div()
+            .relative()
+            .w_full()
+            .min_w(LIST_VIEW_MIN_WIDTH)
+            .max_w(LIST_VIEW_MAX_WIDTH)
+            .mx_auto()
+            .h(height)
+            .when(height < full_height, |row| row.overflow_hidden())
+            .child(
+                div()
+                    .column()
+                    .h(full_height)
+                    .when(ix == 0, |row| {
+                        row.pt(crate::views::TOP_EDGE_INSET)
+                            .child(self.section_controls(cx))
+                    })
+                    .child(div().h(full_height - inset).flex_none().child(content)),
+            )
+            .when(outlined, |row| {
+                let first = ix
+                    .checked_sub(1)
+                    .and_then(|index| self.layout.rows.get(index))
+                    .is_none_or(|row| row.section(&self.agenda) != section);
+                let last = self
+                    .layout
+                    .rows
+                    .get(ix + 1)
+                    .is_none_or(|row| row.section(&self.agenda) != section);
+                row.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(inset)
+                        .bottom_0()
+                        .border_l_2()
+                        .border_r_2()
+                        .border_color(cx.theme().colors.focus)
+                        .when(first, |outline| outline.rounded_t_xl().border_t_2())
+                        .when(last, |outline| outline.rounded_b_xl().border_b_2()),
+                )
+            })
+            .into_any_element()
+    }
+
     pub(super) fn render_row(
         &mut self,
         ix: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(row) = self
-            .layout
-            .rows
-            .get(ix)
-            .and_then(|source| self.agenda.rows.get(*source))
-            .cloned()
-        else {
+        let source = match self.layout.rows.get(ix) {
+            Some(AgendaLayoutRow::Source(source)) => *source,
+            _ => return div().into_any_element(),
+        };
+        let Some(row) = self.agenda.rows.get(source).cloned() else {
             return div().into_any_element();
         };
         let interactive = self.row_interactive(ix);
@@ -55,14 +125,26 @@ impl UpcomingView {
             UpcomingRow::Day { date, markers, .. } => self.render_day(date, &markers, window, cx),
             UpcomingRow::Item {
                 item, projected, ..
-            } => self.render_item(
-                item,
-                projected,
-                self.agenda.item_neighbors(self.layout.rows[ix]),
-                interactive,
-                window,
-                cx,
-            ),
+            } => {
+                let neighbors = if self.dragged_items.is_some() {
+                    self.layout.item_neighbors(&self.agenda, ix)
+                } else {
+                    self.agenda.item_neighbors(source)
+                };
+                let position = self.dragged_items.as_ref().map(|_| {
+                    let (above, below) = self.layout.card_edges(&self.agenda, ix);
+                    ItemCardPosition::from_neighbors(above, below)
+                });
+                self.render_item(
+                    item,
+                    projected,
+                    neighbors,
+                    position,
+                    interactive,
+                    window,
+                    cx,
+                )
+            }
             UpcomingRow::Create { date, kind } => {
                 self.render_create(date, kind, interactive, window, cx)
             }
@@ -74,6 +156,7 @@ impl UpcomingView {
         item: AnyItem,
         projected: bool,
         (previous, next): (Option<Uuid>, Option<Uuid>),
+        position: Option<ItemCardPosition>,
         interactive: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -95,103 +178,12 @@ impl UpcomingView {
             .then(|| self.item_focus_handles.get(&id).cloned())
             .flatten();
         let order = self.order.clone();
-        let date = item.start_date();
-        let anchor = match item.start() {
-            Some(SchedulePoint::DateTime(start)) => Some(start),
-            _ => None,
-        };
-        let after_anchor = anchor.map(|start| {
-            let duration = item.duration().or_else(|| {
-                matches!(&item, AnyItem::Action(_))
-                    .then_some(Settings::global(cx).schedule.default_action_duration)
-            });
-            duration
-                .map(|duration| {
-                    (start.with_timezone(&chrono::Local) + duration).with_timezone(&chrono::Utc)
-                })
-                .unwrap_or(start + chrono::Duration::minutes(1))
-        });
-        let before_active = matches!(
-            self.drop_target,
-            Some(UpcomingDropTarget::Before { item, .. }) if item == id
-        );
-        let after_active = matches!(
-            self.drop_target,
-            Some(UpcomingDropTarget::After { item, .. }) if item == id
-        );
-        let day_item_active = matches!(
-            self.drop_target,
-            Some(UpcomingDropTarget::OnDayItem { item, .. }) if item == id
-        );
-        let focus = cx.theme().colors.focus;
 
         card_row(("upcoming-item-drop", id.as_u64_pair().1), card_height)
-            .when_some(date.filter(|_| interactive), |this, date| {
-                this.on_drag_move::<DragData<DraggedItems>>(cx.listener(
-                    move |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
-                        let dragged = &event.drag(cx).data;
-                        if !event.bounds.contains(&event.event.position)
-                            || dragged.items.is_empty()
-                            || dragged.items.iter().any(|item| item.id() == id)
-                        {
-                            return;
-                        }
-                        let target = if dragged.source_anchor.is_some()
-                            || dragged.items.iter().any(|item| {
-                                matches!(item, AnyItem::Marker(_) | AnyItem::Routine(_))
-                            }) {
-                            UpcomingDropTarget::OnDayItem { date, item: id }
-                        } else {
-                            match anchor {
-                                Some(anchor) => {
-                                    let before = event.event.position.y
-                                        < event.bounds.origin.y + event.bounds.size.height / 2.;
-                                    if before {
-                                        UpcomingDropTarget::Before {
-                                            date,
-                                            item: id,
-                                            anchor: Some(anchor),
-                                        }
-                                    } else {
-                                        UpcomingDropTarget::After {
-                                            date,
-                                            item: id,
-                                            anchor: after_anchor,
-                                        }
-                                    }
-                                }
-                                None => UpcomingDropTarget::OnDayItem { date, item: id },
-                            }
-                        };
-                        view.set_drop_target(target, cx);
-                    },
-                ))
-                .on_drop::<DragData<DraggedItems>>(cx.listener(
-                    move |view, data: &DragData<DraggedItems>, window, cx| {
-                        if data.data.items.is_empty()
-                            || data.data.items.iter().any(|item| item.id() == id)
-                        {
-                            view.clear_drop_target(cx);
-                            return;
-                        }
-                        let target = match view.drop_target {
-                            Some(target @ UpcomingDropTarget::Before { item, .. })
-                            | Some(target @ UpcomingDropTarget::After { item, .. })
-                            | Some(target @ UpcomingDropTarget::OnDayItem { item, .. })
-                                if item == id =>
-                            {
-                                target
-                            }
-                            _ => UpcomingDropTarget::Day(date),
-                        };
-                        view.commit_drop(&data.data, target, window, cx);
-                        cx.stop_propagation();
-                    },
-                ))
-            })
             .child(
                 ItemCard::new(&item, meta, window, cx)
                     .neighbors(previous, next)
+                    .when_some(position, |card, position| card.position(position))
                     .details(self.details.get(id))
                     .when_some(handle, |this, handle| {
                         this.with_focus_handle(handle).selectable(order)
@@ -234,41 +226,6 @@ impl UpcomingView {
                         view.move_cursor_from(id, delta, extend_selection, window, cx);
                     })),
             )
-            .when(before_active, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top(px(0.))
-                        .left_4()
-                        .right_4()
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(focus),
-                )
-            })
-            .when(after_active, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .bottom(px(0.))
-                        .left_4()
-                        .right_4()
-                        .h(px(2.))
-                        .rounded_full()
-                        .bg(focus),
-                )
-            })
-            .when(day_item_active, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .mx_4()
-                        .rounded_xl()
-                        .border_1()
-                        .border_color(focus),
-                )
-            })
             .into_any_element()
     }
 }
@@ -341,16 +298,6 @@ impl UpcomingView {
             .min_w_0()
             .max_w_full()
             .flex_shrink_1()
-            .child(
-                Icon::new(if expanded {
-                    AppIcon::ChevronDown
-                } else {
-                    AppIcon::ChevronRight
-                })
-                .size(px(12.))
-                .when(!expandable, |icon| icon.invisible())
-                .text_color(colors.text_muted.opacity(0.7)),
-            )
             .tooltip(move |_, cx| {
                 gpui_kit::overlay::Tooltip::new(tooltip.clone(), tooltip.clone()).view(cx)
             })
@@ -390,6 +337,26 @@ impl UpcomingView {
                                 .text_color(colors.text_muted),
                         )
                 },
+            )
+    }
+
+    fn section_chevron(&self, section: UpcomingSection, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .row()
+            .flex_none()
+            .w(CHEVRON_WIDTH)
+            .h(MARKER_HEIGHT)
+            .items_center()
+            .justify_center()
+            .child(
+                Icon::new(if self.sections.is_expanded(section) {
+                    AppIcon::ChevronDown
+                } else {
+                    AppIcon::ChevronRight
+                })
+                .size(px(12.))
+                .when(!self.sections.can_expand(section), |icon| icon.invisible())
+                .text_color(cx.theme().colors.text_muted.opacity(0.7)),
             )
     }
 
@@ -495,19 +462,29 @@ impl UpcomingView {
                     .flex_none()
                     .justify_end()
                     .gap(MARKER_GAP)
-                    .children(range.clone().map(|index| {
-                        self.render_marker(
+                    .children(range.clone().filter_map(|index| {
+                        let entry = &markers[index];
+                        if !entry.projected
+                            && self.dragged_items.as_ref().is_some_and(|dragged| {
+                                dragged
+                                    .data
+                                    .items
+                                    .iter()
+                                    .any(|item| item.id() == entry.marker.id)
+                            })
+                        {
+                            return None;
+                        }
+                        Some(self.render_marker(
                             date,
-                            &markers[index],
+                            entry,
                             header.marker_widths[index],
                             window,
                             cx,
-                        )
+                        ))
                     }))
             })
             .collect();
-        let active = self.drop_target == Some(UpcomingDropTarget::Day(date));
-        let active_bg = cx.theme().colors.selected;
 
         let day_row = self
             .section_header(UpcomingSection::Day(date), cx)
@@ -517,22 +494,6 @@ impl UpcomingView {
             .py(HEADER_PADDING)
             .items_start()
             .gap(HEADER_GAP)
-            .when(active, |this| this.bg(active_bg))
-            .on_drag_move::<DragData<DraggedItems>>(cx.listener(
-                move |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
-                    if event.bounds.contains(&event.event.position)
-                        && !event.drag(cx).data.items.is_empty()
-                    {
-                        view.set_drop_target(UpcomingDropTarget::Day(date), cx);
-                    }
-                },
-            ))
-            .on_drop::<DragData<DraggedItems>>(cx.listener(
-                move |view, data: &DragData<DraggedItems>, window, cx| {
-                    view.commit_drop(&data.data, UpcomingDropTarget::Day(date), window, cx);
-                    cx.stop_propagation();
-                },
-            ))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event, window, cx| {
@@ -555,11 +516,20 @@ impl UpcomingView {
             })
             .child(
                 div()
-                    .column()
+                    .row()
                     .flex_1()
                     .min_w_0()
-                    .gap(MARKER_GAP)
-                    .children(marker_rows),
+                    .items_start()
+                    .gap(HEADER_GAP)
+                    .child(
+                        div()
+                            .column()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(MARKER_GAP)
+                            .children(marker_rows),
+                    )
+                    .child(self.section_chevron(UpcomingSection::Day(date), cx)),
             );
 
         div().column().size_full().child(day_row).into_any_element()
@@ -590,7 +560,9 @@ impl UpcomingView {
             .layout
             .positions
             .get(&id)
-            .and_then(|index| self.agenda.rows.get(self.layout.rows[*index]))
+            .and_then(|index| self.layout.rows.get(*index))
+            .and_then(|row| row.source())
+            .and_then(|source| self.agenda.rows.get(source))
             .and_then(|row| match row {
                 UpcomingRow::Day { date, .. } => Some(*date),
                 _ => None,
@@ -689,7 +661,9 @@ impl UpcomingView {
             .tooltip(move |_, cx| {
                 gpui_kit::overlay::Tooltip::new(tooltip.clone(), tooltip.clone()).view(cx)
             })
-            .block_mouse_except_scroll()
+            .when(self.dragged_items.is_none(), |card| {
+                card.block_mouse_except_scroll()
+            })
             .into_any_element()
     }
 }
@@ -712,7 +686,9 @@ impl UpcomingView {
 
         Button::new(id)
             .ghost()
-            .block_mouse_except_scroll()
+            .when(self.dragged_items.is_none(), |button| {
+                button.block_mouse_except_scroll()
+            })
             .opacity(opacity)
             .focus(|style| style.opacity(1.0))
             .w(self.headers.add_width)
@@ -747,10 +723,7 @@ impl UpcomingView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let target = UpcomingDropTarget::Day(date);
-        let active = self.drop_target == Some(target);
         let row_id = ElementId::from(("upcoming-create-row", date.num_days_from_ce() as u64));
-        let accepts = move |dragged: &DraggedItems| interactive && !dragged.items.is_empty();
         let button = if kind == CreateKind::Slot {
             ItemCard::create_slot(
                 ("upcoming-create", date.num_days_from_ce() as u32),
@@ -779,25 +752,6 @@ impl UpcomingView {
             .row()
             .items_center()
             .justify_center()
-            .when(active, |this| this.bg(cx.theme().colors.selected))
-            .on_drag_move::<DragData<DraggedItems>>(cx.listener(
-                move |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
-                    if event.bounds.contains(&event.event.position) && accepts(&event.drag(cx).data)
-                    {
-                        view.set_drop_target(target, cx);
-                    }
-                },
-            ))
-            .on_drop::<DragData<DraggedItems>>(cx.listener(
-                move |view, data: &DragData<DraggedItems>, window, cx| {
-                    if accepts(&data.data) {
-                        view.commit_drop(&data.data, target, window, cx);
-                        cx.stop_propagation();
-                    } else {
-                        view.clear_drop_target(cx);
-                    }
-                },
-            ))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event, window, cx| {
@@ -815,6 +769,7 @@ impl UpcomingView {
             .items_center()
             .justify_between()
             .child(self.section_label(UpcomingSection::Missed, "Missed actions".into(), cx))
+            .child(self.section_chevron(UpcomingSection::Missed, cx))
             .into_any_element()
     }
 }

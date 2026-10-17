@@ -1,5 +1,6 @@
 use gpui::{div, prelude::FluentBuilder as _, px, *};
 use gpui_kit_theme::ActiveTheme;
+use std::cell::Cell;
 use std::fmt::Debug;
 use std::rc::Rc;
 
@@ -11,6 +12,7 @@ pub struct DragData<T: Clone + Debug> {
     pub preview_factory: Option<Rc<dyn Fn() -> AnyElement>>,
     pub preview_size: Option<Size<Pixels>>,
     pub position: Point<Pixels>,
+    grab_position: Rc<Cell<Option<Point<Pixels>>>>,
 }
 
 impl<T: Clone + Debug> Clone for DragData<T> {
@@ -21,6 +23,7 @@ impl<T: Clone + Debug> Clone for DragData<T> {
             preview_factory: self.preview_factory.clone(),
             preview_size: self.preview_size,
             position: self.position,
+            grab_position: Rc::clone(&self.grab_position),
         }
     }
 }
@@ -45,6 +48,7 @@ impl<T: Clone + Debug> DragData<T> {
             preview_factory: None,
             preview_size: None,
             position: Point::default(),
+            grab_position: Rc::default(),
         }
     }
 
@@ -68,7 +72,30 @@ impl<T: Clone + Debug> DragData<T> {
 
     pub fn with_position(mut self, position: Point<Pixels>) -> Self {
         self.position = position;
+        // GPUI retains the original payload while positioning a cloned preview.
+        self.grab_position.set(Some(position));
         self
+    }
+
+    pub fn grab_position(&self) -> Option<Point<Pixels>> {
+        self.grab_position.get()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DragData;
+    use gpui::{point, px};
+
+    #[test]
+    fn preview_records_grab_position_on_the_retained_payload() {
+        let payload = DragData::new(1);
+        let retained = payload.clone();
+        assert_eq!(retained.grab_position(), None);
+        let position = point(px(17.), px(9.));
+        let preview = payload.with_position(position);
+        assert_eq!(preview.position, position);
+        assert_eq!(retained.grab_position(), Some(position));
     }
 }
 

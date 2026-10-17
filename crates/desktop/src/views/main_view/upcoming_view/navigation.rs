@@ -45,7 +45,16 @@ impl UpcomingView {
         let Some(&row) = self.layout.positions.get(&id) else {
             return;
         };
-        let section = self.agenda.rows[self.layout.rows[row]].section();
+        let Some(row) = self
+            .layout
+            .rows
+            .get(row)
+            .and_then(|row| row.source())
+            .and_then(|source| self.agenda.rows.get(source))
+        else {
+            return;
+        };
+        let section = row.section();
 
         if modifiers.shift && matches!(key, "up" | "down") {
             focus_item_extending(&self.order, id, id, handle, window, cx);

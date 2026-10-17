@@ -49,7 +49,7 @@ impl UpcomingView {
         if !bounds.contains(&position) {
             return None;
         }
-        Some(self.agenda.rows.get(*self.layout.rows.get(ix)?)?.section())
+        Some(self.layout.rows.get(ix)?.section(&self.agenda))
     }
 
     fn set_hovered_section(&mut self, section: Option<UpcomingSection>, cx: &mut Context<Self>) {
@@ -90,6 +90,8 @@ impl UpcomingView {
                             // GPUI retains the last mouse position after leaving the window.
                             view.mouse_exited = true;
                             view.set_hovered_section(None, cx);
+                            view.set_drop_target_option(None, cx);
+                            view.set_edge_scroll_speed(None, cx);
                         });
                     }
                 });
@@ -122,7 +124,7 @@ pub(super) struct UpcomingSections {
 }
 
 impl UpcomingSections {
-    pub fn sync(&mut self, agenda: &Agenda, today: NaiveDate) {
+    pub fn sync(&mut self, agenda: &Agenda) {
         let populated: HashSet<_> = agenda
             .rows
             .iter()
@@ -135,7 +137,7 @@ impl UpcomingSections {
         for section in populated {
             self.states.entry(section).or_insert_with(|| {
                 SectionState::new(
-                    section == UpcomingSection::Day(today)
+                    matches!(section, UpcomingSection::Day(_))
                         || self.pending_reveals.contains(&section),
                 )
             });
@@ -214,7 +216,7 @@ mod tests {
     use subroutine_core::{Action, Marker, SchedulePoint};
 
     #[test]
-    fn only_today_starts_expanded_and_refresh_preserves_choices() {
+    fn all_days_start_expanded_and_refresh_preserves_choices() {
         let today = NaiveDate::from_ymd_opt(2026, 10, 10).unwrap();
         let tomorrow = today.succ_opt().unwrap();
         let items = [today.pred_opt().unwrap(), today, tomorrow].map(|date| {
@@ -228,20 +230,19 @@ mod tests {
         let day = UpcomingSection::Day(today);
         let next_day = UpcomingSection::Day(tomorrow);
         let mut sections = UpcomingSections::default();
-        sections.sync(&agenda, today);
+        sections.sync(&agenda);
         assert_eq!(sections.layout_state(day), (true, 1.));
-        assert_eq!(sections.layout_state(next_day), (false, 0.));
+        assert_eq!(sections.layout_state(next_day), (true, 1.));
         assert_eq!(sections.layout_state(UpcomingSection::Missed), (false, 0.));
         assert!(!sections.add_in_header(&agenda, today));
-        assert!(sections.add_in_header(&agenda, tomorrow));
-
-        sections.set_expanded(day, false);
-        sections.set_expanded(next_day, true);
-        sections.sync(&agenda, today);
-        assert!(!sections.is_expanded(day));
-        assert!(sections.is_expanded(next_day));
-        assert!(sections.add_in_header(&agenda, today));
         assert!(!sections.add_in_header(&agenda, tomorrow));
+
+        sections.set_expanded(next_day, false);
+        sections.sync(&agenda);
+        assert!(sections.is_expanded(day));
+        assert!(!sections.is_expanded(next_day));
+        assert!(!sections.add_in_header(&agenda, today));
+        assert!(sections.add_in_header(&agenda, tomorrow));
     }
 
     #[test]
@@ -263,10 +264,10 @@ mod tests {
             )
         };
         let mut sections = UpcomingSections::default();
-        sections.sync(&agenda(&[]), today);
+        sections.sync(&agenda(&[]));
         sections.set_expanded(scheduled, true);
         sections.reveal(day);
-        sections.sync(&agenda(&[]), today);
+        sections.sync(&agenda(&[]));
         for section in [day, scheduled] {
             assert!(!sections.can_expand(section));
             assert_eq!(sections.layout_state(section), (true, 1.));
@@ -281,7 +282,7 @@ mod tests {
                 .iter()
                 .all(|row| row.selectable_ids().all(|id| id == marker.id))
         );
-        sections.sync(&undated_agenda, today);
+        sections.sync(&undated_agenda);
         assert!(!sections.can_expand(day));
         assert!(!sections.can_expand(scheduled));
 
@@ -291,18 +292,18 @@ mod tests {
                 .with_start(Some(SchedulePoint::Date(tomorrow))),
         );
         sections.reveal(scheduled);
-        sections.sync(&agenda(std::slice::from_ref(&draft)), today);
+        sections.sync(&agenda(std::slice::from_ref(&draft)));
         assert!(sections.can_expand(scheduled));
         assert!(sections.is_expanded(scheduled));
         assert!(!sections.can_expand(day));
 
-        sections.sync(&agenda(&[]), today);
+        sections.sync(&agenda(&[]));
         sections.set_expanded(scheduled, true);
         assert!(!sections.can_expand(scheduled));
         assert_eq!(sections.layout_state(scheduled), (true, 1.));
 
-        sections.sync(&agenda(&[draft]), today);
+        sections.sync(&agenda(&[draft]));
         assert!(sections.can_expand(scheduled));
-        assert!(!sections.is_expanded(scheduled));
+        assert!(sections.is_expanded(scheduled));
     }
 }

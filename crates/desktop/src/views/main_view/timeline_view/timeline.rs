@@ -1008,7 +1008,8 @@ impl TimelineView {
                         .glass_pill()
                         .small()
                         .icon(AppIcon::Clock)
-                        .label(format!("Now · {}", self.now.format(format)))
+                        // .label(format!("Now · {}", self.now.format(format)))
+                        .label(self.now.format(format).to_string())
                         .tooltip(format!(
                             "Back to now · {}",
                             self.now.format("%a %b %-d, %Y · %-I:%M:%S %p")
