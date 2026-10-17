@@ -1,8 +1,8 @@
-
 use std::{fmt, future::Future, pin::Pin, sync::Arc};
 
 use oauth2::{
-    AuthType, AuthUrl, ClientId, RedirectUrl, RefreshToken, TokenUrl, basic::BasicClient,
+    AuthType, AuthUrl, ClientId, RedirectUrl, RefreshToken, TokenUrl,
+    basic::{BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse},
 };
 use serde::Deserialize;
 use url::Url;
@@ -11,13 +11,18 @@ use crate::{ConfigError, Issuer, ProviderError, TransportSecurity, http};
 
 mod callback;
 mod error;
+mod id_token;
 mod tokens;
 mod userinfo;
 
 pub use callback::{CallbackError, PendingAuthorization, ValidatedCode};
 pub use error::{DiscoveryError, FailureKind, TokenError, TokenValidationError};
+pub use id_token::IdTokenSnapshot;
 pub use tokens::Tokens;
 pub use userinfo::UserInfo;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -98,13 +103,22 @@ struct Discovery {
     token_endpoint: String,
     #[serde(default)]
     userinfo_endpoint: serde_json::Value,
+    #[serde(default)]
+    jwks_uri: serde_json::Value,
+    #[serde(default)]
+    id_token_signing_alg_values_supported: serde_json::Value,
     response_types_supported: Vec<String>,
     code_challenge_methods_supported: Vec<String>,
     #[serde(default)]
     authorization_response_iss_parameter_supported: bool,
 }
 
-type OAuthClient = BasicClient<
+type OAuthClient = oauth2::Client<
+    BasicErrorResponse,
+    tokens::Response,
+    BasicTokenIntrospectionResponse,
+    oauth2::StandardRevocableToken,
+    BasicRevocationErrorResponse,
     oauth2::EndpointSet,
     oauth2::EndpointNotSet,
     oauth2::EndpointNotSet,
@@ -117,6 +131,7 @@ struct ProviderInner {
     client: OAuthClient,
     http: reqwest::Client,
     userinfo_endpoint: Option<Url>,
+    identity: Option<id_token::Verification>,
     require_iss: bool,
 }
 
@@ -153,7 +168,8 @@ impl Provider {
             .userinfo_endpoint
             .as_str()
             .and_then(|endpoint| config.issuer.endpoint(endpoint).ok());
-        let client = BasicClient::new(ClientId::new(config.client_id.clone()))
+        let identity = id_token::Verification::from_discovery(&config, &metadata);
+        let client = oauth2::Client::new(ClientId::new(config.client_id.clone()))
             .set_auth_type(AuthType::RequestBody)
             .set_auth_uri(AuthUrl::from_url(authorization))
             .set_token_uri(TokenUrl::from_url(token))
@@ -163,6 +179,7 @@ impl Provider {
             client,
             http,
             userinfo_endpoint,
+            identity,
             require_iss: metadata.authorization_response_iss_parameter_supported,
         })))
     }
@@ -194,6 +211,11 @@ impl Provider {
             started,
             received,
             Some(old.refresh_token()),
+            id_token::NonceContext::Refresh(
+                old.id_token_snapshot()
+                    .and_then(IdTokenSnapshot::nonce)
+                    .map(str::to_owned),
+            ),
         )
         .map_err(TokenError::InvalidTokens)
     }

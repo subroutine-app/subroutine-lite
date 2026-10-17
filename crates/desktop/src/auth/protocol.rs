@@ -218,10 +218,15 @@ impl Provider {
             .map_err(|error| token_error(error).to_string())
     }
 
-    pub async fn userinfo(&self, tokens: &Tokens) -> Result<client::UserInfo, String> {
+    pub async fn userinfo(
+        &self,
+        tokens: &Tokens,
+        budget: Duration,
+    ) -> Result<client::UserInfo, String> {
+        let started = tokio::time::Instant::now();
         let tokens = tokens.to_client().map_err(|error| error.to_string())?;
         self.0
-            .userinfo(&tokens)
+            .userinfo_with_timeout(&tokens, budget.saturating_sub(started.elapsed()))
             .await
             .map_err(|error| error.to_string())
     }
@@ -249,6 +254,8 @@ pub(super) struct Tokens {
     pub refresh: String,
     pub expires_at: i64,
     pub refresh_not_before: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<client::IdTokenSnapshot>,
 }
 
 impl From<client::Tokens> for Tokens {
@@ -258,6 +265,7 @@ impl From<client::Tokens> for Tokens {
             refresh: tokens.refresh_token().to_owned(),
             expires_at: tokens.expires_at(),
             refresh_not_before: tokens.refresh_not_before(),
+            id_token: tokens.id_token_snapshot().cloned(),
         }
     }
 }
@@ -270,6 +278,7 @@ impl Tokens {
             self.expires_at,
             self.refresh_not_before,
         )
+        .map(|tokens| tokens.with_id_token_snapshot(self.id_token.clone()))
     }
 
     pub fn ensure_refresh_ready(&self) -> Result<(), String> {
@@ -371,4 +380,32 @@ pub(super) async fn account(
         return Err("The API returned an empty account or dataset identity.".into());
     }
     Ok(account)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn native_credentials_roundtrip_raw_identity_context_and_load_legacy_stores() {
+        let legacy = json!({"access": "access", "refresh": "refresh", "expires_at": 1700000000});
+        let tokens: Tokens = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(tokens.id_token.is_none());
+        assert!(tokens.to_client().unwrap().id_token_snapshot().is_none());
+
+        let mut stored = legacy;
+        stored["refresh_not_before"] = json!(1699999999);
+        stored["id_token"] =
+            json!({"token": "untrusted-raw-token", "nonce": {"Code": "expected-nonce"}});
+        let tokens: Tokens = serde_json::from_value(stored.clone()).unwrap();
+        let client = tokens.to_client().unwrap();
+        assert_eq!(
+            serde_json::to_value(Tokens::from(client.clone())).unwrap(),
+            stored
+        );
+        let debug = format!("{client:?}");
+        assert!(!debug.contains("untrusted-raw-token"));
+        assert!(!debug.contains("expected-nonce"));
+    }
 }

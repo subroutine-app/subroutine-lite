@@ -26,8 +26,8 @@ use uuid::Uuid;
 
 use super::super::{MIN_ITEM_HEIGHT, MIN_ITEM_WIDTH, ResizeDragData, ResizeEdge, TimelineView};
 use super::{
-    ATTACHED_ITEM_LEFT, FALLBACK_ITEM_DURATION, ITEM_KEY_CONTEXT, Lane, MAX_ITEM_WIDTH,
-    NavigationHandoffs, RESIZE_HANDLE_HEIGHT, ResizeGhost, SLOT_GAP, TimelineSlot,
+    ATTACHED_ITEM_LEFT, FALLBACK_ITEM_DURATION, ITEM_KEY_CONTEXT, ItemDragAnchor, Lane,
+    MAX_ITEM_WIDTH, NavigationHandoffs, RESIZE_HANDLE_HEIGHT, ResizeGhost, SLOT_GAP, TimelineSlot,
     item_inspection_matches_press, item_layout_duration, item_min_height, item_timeline_span,
     item_title_only, measure_from, timeline_selection_ids,
 };
@@ -576,7 +576,16 @@ impl TimelineView {
             .size_full()
             .bg(cx.theme().colors.panel)
             .draggable(true, None);
-        let card = self.wire_timeline_item_card(card, &item, cx);
+        let card = self
+            .wire_timeline_item_card(card, &item, cx)
+            .capture_any_mouse_down(cx.listener(move |view, event: &MouseDownEvent, _, _| {
+                if event.button == MouseButton::Left {
+                    view.item_drag_anchor = view.bounds.map(|bounds| ItemDragAnchor {
+                        item_id,
+                        offset: event.position.y - bounds.origin.y - y,
+                    });
+                }
+            }));
         let sticky_playback = sticky_content_playback(
             self.item_y_scale,
             self.bounds_changed || details_open || self.display_scroll_delta != px(0.),

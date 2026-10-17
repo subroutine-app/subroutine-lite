@@ -199,6 +199,7 @@ fn render_subject_dynamic_title(
                         .children(washes)
                         .child(editor),
                 )
+                .on_double_click(|_, _, cx| cx.stop_propagation())
             },
             move |this| {
                 this.when(editable, |this| {

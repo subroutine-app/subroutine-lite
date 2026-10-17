@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-client = ["dep:oauth2", "dep:subtle", "dep:chrono", "dep:reqwest", "dep:serde", "dep:serde_json"]
+client = ["dep:oauth2", "dep:openidconnect", "dep:subtle", "dep:chrono", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio"]
 server = ["dep:jsonwebtoken", "dep:tokio", "dep:reqwest", "dep:serde", "dep:serde_json"]
 
 [dependencies]
@@ -18,7 +18,12 @@ serde_json = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 oauth2 = { workspace = true, optional = true }
+openidconnect = { version = "=4.0.1", default-features = false, optional = true }
 subtle = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 jsonwebtoken = { workspace = true, optional = true }
+
+[dev-dependencies]
+jsonwebtoken = { workspace = true }
+tokio = { workspace = true }
 

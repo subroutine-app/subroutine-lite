@@ -336,7 +336,6 @@ impl CalendarView {
             .is_some_and(|resize| resize.item_id == marker.id);
         let can_resize = !projected && !is_draft && !is_editing && self.marker_resize.is_none();
         let item = AnyItem::Marker(marker.clone());
-        let edit_marker = marker.clone();
         let card = ItemCard::new_with_id(
             format!("calendar-marker-{}-{first}", marker.id),
             &item,
@@ -362,12 +361,7 @@ impl CalendarView {
             .when(projected, |card| card.opacity(0.55))
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_pressure(|_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
-                cx.stop_propagation();
-                if event.click_count() >= 2 && !projected && !is_draft {
-                    view.edit_grid_marker(&edit_marker, window, cx);
-                }
-            }))
+            .on_click(|_, _, cx| cx.stop_propagation())
             .on_drag_move::<DragData<DraggedItems>>(cx.listener(
                 |view, event: &DragMoveEvent<DragData<DraggedItems>>, _, cx| {
                     if let Some(date) = view.date_at_position(event.event.position) {

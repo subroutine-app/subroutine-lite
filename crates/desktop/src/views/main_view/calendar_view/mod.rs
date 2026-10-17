@@ -49,7 +49,7 @@ use crate::{
     },
     stores::{AppDatabaseStore, WorkspaceContent},
     views::{
-        EditSelectedItem, OpenItemInspector, StartItemCreatorOnDate, StartMarkerCreatorOnRange,
+        EditSelectedItem, StartItemCreatorOnDate, StartMarkerCreatorOnRange,
         drop_confirmation::{confirm_drop, resolve_dragged, scheduled_item_count},
     },
 };
@@ -2357,20 +2357,6 @@ impl Render for CalendarView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.clear_drop_target(cx)),
-            )
-            .on_action(
-                cx.listener(|view, request: &OpenItemInspector, window, cx| {
-                    let Some(marker) = view
-                        .markers
-                        .iter()
-                        .find(|marker| marker.id == request.0)
-                        .cloned()
-                    else {
-                        cx.propagate();
-                        return;
-                    };
-                    view.edit_grid_marker(&marker, window, cx);
-                }),
             )
             .on_action(cx.listener(|view, _: &EditSelectedItem, window, cx| {
                 let selection = SelectionManager::global(cx);

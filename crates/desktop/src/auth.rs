@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 mod profile;
 mod protocol;
+#[cfg(test)]
+mod tests;
 use profile::Profile;
 pub(crate) use protocol::{ACCOUNT_PATH, Config};
 use protocol::{Provider, TokenError, Tokens};
@@ -547,6 +549,29 @@ impl AuthSession {
         Ok(())
     }
 
+    // Called under the operation lock; a failed write must retain the rotated tokens for retry.
+    async fn persist_profile(
+        &self,
+        scope: RequestScope,
+        saved: &mut SavedSession,
+        fetched: Option<Profile>,
+    ) -> Result<(), TokenError> {
+        {
+            let mut state = self.0.state.lock().unwrap();
+            if state.scope() != Some(scope) {
+                return Err(TokenError::Transient("The account session changed.".into()));
+            }
+            let profile = Profile::reconcile(saved.profile.clone(), fetched);
+            if profile == saved.profile {
+                return Ok(());
+            }
+            saved.profile = profile;
+            saved.persistence = Persistence::Pending;
+            state.saved = Some(saved.clone());
+        }
+        self.persist(scope, saved).await
+    }
+
     async fn checkpoint_refresh(
         &self,
         scope: RequestScope,
@@ -631,11 +656,11 @@ impl AuthSession {
             return Err(TokenError::Terminal("The API account changed during session restore/refresh. Sync is blocked; sign out and sign in explicitly. Cached data and queued edits have not been reassigned.".into()));
         }
         let profile = Profile::fetch(config, &http, tokens, provider.as_ref()).await;
+        self.persist_profile(scope, &mut saved, profile).await?;
         let mut state = self.0.state.lock().unwrap();
         if state.scope() != Some(scope) {
             return Err(TokenError::Transient("The account session changed.".into()));
         }
-        state.saved.as_mut().unwrap().profile = Profile::reconcile(saved.profile, profile);
         state.verified = true;
         state.retry_at = None;
         state.publish(AuthenticationState::SignedIn);

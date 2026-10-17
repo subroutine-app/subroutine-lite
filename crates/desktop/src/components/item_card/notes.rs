@@ -1,7 +1,10 @@
+use std::{cell::Cell, rc::Rc};
+
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    Pixels, ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Window, div,
-    point, prelude::FluentBuilder as _, px,
+    AnyElement, App, ElementId, InteractiveElement, IntoElement, MouseButton, MouseCancelEvent,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, ScrollHandle, SharedString, Size,
+    StatefulInteractiveElement, Styled, Window, canvas, div, point, prelude::FluentBuilder as _,
+    px,
 };
 use gpui_kit::{
     content::{Markdown, MarkdownEvent},
@@ -17,6 +20,7 @@ use crate::{
         transition::{self, WindowTransitionExt as _},
     },
     selection::SelectionManager,
+    settings::Settings,
 };
 
 use super::ItemCardDetails;
@@ -70,6 +74,7 @@ fn notes_paint(
 }
 
 const EDGE_TOLERANCE: Pixels = px(1.0);
+const DOUBLE_CLICK_DRAG_THRESHOLD: f64 = 2.0;
 
 fn measurements_match(first: Pixels, second: Pixels) -> bool {
     (first - second).abs() <= EDGE_TOLERANCE
@@ -246,6 +251,7 @@ pub(super) fn render_item_card_notes(
     source: SharedString,
     available_size: Size<Pixels>,
     details: Option<ItemCardDetails>,
+    inspector_action: Option<Box<dyn gpui::Action>>,
     header_height: Pixels,
     window: &mut Window,
     cx: &mut App,
@@ -311,11 +317,17 @@ pub(super) fn render_item_card_notes(
     };
     let paint = measurement.read(cx).paint(viewport_height, scroll_y);
     let ident = notes_ident(&element_id);
-    let markdown = Markdown::new(ident.child("markdown"), source).on_event(|event, _, cx| {
-        if let MarkdownEvent::LinkClicked { href } = event {
-            cx.open_url(href.as_ref());
-        }
-    });
+    let markdown =
+        Markdown::new(ident.child("markdown"), source).on_event(|event, _, cx| match event {
+            MarkdownEvent::LinkClicked { href } => {
+                cx.stop_propagation();
+                cx.open_url(href.as_ref());
+            }
+            MarkdownEvent::CodeCopied { .. } | MarkdownEvent::CodeCopyRefused { .. } => {
+                cx.stop_propagation();
+            }
+            _ => {}
+        });
     let document_measurement = measurement.clone();
     let document = div()
         .w_full()
@@ -362,6 +374,13 @@ pub(super) fn render_item_card_notes(
                 })
         });
     let scroll_for_fade = scroll_handle.clone();
+    let inspectable = inspector_action.is_some();
+    let double_click = window
+        .use_keyed_state((element_id.clone(), "notes-double-click"), cx, |_, _| {
+            Rc::new(Cell::new(None::<Point<Pixels>>))
+        })
+        .read(cx)
+        .clone();
 
     Some(
         div()
@@ -392,11 +411,59 @@ pub(super) fn render_item_card_notes(
             .w_full()
             .h(viewport_height)
             .flex_none()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                SelectionManager::claim_press(cx);
-                cx.stop_propagation();
+            .on_mouse_down(MouseButton::Left, {
+                let candidate = Rc::clone(&double_click);
+                move |event, _, cx| {
+                    SelectionManager::claim_press(cx);
+                    cx.stop_propagation();
+                    candidate.set(
+                        (inspectable
+                            && event.click_count == 2
+                            && !Settings::global(cx).selection.is_modified(&event.modifiers))
+                        .then_some(event.position),
+                    );
+                }
             })
-            .on_click(|_, _, cx| cx.stop_propagation())
+            .capture_any_mouse_up({
+                let candidate = Rc::clone(&double_click);
+                move |event, window, cx| {
+                    if event.button != MouseButton::Left {
+                        return;
+                    }
+                    let Some(start) = candidate.get() else {
+                        return;
+                    };
+                    if !inspectable
+                        || event.click_count != 2
+                        || Settings::global(cx).selection.is_modified(&event.modifiers)
+                        || (event.position - start).magnitude() > DOUBLE_CLICK_DRAG_THRESHOLD
+                    {
+                        candidate.set(None);
+                        return;
+                    }
+                    // Only a stationary release overrides Markdown's word selection.
+                    if !window.document_selection().is_empty() {
+                        window.clear_document_selection();
+                        window.release_pointer();
+                        window.refresh();
+                    }
+                }
+            })
+            .on_click({
+                let candidate = Rc::clone(&double_click);
+                move |event, window, cx| {
+                    cx.stop_propagation();
+                    if candidate.take().is_some()
+                        && event.click_count() == 2
+                        && !Settings::global(cx)
+                            .selection
+                            .is_modified(&window.modifiers())
+                        && let Some(action) = &inspector_action
+                    {
+                        window.dispatch_action(action.boxed_clone(), cx);
+                    }
+                }
+            })
             .child(
                 ScrollFade::new(ident.child("fade"))
                     .fit_height()
@@ -407,6 +474,39 @@ pub(super) fn render_item_card_notes(
                         viewport_height,
                     )))
                     .child(viewport),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        let candidate = Rc::clone(&double_click);
+                        window.on_mouse_event(move |_: &MouseDownEvent, phase, _, _| {
+                            if phase.capture() {
+                                candidate.set(None);
+                            }
+                        });
+                        // Observe excursions outside the notes without taking text's capture.
+                        let candidate = Rc::clone(&double_click);
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, _| {
+                            if phase.capture()
+                                && candidate.get().is_some_and(|start| {
+                                    event.pressed_button != Some(MouseButton::Left)
+                                        || (event.position - start).magnitude()
+                                            > DOUBLE_CLICK_DRAG_THRESHOLD
+                                })
+                            {
+                                candidate.set(None);
+                            }
+                        });
+                        window.on_mouse_event(move |_: &MouseCancelEvent, phase, _, _| {
+                            if phase.capture() {
+                                double_click.set(None);
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
             )
             .into_any_element(),
     )

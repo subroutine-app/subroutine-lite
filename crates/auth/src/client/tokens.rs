@@ -1,13 +1,26 @@
 use std::fmt;
 
-use oauth2::{
-    TokenResponse,
-    basic::{BasicTokenResponse, BasicTokenType},
-};
+use oauth2::{TokenResponse, basic::BasicTokenType};
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use subtle::ConstantTimeEq;
 
-use super::{TokenError, TokenValidationError};
+use super::{IdTokenSnapshot, TokenError, TokenValidationError, id_token::NonceContext};
+
+pub(super) type Response = oauth2::StandardTokenResponse<ExtraFields, BasicTokenType>;
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(super) struct ExtraFields {
+    #[serde(default)]
+    id_token: serde_json::Value,
+}
+
+impl oauth2::ExtraTokenFields for ExtraFields {}
+
+impl fmt::Debug for ExtraFields {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtraFields").finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone, Serialize)]
 pub struct Tokens {
@@ -15,6 +28,8 @@ pub struct Tokens {
     refresh: String,
     expires_at: i64,
     refresh_not_before: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id_token: Option<IdTokenSnapshot>,
 }
 
 impl fmt::Debug for Tokens {
@@ -22,6 +37,7 @@ impl fmt::Debug for Tokens {
         f.debug_struct("Tokens")
             .field("access", &"[REDACTED]")
             .field("refresh", &"[REDACTED]")
+            .field("id_token", &"[REDACTED]")
             .field("expires_at", &self.expires_at)
             .field("refresh_not_before", &self.refresh_not_before)
             .finish()
@@ -37,6 +53,8 @@ impl<'de> Deserialize<'de> for Tokens {
             expires_at: i64,
             #[serde(default)]
             refresh_not_before: Option<i64>,
+            #[serde(default)]
+            id_token: serde_json::Value,
         }
         let stored = Stored::deserialize(deserializer)
             .map_err(|_| D::Error::custom("invalid stored tokens"))?;
@@ -46,6 +64,7 @@ impl<'de> Deserialize<'de> for Tokens {
             stored.expires_at,
             stored.refresh_not_before,
         )
+        .map(|tokens| tokens.with_id_token_snapshot(serde_json::from_value(stored.id_token).ok()))
         .map_err(D::Error::custom)
     }
 }
@@ -75,15 +94,17 @@ impl Tokens {
             refresh,
             expires_at,
             refresh_not_before,
+            id_token: None,
         })
     }
 
     pub(super) fn from_response(
-        response: BasicTokenResponse,
+        response: Response,
         required_scopes: &[String],
         started: i64,
         received: i64,
         old_refresh: Option<&str>,
+        nonce: NonceContext,
     ) -> Result<Self, TokenValidationError> {
         if response.token_type() != &BasicTokenType::Bearer {
             return Err(TokenValidationError::UnsupportedTokenType);
@@ -124,6 +145,22 @@ impl Tokens {
             expires_at,
             Some(refresh_not_before),
         )
+        .map(|tokens| {
+            tokens.with_id_token_snapshot(Some(IdTokenSnapshot::new(
+                response.extra_fields().id_token.as_str().map(str::to_owned),
+                nonce,
+            )))
+        })
+    }
+
+    pub fn id_token_snapshot(&self) -> Option<&IdTokenSnapshot> {
+        self.id_token.as_ref()
+    }
+
+    /// Restores untrusted token metadata; names are verified against fresh UserInfo before use.
+    pub fn with_id_token_snapshot(mut self, snapshot: Option<IdTokenSnapshot>) -> Self {
+        self.id_token = snapshot;
+        self
     }
 
     pub fn access_token(&self) -> &str {

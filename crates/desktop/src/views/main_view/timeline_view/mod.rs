@@ -175,6 +175,7 @@ pub(super) struct TimelineView {
     annotation_cache: AnnotationCache,
     active_drop: Option<ActiveDropState>,
     drop_dragged: Option<DraggedItems>,
+    item_drag_anchor: Option<ItemDragAnchor>,
     active_resize: Option<ActiveResizeState>,
     force_create: Option<ForceCreateState>,
     force_press: Option<Point<Pixels>>,
@@ -242,6 +243,7 @@ impl TimelineView {
         self.hovered_divider = None;
         self.active_drop = None;
         self.drop_dragged = None;
+        self.item_drag_anchor = None;
         self.drop_active = false;
         self.pending_item_focus = None;
         self.marker_panel = None;
@@ -252,6 +254,7 @@ impl TimelineView {
     pub(super) fn finish_item_drag(&mut self, cx: &mut Context<Self>) {
         self.active_drop = None;
         self.drop_dragged = None;
+        self.item_drag_anchor = None;
         self.drop_active = false;
         self.edge_scroll_speed = None;
         cx.notify();
@@ -401,6 +404,7 @@ impl TimelineView {
             annotation_cache: AnnotationCache::default(),
             active_drop: None,
             drop_dragged: None,
+            item_drag_anchor: None,
             active_resize: None,
             force_create: None,
             force_press: None,
@@ -552,7 +556,11 @@ impl TimelineView {
             .drop_zone()
             .absolute()
             .inset_0()
+            .on_mouse_down_out(cx.listener(|view, _: &MouseDownEvent, _, _| {
+                view.item_drag_anchor = None;
+            }))
             .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _window, cx| {
+                view.item_drag_anchor = None;
                 view.inspect_force_item = None;
                 if event.button == MouseButton::Left {
                     view.begin_force_press(event.position, cx);

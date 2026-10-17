@@ -28,6 +28,7 @@ use crate::{
     selection::SelectionOrder,
     stores::AppDatabaseStore,
     utils::ButtonColors,
+    views::{OpenItemInspector, OpenSavedItemInspector},
 };
 
 pub use details::{ItemCardDetails, ItemCardStates};
@@ -204,6 +205,20 @@ impl Focusable for ItemCard {
 }
 
 impl ItemCard {
+    fn inspector_action(&self) -> Option<Box<dyn gpui::Action>> {
+        if !self.actionable {
+            return None;
+        }
+        Some(if self.item.is_template() {
+            Box::new(OpenSavedItemInspector(self.item.id()))
+        } else {
+            Box::new(OpenItemInspector(
+                self.item.id(),
+                self.selection.as_ref().map(|order| order.scope),
+            ))
+        })
+    }
+
     pub(crate) fn create_slot(
         id: impl Into<ElementId>,
         label: impl Into<SharedString>,

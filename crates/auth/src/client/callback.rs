@@ -1,10 +1,11 @@
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use oauth2::{AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, Scope};
+use openidconnect::Nonce;
 use subtle::ConstantTimeEq;
 use url::Url;
 
-use super::{ProviderInner, TokenError, Tokens, error};
+use super::{ProviderInner, TokenError, Tokens, error, id_token::NonceContext};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CallbackError {
@@ -24,6 +25,7 @@ enum AuthorizationState {
     Waiting {
         state: CsrfToken,
         verifier: PkceCodeVerifier,
+        nonce: Nonce,
     },
     Denied,
 }
@@ -58,6 +60,7 @@ impl fmt::Debug for ValidatedCode {
 impl PendingAuthorization {
     pub(super) fn new(provider: Arc<ProviderInner>) -> Self {
         let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        let nonce = Nonce::new_random();
         let (url, state) = provider
             .client
             .authorize_url(CsrfToken::new_random)
@@ -70,12 +73,17 @@ impl PendingAuthorization {
                     .map(Scope::new),
             )
             .set_pkce_challenge(challenge)
+            .add_extra_param("nonce", nonce.secret().clone())
             .url();
         Self {
             provider,
             transaction: Arc::new(()),
             url,
-            state: AuthorizationState::Waiting { state, verifier },
+            state: AuthorizationState::Waiting {
+                state,
+                verifier,
+                nonce,
+            },
         }
     }
 
@@ -116,7 +124,10 @@ impl PendingAuthorization {
         if !Arc::ptr_eq(&self.transaction, &code.transaction) {
             return Err(TokenError::TransactionMismatch);
         }
-        let AuthorizationState::Waiting { verifier, .. } = self.state else {
+        let AuthorizationState::Waiting {
+            verifier, nonce, ..
+        } = self.state
+        else {
             return Err(TokenError::AuthorizationClosed);
         };
 
@@ -136,6 +147,7 @@ impl PendingAuthorization {
             started,
             received,
             None,
+            NonceContext::Code(nonce.secret().clone()),
         )
         .map_err(TokenError::InvalidTokens)
     }

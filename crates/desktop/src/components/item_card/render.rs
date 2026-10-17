@@ -13,7 +13,7 @@ use subroutine_core::{AnyItem, ItemType};
 use crate::{
     components::{
         Draggable,
-        ext::ElementExt,
+        ext::{ElementExt, InteractiveElementExt},
         menu::{context_menu_contains_position, open_context_menu_at_bounds},
         transition::{self, WindowTransitionExt as _},
     },
@@ -236,6 +236,7 @@ impl RenderOnce for ItemCard {
         let selection_order = self.selection.clone();
         let on_click = self.on_click.clone();
         let selection_scope = selection_order.as_ref().map(|order| order.scope);
+        let inspector_action = self.inspector_action();
         let is_multi_selected = selection_scope.is_some_and(|scope| {
             SelectionManager::global(cx)
                 .read(cx)
@@ -476,6 +477,19 @@ impl RenderOnce for ItemCard {
                 })
             })
             .children(skin)
+            .when_some(inspector_action, |card, action| {
+                card.on_double_click(move |_, window, cx| {
+                    if dragged_since_press.get()
+                        || Settings::global(cx)
+                            .selection
+                            .is_modified(&window.modifiers())
+                    {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    window.dispatch_action(action.boxed_clone(), cx);
+                })
+            })
             .when_some(on_click, |this, handler| {
                 this.on_click(move |event, window, cx| handler(event, window, cx))
             })

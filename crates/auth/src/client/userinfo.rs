@@ -1,4 +1,6 @@
-use std::fmt;
+use std::{fmt, time::Duration};
+
+use tokio::time::{Instant, timeout_at};
 
 use serde::Deserialize;
 
@@ -29,6 +31,43 @@ impl UserInfo {
 
 impl Provider {
     pub async fn userinfo(&self, tokens: &Tokens) -> Result<UserInfo, ProviderError> {
+        self.userinfo_with_timeout(tokens, Duration::from_secs(20))
+            .await
+    }
+
+    /// Shares one budget between required UserInfo and optional ID-token enrichment.
+    /// Enrichment timing out preserves completed UserInfo; UserInfo timing out is an error.
+    pub async fn userinfo_with_timeout(
+        &self,
+        tokens: &Tokens,
+        budget: Duration,
+    ) -> Result<UserInfo, ProviderError> {
+        if budget.is_zero() {
+            return Err(ProviderError::Request);
+        }
+        let deadline = Instant::now()
+            .checked_add(budget)
+            .ok_or(ProviderError::Request)?;
+        let identity = async {
+            let snapshot = tokens.id_token_snapshot()?;
+            let verification = self.0.identity.as_ref()?;
+            snapshot.prepare(&self.0.http, verification).await
+        };
+        let (info, identity) = tokio::join!(
+            timeout_at(deadline, self.fetch_userinfo(tokens)),
+            timeout_at(deadline, identity),
+        );
+        let info = info.map_err(|_| ProviderError::Request)??;
+        let name = identity.ok().flatten().and_then(|identity| {
+            identity.display_name(&self.0.config, tokens.access_token(), &info.subject)
+        });
+        Ok(UserInfo {
+            subject: info.subject,
+            name: name.or(info.name),
+        })
+    }
+
+    async fn fetch_userinfo(&self, tokens: &Tokens) -> Result<UserInfo, ProviderError> {
         let endpoint = self
             .0
             .userinfo_endpoint

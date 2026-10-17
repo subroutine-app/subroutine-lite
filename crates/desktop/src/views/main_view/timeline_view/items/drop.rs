@@ -136,6 +136,12 @@ fn place_dropped_item(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::views::main_view::timeline_view) struct ItemDragAnchor {
+    pub item_id: Uuid,
+    pub offset: Pixels,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum DropShape {
     Span {
@@ -226,8 +232,12 @@ impl TimelineView {
             .bounds
             .and_then(|bounds| bounds.localize(&mouse_pos))
             .filter(|position| position.y >= TOP_EDGE_INSET)?;
+        let grab_offset = self
+            .item_drag_anchor
+            .filter(|anchor| anchor.item_id == dragged.primary.id())
+            .map_or(px(0.), |anchor| anchor.offset);
         let center = self.center_relative().y;
-        let offset = pos.y - center;
+        let offset = pos.y - grab_offset - center;
         let raw_time = self.position_to_time(offset);
         let state = self.current_division_state();
         let base = state.base_division;
