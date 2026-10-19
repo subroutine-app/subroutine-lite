@@ -171,9 +171,8 @@ try {
 
     $featureArgs = @()
     if ($Features) { $featureArgs = @('--features', $Features) }
-    # Licenses need the locked graph for all platforms.
-    $metadataJson = & cargo metadata --locked --format-version 1 @featureArgs
-    if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata or fetch the locked dependencies.' }
+    $metadataJson = & cargo metadata --format-version 1 @featureArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata or fetch dependencies.' }
     $metadata = ($metadataJson -join "`n") | ConvertFrom-Json
     $package = $metadata.packages | Where-Object { $_.name -eq 'desktop' } | Select-Object -First 1
     $version = $package.version
@@ -186,7 +185,7 @@ try {
     $outputDir = Join-Path $buildDir 'bundle/windows'
     $resources = Join-Path $root 'crates/desktop/resources/windows'
 
-    & cargo build --locked --release --package desktop --bin subroutine-lite --target $target --target-dir $targetDir @featureArgs
+    & cargo build --release --package desktop --bin subroutine-lite --target $target --target-dir $targetDir @featureArgs
     if ($LASTEXITCODE -ne 0) { throw 'Subroutine Lite build failed.' }
     $exe = Join-Path $buildDir 'subroutine-lite.exe'
     $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)

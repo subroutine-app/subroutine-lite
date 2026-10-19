@@ -3048,7 +3048,6 @@ name = "gpui-box-kit"
 version = "0.2.0"
 dependencies = [
  "alacritty_terminal",
- "chrono",
  "gpui-box",
  "gpui-box-kit-assets",
  "gpui-box-kit-semantics",
