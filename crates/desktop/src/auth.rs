@@ -9,6 +9,12 @@ use uuid::Uuid;
 
 mod profile;
 mod protocol;
+#[cfg(target_os = "windows")]
+mod windows_credentials;
+#[cfg(not(target_os = "windows"))]
+use KeyringCredentials as OsCredentials;
+#[cfg(target_os = "windows")]
+use windows_credentials::OsCredentials;
 #[cfg(test)]
 mod tests;
 use profile::Profile;
@@ -98,14 +104,14 @@ trait Credentials: Send + Sync {
     fn delete(&self) -> Result<(), String>;
 }
 
-struct OsCredentials(String);
-impl OsCredentials {
+struct KeyringCredentials(String);
+impl KeyringCredentials {
     fn entry(&self) -> Result<keyring::Entry, String> {
         keyring::Entry::new("com.subroutine.SubroutineLite", &self.0)
             .map_err(|_| "Cannot open the OS credential store.".into())
     }
 }
-impl Credentials for OsCredentials {
+impl Credentials for KeyringCredentials {
     fn load(&self) -> Result<Option<Vec<u8>>, String> {
         match self.entry()?.get_secret() {
             Ok(value) => Ok(Some(value)),
@@ -117,7 +123,14 @@ impl Credentials for OsCredentials {
         }
     }
     fn save(&self, bytes: &[u8]) -> Result<(), String> {
-        self.entry()?.set_secret(bytes).map_err(|_| "Cannot save the session in the OS credential store. Sync is paused; unlock the store and retry.".into())
+        self.entry()?.set_secret(bytes).map_err(|error| match error {
+            keyring::Error::TooLong(_, limit) => format!(
+                "The saved session exceeds the OS credential store limit ({limit}). Sync is paused."
+            ),
+            keyring::Error::NoStorageAccess(_) =>
+                "Cannot access the OS credential store. Unlock it and retry; sync is paused.".into(),
+            _ => "Cannot save the session in the OS credential store. Check credential store access and retry; sync is paused.".into(),
+        })
     }
     fn delete(&self) -> Result<(), String> {
         match self.entry()?.delete_credential() {
