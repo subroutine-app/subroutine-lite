@@ -112,10 +112,49 @@ class TimelineGestureInteractionTest {
     }
 
     @Test
+    fun swipingFromEitherEdgeScrollsWithoutResizingEvenIfTheFingerThenPauses() {
+        render()
+        for ((key, mode) in listOf("event:event" to TimelineEditMode.Start, "action:action" to TimelineEditMode.End)) {
+            val originalTop = node(TimelineTestTags.interval(key)).boundsInRoot.top
+            val contact = edgeContact(key, mode, right = false)
+            touch(MotionEvent.ACTION_DOWN, contact)
+            assertIdle()
+            assertTrue(effects.isEmpty())
+            val moved = contact + Offset(0f, -40f)
+            touch(MotionEvent.ACTION_MOVE, moved)
+            assertTrue(node(TimelineTestTags.interval(key)).boundsInRoot.top < originalTop - 1f)
+            hold()
+            assertIdle()
+            assertTrue(effects.isEmpty())
+            touch(MotionEvent.ACTION_UP, moved)
+            assertIdle()
+            assertTrue(submissions.isEmpty())
+            assertTrue(effects.isEmpty())
+        }
+    }
+
+    @Test
+    fun releasingAnEdgeBeforeTheHoldDoesNotStartAnEdit() {
+        render()
+        val contact = edgeContact("event:event", TimelineEditMode.Start, right = false)
+        touch(MotionEvent.ACTION_DOWN, contact)
+        assertIdle()
+        assertTrue(effects.isEmpty())
+        touch(MotionEvent.ACTION_UP, contact)
+        hold()
+        assertIdle()
+        assertTrue(submissions.isEmpty())
+        assertTrue(effects.isEmpty())
+    }
+
+    @Test
     fun androidCancellationRejectsAChangedResizeWithoutSaving() {
         render()
         val contact = edgeContact("event:event", TimelineEditMode.Start, right = false)
         touch(MotionEvent.ACTION_DOWN, contact)
+        assertIdle()
+        assertTrue(effects.isEmpty())
+        hold()
         assertGrip("event:event", TimelineEditMode.Start)
         val moved = moveThroughOneSnap(contact, -snapDeltaPx, HapticFeedbackType.GestureThresholdActivate)
         touch(MotionEvent.ACTION_CANCEL, moved)
@@ -136,6 +175,9 @@ class TimelineGestureInteractionTest {
         render()
         val contact = edgeContact("event:event", TimelineEditMode.Start, right = false)
         touch(MotionEvent.ACTION_DOWN, contact)
+        assertIdle()
+        assertTrue(effects.isEmpty())
+        hold()
         val moved = moveThroughOneSnap(contact, -snapDeltaPx, HapticFeedbackType.GestureThresholdActivate)
         val second = moved + Offset(32f, 0f)
         touch(MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), moved, second)
@@ -161,13 +203,7 @@ class TimelineGestureInteractionTest {
         val contact = node(TimelineTestTags.interval("action:action")).boundsInRoot.center
         touch(MotionEvent.ACTION_DOWN, contact)
         assertTrue(effects.isEmpty())
-        // The coroutine delay and Android frames use separate clocks under Robolectric.
-        val deadline = System.nanoTime() + Duration.ofMillis(ViewConfiguration.getLongPressTimeout() + 1500L).toNanos()
-        while (effects.isEmpty() && System.nanoTime() < deadline) {
-            frames(2)
-            Thread.sleep(10)
-        }
-        frames(2)
+        hold()
         assertEquals(listOf(HapticFeedbackType.LongPress), effects)
         assertNoGrip()
         assertNull(creator.anchor)
@@ -199,6 +235,9 @@ class TimelineGestureInteractionTest {
         assertIdle()
         val contact = edgeContact(key, mode, right)
         touch(MotionEvent.ACTION_DOWN, contact)
+        assertIdle()
+        assertTrue(effects.isEmpty())
+        hold()
         assertEquals(listOf(HapticFeedbackType.GestureThresholdActivate), effects)
         assertGrip(key, mode)
         val moved = moveThroughOneSnap(
@@ -230,6 +269,16 @@ class TimelineGestureInteractionTest {
         frames(4)
         assertIdle()
         assertEquals(if (saveSucceeds) released else released + HapticFeedbackType.Reject, effects)
+    }
+
+    private fun hold() {
+        // The coroutine delay and Android frames use separate clocks under Robolectric.
+        val deadline = System.nanoTime() + Duration.ofMillis(ViewConfiguration.getLongPressTimeout() + 1500L).toNanos()
+        while (effects.isEmpty() && System.nanoTime() < deadline) {
+            frames(2)
+            Thread.sleep(10)
+        }
+        frames(2)
     }
 
     private fun moveThroughOneSnap(contact: Offset, deltaY: Float, activation: HapticFeedbackType): Offset {

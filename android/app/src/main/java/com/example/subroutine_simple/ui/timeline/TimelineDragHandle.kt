@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -108,7 +109,8 @@ internal fun TimelineDragHandle(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = true)
                     down.consume()
-                    currentStart(down.position)
+                    val held = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+                    currentStart(held.position)
                 }
             },
         contentAlignment = Alignment.Center,
