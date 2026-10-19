@@ -681,9 +681,9 @@ impl ItemManager {
                             updated.set_queued(true);
                         }
                         let items = if batching
-                            && let Some(SchedulePoint::DateTime(start)) = updated.start
+                            && let Some(start) = cursor
+                            && matches!(updated.start, Some(SchedulePoint::DateTime(_)))
                         {
-                            let start = cursor.unwrap_or(start);
                             updated.set_start(Some(SchedulePoint::DateTime(start)));
                             let placement = store
                                 .read(cx)
@@ -706,8 +706,7 @@ impl ItemManager {
                     if draft_view.is_some() {
                         let mut updated = updated;
                         let mut items = Vec::new();
-                        if batching {
-                            let start = cursor.unwrap_or(updated.start);
+                        if batching && let Some(start) = cursor {
                             let probe = Action::new("")
                                 .with_start(Some(SchedulePoint::DateTime(start)))
                                 .with_duration(Some(updated.duration));
