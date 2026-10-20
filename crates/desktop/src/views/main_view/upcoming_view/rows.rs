@@ -238,12 +238,14 @@ impl UpcomingView {
                 ElementId::from(("upcoming-day", date.num_days_from_ce() as u64))
             }
         };
-        div().id(id).relative().row().size_full().px_4().when(
-            self.sections.can_expand(section),
-            |row| {
+        div().id(id).relative().row().size_full().px_4().when_some(
+            self.sections
+                .can_expand(section)
+                .then(|| self.heading_focus_handles.get(&section))
+                .flatten(),
+            |row, focus| {
                 row.cursor_pointer()
-                    .focusable()
-                    .tab_stop(true)
+                    .track_focus(focus)
                     .focus_visible(|style| {
                         // Adjacent cards share this row's edge, so the ring must stay inside it.
                         style.shadow(
@@ -260,6 +262,22 @@ impl UpcomingView {
                     .on_click(cx.listener(move |view, _, window, cx| {
                         cx.stop_propagation();
                         view.toggle_section(section, window, cx);
+                    }))
+                    .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                        let modifiers = event.keystroke.modifiers;
+                        if event.is_held
+                            || modifiers.modified()
+                            || ItemManager::global(cx).read(cx).is_editing()
+                        {
+                            return;
+                        }
+                        let delta = match event.keystroke.key.as_str() {
+                            "down" | "j" => 1,
+                            "up" | "k" => -1,
+                            _ => return,
+                        };
+                        cx.stop_propagation();
+                        view.move_heading_focus(section, delta, window, cx);
                     }))
             },
         )

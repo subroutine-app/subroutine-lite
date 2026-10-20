@@ -89,6 +89,10 @@ pub trait MainViewTab: Render + Focusable + Sized {
         false
     }
 
+    fn dismissed_idle(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+        false
+    }
+
     fn bind_view_actions<E: InteractiveElement>(&self, element: E, _cx: &mut Context<Self>) -> E {
         element
     }
@@ -113,7 +117,9 @@ pub trait MainViewTab: Render + Focusable + Sized {
                 if this.dismissed(window, cx) {
                     return;
                 }
-                if !selection::dismiss_view(Self::scope(), Some(&home), window, cx) {
+                if !selection::dismiss_view(Self::scope(), Some(&home), window, cx)
+                    && !this.dismissed_idle(window, cx)
+                {
                     cx.propagate();
                 }
             }))

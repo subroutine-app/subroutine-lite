@@ -124,7 +124,13 @@ impl DynamicListDelegate for CalendarInspectorDelegate {
 
     fn item_height(&self, ix: usize, _cx: &App) -> Pixels {
         self.entries.get(ix).map_or(SIDEBAR_ITEM_HEIGHT, |entry| {
-            self.cards.height(entry.item.id(), SIDEBAR_ITEM_HEIGHT)
+            self.cards.height(
+                entry.item.id(),
+                crate::components::expandable_card_height(
+                    entry.item.content().as_deref(),
+                    SIDEBAR_ITEM_HEIGHT,
+                ),
+            )
         })
     }
 

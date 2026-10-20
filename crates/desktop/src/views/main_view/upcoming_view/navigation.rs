@@ -6,9 +6,41 @@ use crate::{
     stores::{AppDatabaseStore, WorkspaceContent},
 };
 
-use super::{UpcomingReveal, UpcomingView};
+use super::{UpcomingReveal, UpcomingView, sections::UpcomingSection};
 
 impl UpcomingView {
+    pub(super) fn move_heading_focus(
+        &mut self,
+        from: UpcomingSection,
+        delta: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let headings: Vec<UpcomingSection> = self
+            .layout
+            .rows
+            .iter()
+            .filter_map(|row| row.source())
+            .filter_map(|source| self.agenda.rows.get(source))
+            .filter(|row| row.is_heading() && self.sections.can_expand(row.section()))
+            .map(|row| row.section())
+            .collect();
+        let Some(target) = headings
+            .iter()
+            .position(|section| *section == from)
+            .and_then(|index| index.checked_add_signed(delta))
+            .and_then(|index| headings.get(index))
+        else {
+            return;
+        };
+        let Some(handle) = self.heading_focus_handles.get(target) else {
+            return;
+        };
+        handle.clone().focus(window, cx);
+        self.reveal = Some(UpcomingReveal::Heading(*target));
+        window.refresh();
+    }
+
     pub(super) fn on_navigation_key(
         &mut self,
         event: &KeyDownEvent,

@@ -24,6 +24,7 @@ use crate::{
     selection::{SelectionManager, SelectionOrder, SelectionScope},
     settings::GlobalSettings,
     stores::AppDatabaseStore,
+    views::ToggleFocusMode,
 };
 
 use super::tab::{MainViewTab, SelectedMainView};
@@ -335,6 +336,11 @@ impl MainViewTab for FocusView {
             return false;
         }
         self.close_settings(window, cx);
+        true
+    }
+
+    fn dismissed_idle(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        window.dispatch_action(Box::new(ToggleFocusMode), cx);
         true
     }
 }

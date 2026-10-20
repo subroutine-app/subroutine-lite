@@ -284,7 +284,7 @@ pub(super) fn render_item_card_notes(
     header_height: Pixels,
     window: &mut Window,
     cx: &mut App,
-) -> Option<AnyElement> {
+) -> Option<(AnyElement, Pixels)> {
     let theme = cx.theme().clone();
     let line_height = px(theme.typography.body.line_height);
     let owner = window.current_view();
@@ -416,7 +416,7 @@ pub(super) fn render_item_card_notes(
         .read(cx)
         .clone();
 
-    Some(
+    Some((
         div()
             .on_children_prepainted(move |bounds, window, cx| {
                 let Some(viewport) = bounds.first() else {
@@ -543,7 +543,8 @@ pub(super) fn render_item_card_notes(
                 .size_full(),
             )
             .into_any_element(),
-    )
+        viewport_height,
+    ))
 }
 
 #[cfg(test)]

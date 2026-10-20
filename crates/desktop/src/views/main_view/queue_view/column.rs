@@ -272,7 +272,10 @@ impl DynamicListDelegate for QueueDelegate {
 
     fn item_height(&self, ix: usize, _cx: &App) -> Pixels {
         self.items.get(ix).map_or(CARD_HEIGHT, |item| {
-            self.cards.height(item.id(), CARD_HEIGHT)
+            self.cards.height(
+                item.id(),
+                crate::components::expandable_card_height(item.content().as_deref(), CARD_HEIGHT),
+            )
         })
     }
 

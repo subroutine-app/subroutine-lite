@@ -33,14 +33,18 @@ use super::{
     CalendarView, GridCreation, MAX_WEEK_HEIGHT, MIN_WEEK_HEIGHT,
     borders::GridBorders,
     date_context_menu, date_range_context_menu,
-    markers::{MarkerLayout, marker_capacity, marker_content_height, marker_preview},
+    markers::{
+        MARKER_HEIGHT, MARKER_PITCH, MarkerLayout, marker_capacity, marker_content_height,
+        marker_preview,
+    },
 };
 
 pub(super) const EDGE_HORIZON: Pixels = px(200.);
 const MIN_SUMMARY_WIDTH: Pixels = px(80.);
 const MIN_FULL_SUMMARY_WIDTH: Pixels = px(120.);
 
-const CREATE_ROW_HEIGHT: Pixels = px(24.);
+const CREATE_ROW_HEIGHT: Pixels = MARKER_HEIGHT;
+const PREVIEW_ROW_HEIGHT: Pixels = px(22.);
 const DATE_BADGE_SIZE: Pixels = px(28.);
 
 fn same_month(date: NaiveDate, other: NaiveDate) -> bool {
@@ -163,12 +167,13 @@ fn calendar_summaries(
     if day_width < MIN_SUMMARY_WIDTH {
         return (Vec::new(), entries.len());
     }
-    let limit: usize = if day_width < MIN_FULL_SUMMARY_WIDTH {
+    let limit = if day_width < MIN_FULL_SUMMARY_WIDTH {
         1
     } else {
         2
     };
-    let limit = limit.min(rows.saturating_sub(usize::from(entries.len() > rows)));
+    let disclosure_row = entries.len() > rows && rows > 1;
+    let limit = limit.min(rows.saturating_sub(usize::from(disclosure_row)));
     let mut candidates: Vec<_> = entries
         .iter()
         .filter_map(|item| calendar_salience(item).map(|salience| (salience, item)))
@@ -259,11 +264,14 @@ mod preview_tests {
         assert_eq!(summaries[0].id(), items[1].id());
         assert_eq!(hidden, 1);
 
-        for (width, rows) in [(px(60.), 3), (px(160.), 1)] {
+        for (width, rows) in [(px(60.), 3), (px(160.), 0)] {
             let (summaries, hidden) = calendar_summaries(&items, width, rows);
             assert!(summaries.is_empty());
             assert_eq!(hidden, items.len());
         }
+        let (summaries, hidden) = calendar_summaries(&items, px(160.), 1);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(hidden, 1);
     }
 
     #[test]
@@ -289,7 +297,7 @@ mod preview_tests {
     }
 
     #[test]
-    fn busy_dates_leave_room_for_creation_and_report_hidden_items() {
+    fn busy_dates_keep_a_preview_and_report_hidden_items() {
         let date = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
         let items: Vec<_> = (0..4)
             .map(|index| {
@@ -299,11 +307,11 @@ mod preview_tests {
                 )
             })
             .collect();
-        for (rows, expected) in [(1, 0), (2, 1), (3, 2)] {
+        for (rows, expected) in [(1, 1), (2, 1), (3, 2)] {
             let (summaries, hidden) = calendar_summaries(&items, px(160.), rows);
             assert_eq!(summaries.len(), expected);
             assert_eq!(summaries.len() + hidden, items.len());
-            assert!(summaries.len() + usize::from(hidden > 0) <= rows);
+            assert!(summaries.len() + usize::from(hidden > 0 && rows > 1) <= rows);
         }
         let (summaries, hidden) = calendar_summaries(&items[..1], px(160.), 1);
         assert_eq!(summaries.len(), 1);
@@ -315,6 +323,7 @@ fn render_calendar_summary(
     item: AnyItem,
     date: NaiveDate,
     day_width: Pixels,
+    inline_hidden: Option<usize>,
     cx: &App,
 ) -> impl IntoElement {
     let item_type = item.item_type();
@@ -372,6 +381,12 @@ fn render_calendar_summary(
                 .flex_1()
                 .truncate(),
         )
+        .children(inline_hidden.map(|hidden| {
+            Label::new(format!("+{hidden}"))
+                .text_xs()
+                .flex_none()
+                .text_color(cx.theme().colors.text_muted)
+        }))
 }
 
 fn render_calendar_activity(count: usize, date: NaiveDate, cx: &App) -> impl IntoElement {
@@ -444,20 +459,62 @@ impl CalendarView {
         hidden_markers: Vec<Marker>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let row = div()
+        let overflow = (!hidden_markers.is_empty())
+            .then(|| self.render_marker_overflow(date, hidden_markers, cx));
+        div()
             .w_full()
             .h(CREATE_ROW_HEIGHT)
             .flex_none()
             .flex()
             .items_center()
-            .justify_center();
+            .justify_center()
+            .gap_1()
+            .min_w_0()
+            .children(overflow)
+            .children(visible.then(|| self.render_grid_create_button(date, cx)))
+            .into_any_element()
+    }
 
-        let button = if hidden_markers.is_empty() {
-            visible.then(|| self.render_grid_create_button(date, cx))
-        } else {
-            Some(self.render_marker_overflow(date, hidden_markers, cx))
-        };
-        row.children(button).into_any_element()
+    fn render_open_day_button(&self, date: NaiveDate, cx: &Context<Self>) -> Button {
+        let colors = &cx.theme().colors;
+        let hover_background = colors.control_hover.alpha(0.8);
+        let hover_foreground = colors.text;
+        Button::new(("calendar-open-day", date.num_days_from_ce() as u32))
+            .ghost()
+            .xsmall()
+            .rounded_full()
+            .bg(colors.control.alpha(0.55))
+            .text_color(colors.text_muted)
+            .hover(move |style| style.bg(hover_background).text_color(hover_foreground))
+            .when_else(
+                self.day_width() >= MIN_SUMMARY_WIDTH,
+                |button| button.label("Open"),
+                |button| {
+                    button
+                        .compact()
+                        .w(CREATE_ROW_HEIGHT)
+                        .icon(AppIcon::ChevronRight)
+                },
+            )
+            .role(gpui::Role::Button)
+            .aria_label(format!("Open {}", date.format("%A, %B %-d, %Y")))
+            .tooltip("Open day · Events and actions")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                SelectionManager::claim_press(cx);
+                cx.stop_propagation();
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |view, _, _, cx| {
+                    view.finish_date_range_drag(date, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_pressure(|_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                view.open_day_inspector(date, window, cx);
+            }))
     }
 
     fn render_grid_create_button(&self, date: NaiveDate, cx: &Context<Self>) -> Button {
@@ -527,9 +584,8 @@ impl CalendarView {
         self.day_button_layouts
             .retain(|date, _| range_start <= *date && *date < range_end);
         let content_top = date_badge_size + px(10.) + focus_ring_width;
-        let preview_height =
-            interval - date_badge_size - px(11.) - focus_ring_width * 2. - CREATE_ROW_HEIGHT;
-        let marker_limit = marker_capacity(preview_height);
+        let content_height = interval - date_badge_size - px(11.) - focus_ring_width * 2.;
+        let marker_limit = marker_capacity(content_height - PREVIEW_ROW_HEIGHT).saturating_sub(1);
         let manager = ItemManager::global(cx);
         let draft = match manager.read(cx).view_draft(DraftView::Calendar) {
             Some(AnyItem::Marker(marker)) => Some(marker.clone()),
@@ -561,16 +617,25 @@ impl CalendarView {
             .chain(draft.into_iter().map(|marker| (marker, false)))
             .map(|(marker, projected)| (marker_preview(marker, cx), projected))
             .collect::<Vec<_>>();
-        let mut markers = MarkerLayout::new(marker_entries, &mut self.marker_lanes);
+        let mut markers = MarkerLayout::new(
+            marker_entries.iter().cloned(),
+            range_start,
+            num_weeks,
+            &[],
+            &mut self.marker_reveal,
+        );
         if let Some(id) = preferred
-            && self
-                .marker_lanes
-                .lane(id)
-                .is_some_and(|lane| lane >= marker_limit)
+            && markers.is_hidden_anywhere(id, marker_limit)
         {
-            markers.promote(id, &mut self.marker_lanes);
+            markers = MarkerLayout::new(
+                marker_entries,
+                range_start,
+                num_weeks,
+                &[id],
+                &mut self.marker_reveal,
+            );
         }
-        self.reveal_grid_marker_edit(content_top, cx);
+        self.reveal_grid_marker_edit(content_top, &markers, cx);
         let marker_order = markers.order(range_start, range_end, cx);
 
         let projected_items = self.projected_items(range_start, range_end);
@@ -608,9 +673,6 @@ impl CalendarView {
             && !self.marquee.is_active()
             && self.inspector_date.is_none()
             && !self.month_selector_open;
-
-        let empty_create_inset =
-            (interval * 0.45 - content_top - CREATE_ROW_HEIGHT / 2.).max(px(0.));
 
         div()
             .absolute()
@@ -660,10 +722,12 @@ impl CalendarView {
                         let selected = selected_range.is_some_and(|range| range.contains(date));
                         let drop_active = self.drop_target == Some(date);
                         let id: ElementId = format!("calendar-{}", date.format("%Y-%m-%d")).into();
-                        let marker_height =
-                            marker_content_height(markers.visible_lanes_on(date, marker_limit));
-                        let preview_rows =
-                            ((preview_height - marker_height) / px(22.)).floor().max(0.) as usize;
+                        let marker_lanes = markers.visible_lanes_on(date, marker_limit);
+                        let preview_rows = ((content_height
+                            - marker_content_height(marker_lanes + 1))
+                            / PREVIEW_ROW_HEIGHT)
+                            .floor()
+                            .max(0.) as usize;
                         let entries: Vec<(AnyItem, bool)> = self
                             .items
                             .iter()
@@ -712,6 +776,11 @@ impl CalendarView {
                         let entries: Vec<_> = entries.into_iter().map(|(item, _)| item).collect();
                         let (summaries, hidden_count) =
                             calendar_summaries(&entries, day_width, preview_rows);
+                        let inline_hidden = (hidden_count > 0
+                            && !summaries.is_empty()
+                            && summaries.len() >= preview_rows)
+                            .then_some(hidden_count);
+                        let summary_count = summaries.len();
 
                         let show_create = can_create
                             && self.hovered_date == Some(date)
@@ -881,54 +950,30 @@ impl CalendarView {
                                     .px(cell_inset)
                                     .w_full()
                                     .min_w_0()
-                                    .justify_end()
                                     .child(
-                                        Button::new((
-                                            "calendar-open-day",
-                                            date.num_days_from_ce() as u32,
-                                        ))
-                                        .ghost()
-                                        .compact()
-                                        .h(date_badge_size)
-                                        .w_full()
-                                        .p_0()
-                                        .justify_end()
-                                        .min_w_0()
-                                        .max_w_full()
-                                        .rounded_md()
-                                        .child(date_label)
-                                        .on_prepaint({
-                                            let entity = entity.clone();
-                                            move |bounds, _, cx| {
-                                                entity.update(cx, |view, _| {
-                                                    view.measure_day_button(date, bounds)
-                                                });
-                                            }
-                                        })
-                                        .role(gpui::Role::Button)
-                                        .aria_label(format!(
-                                            "Open {}",
-                                            date.format("%A, %B %-d, %Y")
-                                        ))
-                                        .tooltip("Open day · Events and actions")
-                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                            SelectionManager::claim_press(cx);
-                                            cx.stop_propagation();
-                                        })
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(move |view, _, _, cx| {
-                                                view.finish_date_range_drag(date, cx);
-                                                cx.stop_propagation();
-                                            }),
-                                        )
-                                        .on_mouse_pressure(|_, _, cx| cx.stop_propagation())
-                                        .on_click(
-                                            cx.listener(move |view, _, window, cx| {
-                                                cx.stop_propagation();
-                                                view.open_day_inspector(date, window, cx);
-                                            }),
-                                        ),
+                                        div()
+                                            .row()
+                                            .h(date_badge_size)
+                                            .w_full()
+                                            .min_w_0()
+                                            .items_center()
+                                            .gap_1()
+                                            .on_prepaint({
+                                                let entity = entity.clone();
+                                                move |bounds, _, cx| {
+                                                    entity.update(cx, |view, _| {
+                                                        view.measure_day_button(date, bounds)
+                                                    });
+                                                }
+                                            })
+                                            .when(show_create, |header| {
+                                                header.child(
+                                                    self.render_open_day_button(date, cx)
+                                                        .flex_none(),
+                                                )
+                                            })
+                                            .child(div().flex_1().min_w_0())
+                                            .child(date_label),
                                     ),
                             )
                             .child(
@@ -941,7 +986,9 @@ impl CalendarView {
                                     .px(cell_inset)
                                     .py(focus_ring_width)
                                     .w_full()
-                                    .child(div().h(marker_height).flex_none())
+                                    .child(div().h(MARKER_PITCH * marker_lanes as f32).flex_none())
+                                    .child(create_row)
+                                    .child(div().flex_1().min_h_0())
                                     .child(
                                         div()
                                             .column()
@@ -1001,22 +1048,38 @@ impl CalendarView {
                                                         },
                                                         |this| {
                                                             this.children(
-                                                                summaries.into_iter().map(|item| {
-                                                                    render_calendar_summary(
-                                                                        item, date, day_width, cx,
-                                                                    )
-                                                                }),
+                                                                summaries
+                                                                    .into_iter()
+                                                                    .enumerate()
+                                                                    .map(|(index, item)| {
+                                                                        render_calendar_summary(
+                                                                            item,
+                                                                            date,
+                                                                            day_width,
+                                                                            inline_hidden.filter(
+                                                                                |_| {
+                                                                                    index + 1
+                                                                                    == summary_count
+                                                                                },
+                                                                            ),
+                                                                            cx,
+                                                                        )
+                                                                    }),
                                                             )
-                                                            .when(hidden_count > 0, |this| {
-                                                                this.child(
-                                                                    render_calendar_disclosure(
-                                                                        hidden_count,
-                                                                        date,
-                                                                        day_width,
-                                                                        cx,
-                                                                    ),
-                                                                )
-                                                            })
+                                                            .when(
+                                                                hidden_count > 0
+                                                                    && inline_hidden.is_none(),
+                                                                |this| {
+                                                                    this.child(
+                                                                        render_calendar_disclosure(
+                                                                            hidden_count,
+                                                                            date,
+                                                                            day_width,
+                                                                            cx,
+                                                                        ),
+                                                                    )
+                                                                },
+                                                            )
                                                         },
                                                     )
                                                     .when_some(dragged, |this, dragged| {
@@ -1043,11 +1106,7 @@ impl CalendarView {
                                                     }),
                                                 )
                                             }),
-                                    )
-                                    .when(!has_entries && marker_height == px(0.), |content| {
-                                        content.child(div().h(empty_create_inset).flex_none())
-                                    })
-                                    .child(create_row),
+                                    ),
                             )
                     }))
             }))

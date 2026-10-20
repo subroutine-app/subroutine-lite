@@ -1,6 +1,6 @@
 use gpui::{
     AnyElement, App, Bounds, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Pixels, Point, Size, Styled, Window, div, prelude::FluentBuilder, px, size,
+    ParentElement, Pixels, Size, Styled, Window, div, prelude::FluentBuilder, px, size,
 };
 use gpui_kit::foundation::{Sizable, StyledExt as _};
 use gpui_kit_theme::ActiveTheme;
@@ -8,7 +8,10 @@ use subroutine_core::AnyItem;
 
 use crate::{
     AppIcon,
-    components::{Button, ButtonVariants, Checkbox, Label},
+    components::{
+        Button, ButtonVariants, Checkbox, Label,
+        transition::{self, WindowTransitionExt as _},
+    },
     icons::Icon,
     item_manager::ItemManager,
     selection::{FocusHandoff, SelectionManager, bulk},
@@ -17,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    CardMeta, CardPresentation, ItemCard, ItemCardTitleScale, PREVIEW_HOVER_GROUP,
+    CardMeta, CardPresentation, DETAILS_FOOTER_EXTENT, DETAILS_FOOTER_HEIGHT, DETAILS_FOOTER_INSET,
+    ItemCard, ItemCardDetails, ItemCardTitleScale, PREVIEW_HOVER_GROUP,
     availability::event_availability_indicator,
     item_icon,
     menu::{RESTORE_ACTION_LABEL, card_context_menu, restore_action_label},
@@ -39,14 +43,16 @@ impl CardContentGeometry {
         Self { size: bounds.size }
     }
 
-    fn notes_size(self, header_height: Pixels, content_offset: Point<Pixels>) -> Size<Pixels> {
+    fn notes_size(
+        self,
+        top: Pixels,
+        header_height: Pixels,
+        bottom_inset: Pixels,
+        left_inset: Pixels,
+    ) -> Size<Pixels> {
         size(
-            (self.size.width - content_offset.x - ITEM_CARD_END_INSET).max(px(0.)),
-            (self.size.height
-                - content_offset.y
-                - header_height
-                - ITEM_HEADER_CONTENT_GAP
-                - ITEM_CARD_END_INSET)
+            (self.size.width - left_inset - ITEM_CARD_END_INSET).max(px(0.)),
+            (self.size.height - top - header_height - ITEM_HEADER_CONTENT_GAP - bottom_inset)
                 .max(px(0.)),
         )
     }
@@ -96,13 +102,27 @@ impl ItemCard {
         )
     }
 
-    fn render_more_action(&self, menu_enabled: bool, cx: &App) -> Option<AnyElement> {
+    fn render_more_action(
+        &self,
+        menu_enabled: bool,
+        pointer_inside: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         menu_enabled.then(|| {
             let item = self.item.clone();
             let item_id = item.id();
             let selection_scope = self.selection.as_ref().map(|order| order.scope);
             let schedule_navigation = self.schedule_navigation;
             let availability_store = self.projected_availability_store.clone();
+            let reveal = window.keyed_transition(
+                (self.element_id.clone(), "more-actions-reveal"),
+                cx,
+                transition::QUICK,
+                || 0.0,
+            );
+            reveal.set(if pointer_inside { 1.0 } else { 0.0 }, cx);
+            let opacity = reveal.animate(window, cx);
             Button::new((self.element_id.clone(), "more-actions"))
                 .tab_stop(self.tab_stop)
                 .ghost()
@@ -112,6 +132,8 @@ impl ItemCard {
                 .icon(AppIcon::Ellipsis)
                 .tooltip("More actions")
                 .text_color(cx.theme().colors.text_muted)
+                .opacity(opacity)
+                .focus(|style| style.opacity(1.0))
                 .when(self.presentation != CardPresentation::Preview, |button| {
                     button.block_mouse_except_scroll()
                 })
@@ -136,7 +158,8 @@ impl ItemCard {
 
     fn render_details_toggle(
         &self,
-        wide: bool,
+        in_footer: bool,
+        labelled: bool,
         notes_focus: Option<&FocusHandle>,
         window: &Window,
         cx: &mut App,
@@ -153,13 +176,17 @@ impl ItemCard {
                 .tab_stop(self.tab_stop)
                 .ghost()
                 .xsmall()
-                .compact()
+                .when_else(
+                    in_footer,
+                    |button| button.h(DETAILS_FOOTER_HEIGHT),
+                    |button| button.compact(),
+                )
                 .icon(if expanded {
                     AppIcon::ChevronUp
                 } else {
                     AppIcon::ChevronDown
                 })
-                .when(wide, |button| {
+                .when(labelled, |button| {
                     button.label(if expanded { "Show less" } else { "Show more" })
                 })
                 .tooltip(if expanded {
@@ -216,11 +243,14 @@ impl ItemCard {
             .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_content(
         &mut self,
         colors: ButtonColors,
         geometry: CardContentGeometry,
         menu_enabled: bool,
+        pointer_inside: bool,
+        compact_title: bool,
         notes_focus: Option<&FocusHandle>,
         window: &mut Window,
         cx: &mut App,
@@ -248,7 +278,7 @@ impl ItemCard {
         });
         let title = render_dynamic_title(
             &self.item,
-            self.compact,
+            compact_title,
             self.editable,
             self.title_scale,
             window,
@@ -256,15 +286,11 @@ impl ItemCard {
         )
         .into_any_element();
 
-        let more_action = self.render_more_action(menu_enabled && !narrow_details, cx);
-        let details_toggle = self.render_details_toggle(
-            !self.compact && geometry.size.width >= px(360.0),
-            notes_focus,
-            window,
-            cx,
-        );
+        let more_action =
+            self.render_more_action(menu_enabled && !narrow_details, pointer_inside, window, cx);
 
         if self.compact {
+            let details_toggle = self.render_details_toggle(false, false, notes_focus, window, cx);
             let completion = draft_picker.or_else(|| {
                 (!narrow_details || preview)
                     .then(|| self.completion_checkbox(cx))
@@ -475,45 +501,106 @@ impl ItemCard {
         } else {
             item_content(&self.item)
         };
-        let header_height = content_source.as_ref().map(|_| {
+        let open = self
+            .details
+            .as_ref()
+            .is_some_and(|details| details.is_open());
+        let expandable = self.details.is_some() && item_content(&self.item).is_some();
+        let top_aligned = !preview && self.list_position.is_none() && self.border;
+        let header_height = (content_source.is_some() || expandable).then(|| {
             window.use_keyed_state(
                 (self.element_id.clone(), "notes-header-height"),
                 cx,
                 |_, _| px(0.),
             )
         });
+        let measured_header = header_height
+            .as_ref()
+            .map_or(px(0.), |height| *height.read(cx));
+
+        let box_height = geometry.size.height;
+        let in_footer = expandable
+            && (open
+                || box_height <= px(0.)
+                || box_height >= self.content_offset.y + measured_header + DETAILS_FOOTER_EXTENT);
+        let bottom_inset = if in_footer {
+            DETAILS_FOOTER_EXTENT
+        } else {
+            ITEM_CARD_END_INSET
+        };
+        let held_top = self
+            .details
+            .as_ref()
+            .filter(|_| expandable && !top_aligned)
+            .and_then(ItemCardDetails::collapsed_top);
+        let open_top = held_top.unwrap_or(self.content_offset.y);
+        let top = if open {
+            open_top
+        } else {
+            self.content_offset.y
+        };
+        let labelled = if in_footer {
+            !narrow_details
+        } else {
+            geometry.size.width >= px(360.0)
+        };
+        let details_toggle =
+            self.render_details_toggle(in_footer, labelled, notes_focus, window, cx);
+
         let content_panel = content_source.and_then(|source| {
-            let header_height = header_height
-                .as_ref()
-                .map_or(px(0.), |height| *height.read(cx));
             render_item_card_notes(
                 self.element_id.clone(),
                 source,
-                geometry.notes_size(header_height, self.content_offset),
+                geometry.notes_size(top, measured_header, bottom_inset, self.content_offset.x),
                 self.details.clone(),
                 self.tab_stop,
                 self.inspector_action(),
-                header_height
-                    + px(6.0)
+                open_top
+                    + measured_header
                     + ITEM_HEADER_CONTENT_GAP
-                    + ITEM_CARD_END_INSET
+                    + if expandable {
+                        DETAILS_FOOTER_EXTENT
+                    } else {
+                        ITEM_CARD_END_INSET
+                    }
                     + ITEM_CARD_BORDER * 2.0,
                 window,
                 cx,
             )
-            .map(|notes| match notes_focus {
-                Some(focus) => div()
-                    .id((self.element_id.clone(), "notes-focus-scope"))
-                    .w_full()
-                    .flex_none()
-                    .track_focus(focus)
-                    .child(notes)
-                    .into_any_element(),
-                None => notes,
+            .map(|(notes, viewport_height)| {
+                let notes = match notes_focus {
+                    Some(focus) => div()
+                        .id((self.element_id.clone(), "notes-focus-scope"))
+                        .w_full()
+                        .flex_none()
+                        .track_focus(focus)
+                        .child(notes)
+                        .into_any_element(),
+                    None => notes,
+                };
+                (notes, viewport_height)
             })
         });
+        if let Some(details) = self.details.as_ref()
+            && expandable
+            && !top_aligned
+            && !open
+            && box_height > px(0.)
+        {
+            let panel = content_panel
+                .as_ref()
+                .map_or(px(0.), |(_, height)| ITEM_HEADER_CONTENT_GAP + *height);
+            let slack = box_height - top - bottom_inset - measured_header - panel;
+            details.record_collapsed_top(top + (slack / 2.).max(px(0.)));
+        }
+        let content_panel = content_panel.map(|(notes, _)| notes);
+        let (inline_toggle, footer_toggle) = if in_footer {
+            (None, details_toggle)
+        } else {
+            (details_toggle, None)
+        };
 
-        trailing.extend(details_toggle);
+        trailing.extend(inline_toggle);
         trailing.extend(more_action);
         let trailing_controls = (!trailing.is_empty()).then(|| {
             self.preview_controls(
@@ -526,7 +613,18 @@ impl ItemCard {
                 cx,
             )
         });
-        let top_aligned = !preview && self.list_position.is_none() && self.border;
+        let footer = footer_toggle.map(|toggle| {
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(DETAILS_FOOTER_INSET)
+                .h(DETAILS_FOOTER_HEIGHT)
+                .row()
+                .items_center()
+                .justify_center()
+                .child(self.preview_controls(toggle, window, cx))
+        });
         let header = div()
             .row()
             .w_full()
@@ -592,21 +690,18 @@ impl ItemCard {
             .w_full()
             .h_full()
             .when_else(
-                top_aligned
-                    || self
-                        .details
-                        .as_ref()
-                        .is_some_and(|details| details.is_open()),
+                top_aligned || open,
                 |this| this.justify_start(),
                 |this| this.justify_center(),
             )
             .gap(ITEM_HEADER_CONTENT_GAP)
             .pl(self.content_offset.x)
             .pr(ITEM_CARD_END_INSET)
-            .pt(self.content_offset.y)
-            .pb(ITEM_CARD_END_INSET)
+            .pt(top)
+            .pb(bottom_inset)
             .child(header)
             .children(content_panel)
+            .children(footer)
             .into_any_element()
     }
 }

@@ -386,8 +386,14 @@ impl TimelineView {
                 .members
                 .iter()
                 .map(|index| {
-                    self.bin_details
-                        .height(self.items[*index].item.id(), SIDEBAR_ITEM_HEIGHT)
+                    let item = &self.items[*index].item;
+                    self.bin_details.height(
+                        item.id(),
+                        crate::components::expandable_card_height(
+                            item.content().as_deref(),
+                            SIDEBAR_ITEM_HEIGHT,
+                        ),
+                    )
                 })
                 .sum::<Pixels>();
             let mut screen_bounds = collapsed;
@@ -664,7 +670,13 @@ impl TimelineView {
                     .draggable(true, None)
                     .w_full()
                     .max_w(MAX_ITEM_WIDTH)
-                    .h(self.bin_details.height(id, SIDEBAR_ITEM_HEIGHT))
+                    .h(self.bin_details.height(
+                        id,
+                        crate::components::expandable_card_height(
+                            entry.item.content().as_deref(),
+                            SIDEBAR_ITEM_HEIGHT,
+                        ),
+                    ))
                     .flex_none();
                     self.wire_timeline_item_card(card, &entry.item, cx)
                         .into_any_element()

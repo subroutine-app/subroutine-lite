@@ -123,6 +123,16 @@ pub(super) enum UpcomingDropTarget {
 enum UpcomingReveal {
     Item { id: Uuid, section: UpcomingSection },
     Day(NaiveDate),
+    Heading(UpcomingSection),
+}
+
+impl UpcomingReveal {
+    fn section(self) -> UpcomingSection {
+        match self {
+            Self::Item { section, .. } | Self::Heading(section) => section,
+            Self::Day(date) => UpcomingSection::Day(date),
+        }
+    }
 }
 
 pub struct UpcomingView {
@@ -150,6 +160,7 @@ pub struct UpcomingView {
 
     order: SelectionOrder,
     item_focus_handles: HashMap<Uuid, FocusHandle>,
+    heading_focus_handles: HashMap<UpcomingSection, FocusHandle>,
     drop_target: Option<UpcomingDropTarget>,
     dragged_items: Option<UpcomingDrag>,
     marquee: MarqueeSelection,
@@ -268,6 +279,7 @@ impl UpcomingView {
 
             order: SelectionOrder::new(SelectionScope::Upcoming, []),
             item_focus_handles: HashMap::new(),
+            heading_focus_handles: HashMap::new(),
             drop_target: None,
             dragged_items: None,
             marquee: MarqueeSelection::new(SelectionScope::Upcoming),
@@ -292,6 +304,7 @@ impl UpcomingView {
         self.marker_edit = None;
 
         self.item_focus_handles.clear();
+        self.heading_focus_handles.clear();
         self.marquee.end();
         self.clear_drop_target(cx);
         self.scroll_handle = VirtualListScrollHandle::new();
@@ -460,6 +473,20 @@ impl UpcomingView {
                 .entry(id)
                 .or_insert_with(|| cx.focus_handle());
         }
+        let headings: HashSet<UpcomingSection> = self
+            .agenda
+            .rows
+            .iter()
+            .filter(|row| row.is_heading())
+            .map(UpcomingRow::section)
+            .collect();
+        self.heading_focus_handles
+            .retain(|section, _| headings.contains(section));
+        for section in headings {
+            self.heading_focus_handles
+                .entry(section)
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
         self.update_layout();
     }
 
@@ -517,6 +544,7 @@ impl UpcomingView {
                 (section, ScrollStrategy::Center)
             }
             UpcomingReveal::Day(date) => (UpcomingSection::Day(date), ScrollStrategy::Top),
+            UpcomingReveal::Heading(section) => (section, ScrollStrategy::Nearest),
         };
         self.layout
             .rows
@@ -614,13 +642,8 @@ impl UpcomingView {
             });
             self.marker_edit
                 .take_if(|(_, date)| !stays_visible(UpcomingSection::Day(*date)));
-            self.reveal.take_if(|target| {
-                let section = match target {
-                    UpcomingReveal::Item { section, .. } => *section,
-                    UpcomingReveal::Day(date) => UpcomingSection::Day(*date),
-                };
-                !stays_visible(section)
-            });
+            self.reveal
+                .take_if(|target| !stays_visible(target.section()));
         }
         self.show_marker_only_dates = !self.show_marker_only_dates;
         self.hovered_section = None;
@@ -676,13 +699,8 @@ impl UpcomingView {
             }
         });
         self.active_draft.take_if(|id| hidden.contains(id));
-        self.reveal.take_if(|target| {
-            let section = match target {
-                UpcomingReveal::Item { section, .. } => *section,
-                UpcomingReveal::Day(date) => UpcomingSection::Day(*date),
-            };
-            sections.contains(&section)
-        });
+        self.reveal
+            .take_if(|target| sections.contains(&target.section()));
         self.clear_drop_target(cx);
         true
     }

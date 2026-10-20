@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use chrono::{Datelike, NaiveDate};
 use gpui::{
@@ -49,12 +49,12 @@ struct MarkerGeometry {
 }
 
 #[derive(Default)]
-pub(super) struct MarkerLanes {
-    positions: HashMap<Uuid, usize>,
+pub(super) struct MarkerReveal {
+    revealed: Option<Uuid>,
     geometry: HashMap<Uuid, MarkerGeometry>,
 }
 
-impl MarkerLanes {
+impl MarkerReveal {
     fn reconcile(&mut self, entries: &[(Marker, bool)]) {
         let geometry = entries
             .iter()
@@ -74,23 +74,12 @@ impl MarkerLanes {
         // Scrolling changes projected occurrences, not their stored sources.
         if self.geometry != geometry {
             self.geometry = geometry;
-            self.positions.clear();
+            self.revealed = None;
         }
     }
 
-    pub(super) fn lane(&self, id: Uuid) -> Option<usize> {
-        self.positions.get(&id).copied()
-    }
-
-    pub(super) fn promote(&mut self, id: Uuid) {
-        let Some(lane) = self.lane(id) else { return };
-        for current in self.positions.values_mut() {
-            if *current == lane {
-                *current = 0;
-            } else if *current == 0 {
-                *current = lane;
-            }
-        }
+    pub(super) fn reveal(&mut self, id: Uuid) {
+        self.revealed = Some(id);
     }
 }
 const END_INSET: Pixels = px(4.);
@@ -98,127 +87,173 @@ const END_INSET: Pixels = px(4.);
 pub(super) struct CalendarMarker {
     pub marker: Marker,
     pub projected: bool,
+}
+
+impl CalendarMarker {
+    fn last_date(&self) -> NaiveDate {
+        self.marker
+            .end_date
+            .unwrap_or(self.marker.date)
+            .max(self.marker.date)
+    }
+
+    fn day_count(&self) -> i64 {
+        (self.last_date() - self.marker.date).num_days() + 1
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PlacedSpan {
+    entry: usize,
+    dates: InclusiveDateRange,
     lane: usize,
 }
 
 pub(super) struct MarkerLayout {
     markers: Vec<CalendarMarker>,
+    weeks: HashMap<NaiveDate, Vec<PlacedSpan>>,
 }
 
 pub(super) struct MarkerSpan<'a> {
     entry: &'a CalendarMarker,
     dates: InclusiveDateRange,
-}
-
-#[derive(Default)]
-struct LaneOccupancy(HashMap<usize, BTreeMap<NaiveDate, NaiveDate>>);
-
-impl LaneOccupancy {
-    fn reserve(&mut self, lane: usize, marker: &Marker) -> bool {
-        let dates = self.0.entry(lane).or_default();
-        let end = marker.end_date.unwrap_or(marker.date).max(marker.date);
-        // Reserved intervals are disjoint; only the last start before this end can overlap.
-        if dates
-            .range(..=end)
-            .next_back()
-            .is_some_and(|(_, other_end)| *other_end >= marker.date)
-        {
-            return false;
-        }
-        dates.insert(marker.date, end);
-        true
-    }
+    lane: usize,
 }
 
 impl MarkerSpan<'_> {
     pub(super) fn is_visible(&self, capacity: usize) -> bool {
-        self.entry.lane < capacity
+        self.lane < capacity
     }
 }
 
+fn week_start(date: NaiveDate) -> NaiveDate {
+    date - chrono::Duration::days(i64::from(date.weekday().num_days_from_sunday()))
+}
+
 impl MarkerLayout {
-    pub(super) fn promote(&mut self, id: Uuid, cache: &mut MarkerLanes) {
-        cache.promote(id);
-        for entry in &mut self.markers {
-            entry.lane = cache.positions[&entry.marker.id];
-        }
-    }
-
-    pub(super) fn hidden_on(&self, date: NaiveDate, capacity: usize) -> Vec<Marker> {
-        self.markers
-            .iter()
-            .filter(|entry| entry.lane >= capacity && entry.marker.covers(date))
-            .map(|entry| entry.marker.clone())
-            .collect()
-    }
-
     pub(super) fn new(
         entries: impl IntoIterator<Item = (Marker, bool)>,
-        cache: &mut MarkerLanes,
+        first_week: NaiveDate,
+        weeks: usize,
+        pinned: &[Uuid],
+        reveal: &mut MarkerReveal,
     ) -> Self {
-        let mut entries: Vec<_> = entries.into_iter().collect();
-        cache.reconcile(&entries);
-        entries.sort_by_key(|(marker, projected)| {
-            (
-                marker.date,
-                std::cmp::Reverse(marker.end_date.unwrap_or(marker.date)),
-                *projected,
-                marker.id,
-            )
-        });
-        let mut lanes = LaneOccupancy::default();
-        let mut markers = Vec::new();
-        let mut pending = Vec::new();
+        let entries: Vec<_> = entries.into_iter().collect();
+        reveal.reconcile(&entries);
         let mut seen = HashSet::new();
-        for (marker, projected) in entries {
-            if !seen.insert(marker.id) {
-                continue;
-            }
-            if let Some(lane) = cache
-                .lane(marker.id)
-                .filter(|lane| lanes.reserve(*lane, &marker))
-            {
-                markers.push(CalendarMarker {
-                    marker,
-                    projected,
-                    lane,
-                });
+        let markers: Vec<_> = entries
+            .into_iter()
+            .filter(|(marker, _)| seen.insert(marker.id))
+            .map(|(marker, projected)| CalendarMarker { marker, projected })
+            .collect();
+        let rank = |entry: &CalendarMarker| {
+            if pinned.contains(&entry.marker.id) {
+                0
+            } else if reveal.revealed == Some(entry.marker.id) {
+                1
             } else {
-                pending.push((marker, projected));
+                2
             }
-        }
-        for (marker, projected) in pending {
-            let mut lane = 0;
-            while !lanes.reserve(lane, &marker) {
-                lane += 1;
-            }
-            markers.push(CalendarMarker {
-                marker,
-                projected,
-                lane,
+        };
+
+        let mut layout = HashMap::new();
+        for week in 0..weeks {
+            let start = first_week + chrono::Duration::weeks(week as i64);
+            let end = start + chrono::Duration::days(6);
+            let mut candidates: Vec<_> = markers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    let first = entry.marker.date.max(start);
+                    let last = entry.last_date().min(end);
+                    (first <= last).then(|| (index, InclusiveDateRange::new(first, last)))
+                })
+                .collect();
+            candidates.sort_by_key(|(index, _)| {
+                let entry = &markers[*index];
+                (
+                    rank(entry),
+                    std::cmp::Reverse(entry.day_count()),
+                    entry.marker.date,
+                    entry.projected,
+                    entry.marker.id,
+                )
             });
+            let mut rows: Vec<u8> = Vec::new();
+            let spans = candidates
+                .into_iter()
+                .map(|(entry, dates)| {
+                    let days = (dates.start() - start).num_days() as u32
+                        ..=(dates.end() - start).num_days() as u32;
+                    let mask = days.fold(0u8, |mask, day| mask | 1 << day);
+                    let lane = rows
+                        .iter()
+                        .position(|row| row & mask == 0)
+                        .unwrap_or_else(|| {
+                            rows.push(0);
+                            rows.len() - 1
+                        });
+                    rows[lane] |= mask;
+                    PlacedSpan { entry, dates, lane }
+                })
+                .collect();
+            layout.insert(start, spans);
         }
-        markers.sort_by_key(|entry| (entry.lane, entry.marker.date, entry.marker.id));
-        cache.positions.retain(|id, _| seen.contains(id));
-        cache
-            .positions
-            .extend(markers.iter().map(|entry| (entry.marker.id, entry.lane)));
-        Self { markers }
+        Self {
+            markers,
+            weeks: layout,
+        }
+    }
+
+    fn spans_on(&self, date: NaiveDate) -> impl Iterator<Item = &PlacedSpan> {
+        self.weeks
+            .get(&week_start(date))
+            .into_iter()
+            .flatten()
+            .filter(move |span| span.dates.contains(date))
     }
 
     pub(super) fn week(&self, start: NaiveDate) -> Vec<MarkerSpan<'_>> {
-        let end = start + chrono::Duration::days(6);
-        self.markers
-            .iter()
-            .filter_map(|entry| {
-                let first = entry.marker.date.max(start);
-                let last = entry.marker.end_date.unwrap_or(entry.marker.date).min(end);
-                (first <= last).then(|| MarkerSpan {
-                    entry,
-                    dates: InclusiveDateRange::new(first, last),
-                })
+        self.weeks
+            .get(&start)
+            .into_iter()
+            .flatten()
+            .map(|span| MarkerSpan {
+                entry: &self.markers[span.entry],
+                dates: span.dates,
+                lane: span.lane,
             })
             .collect()
+    }
+
+    pub(super) fn hidden_on(&self, date: NaiveDate, capacity: usize) -> Vec<Marker> {
+        self.spans_on(date)
+            .filter(|span| span.lane >= capacity)
+            .map(|span| self.markers[span.entry].marker.clone())
+            .collect()
+    }
+
+    pub(super) fn visible_lanes_on(&self, date: NaiveDate, capacity: usize) -> usize {
+        self.spans_on(date)
+            .filter(|span| span.lane < capacity)
+            .map(|span| span.lane + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub(super) fn lane_on(&self, id: Uuid, date: NaiveDate) -> Option<usize> {
+        self.weeks
+            .get(&week_start(date))?
+            .iter()
+            .find(|span| self.markers[span.entry].marker.id == id)
+            .map(|span| span.lane)
+    }
+
+    pub(super) fn is_hidden_anywhere(&self, id: Uuid, capacity: usize) -> bool {
+        self.weeks
+            .values()
+            .flatten()
+            .any(|span| span.lane >= capacity && self.markers[span.entry].marker.id == id)
     }
 
     pub(super) fn order(&self, start: NaiveDate, end: NaiveDate, cx: &App) -> SelectionOrder {
@@ -230,23 +265,19 @@ impl MarkerLayout {
                 !entry.projected
                     && !manager.read(cx).is_draft(entry.marker.id)
                     && entry.marker.date < end
-                    && entry.marker.end_date.unwrap_or(entry.marker.date) >= start
+                    && entry.last_date() >= start
+            })
+            .map(|entry| {
+                let first = entry.marker.date.max(start);
+                let lane = self.lane_on(entry.marker.id, first).unwrap_or(0);
+                (entry.marker.date, lane, entry.marker.id)
             })
             .collect();
-        entries.sort_by_key(|entry| (entry.marker.date, entry.lane, entry.marker.id));
+        entries.sort();
         SelectionOrder::new(
             SelectionScope::Calendar,
-            entries.into_iter().map(|entry| entry.marker.id),
+            entries.into_iter().map(|(_, _, id)| id),
         )
-    }
-
-    pub(super) fn visible_lanes_on(&self, date: NaiveDate, capacity: usize) -> usize {
-        self.markers
-            .iter()
-            .filter(|entry| entry.lane < capacity && entry.marker.covers(date))
-            .map(|entry| entry.lane + 1)
-            .max()
-            .unwrap_or(0)
     }
 }
 
@@ -385,7 +416,7 @@ impl CalendarView {
         };
         div()
             .absolute()
-            .top(top + MARKER_PITCH * span.entry.lane as f32)
+            .top(top + MARKER_PITCH * span.lane as f32)
             .left(relative(first.weekday().num_days_from_sunday() as f32 / 7.))
             .right(relative(
                 (6 - last.weekday().num_days_from_sunday()) as f32 / 7.,
@@ -504,7 +535,7 @@ impl CalendarView {
                     let view = cx.entity();
                     menu = menu.item(marker.title.clone(), move |_, cx| {
                         view.update(cx, |view, cx| {
-                            view.marker_lanes.promote(id);
+                            view.marker_reveal.reveal(id);
                             cx.notify();
                         });
                     });
@@ -522,13 +553,37 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 10, day).unwrap()
     }
 
-    fn lane(layout: &MarkerLayout, id: Uuid) -> usize {
-        layout
-            .markers
-            .iter()
-            .find(|entry| entry.marker.id == id)
-            .unwrap()
-            .lane
+    fn layout(
+        entries: &[(Marker, bool)],
+        pinned: &[Uuid],
+        reveal: &mut MarkerReveal,
+    ) -> MarkerLayout {
+        MarkerLayout::new(entries.to_vec(), date(4), 3, pinned, reveal)
+    }
+
+    fn single(title: &str, day: u32) -> (Marker, bool) {
+        (Marker::new(title, date(day)), false)
+    }
+
+    fn span(title: &str, first: u32, last: u32) -> (Marker, bool) {
+        (
+            Marker::new(title, date(first)).with_end_date(date(last)),
+            false,
+        )
+    }
+
+    fn assert_no_overlap(layout: &MarkerLayout) {
+        for spans in layout.weeks.values() {
+            for (index, span) in spans.iter().enumerate() {
+                for other in &spans[index + 1..] {
+                    assert!(
+                        span.lane != other.lane
+                            || span.dates.end() < other.dates.start()
+                            || other.dates.end() < span.dates.start()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -547,59 +602,94 @@ mod tests {
     }
 
     #[test]
-    fn fixed_capacity_collapses_markers_and_can_reveal_a_hidden_one() {
-        let entries: Vec<_> = (0..5)
-            .map(|index| {
-                (
-                    Marker::new(format!("Marker {index}"), date(11)).with_end_date(date(15)),
-                    false,
-                )
-            })
+    fn crowded_single_days_never_hide_a_multi_day_marker() {
+        let trip = span("Trip", 12, 16);
+        let mut entries: Vec<_> = (0..5)
+            .map(|index| single(&format!("Day {index}"), 14))
             .collect();
-        let mut cache = MarkerLanes::default();
-        let mut layout = MarkerLayout::new(entries, &mut cache);
-        let capacity = marker_capacity(px(29.));
-        assert_eq!(capacity, 1);
-        assert_eq!(marker_capacity(px(99.)), 3);
-        assert_eq!(marker_capacity(px(0.)), 0);
-        assert_eq!(
-            layout
-                .week(date(11))
-                .iter()
-                .filter(|span| span.is_visible(capacity))
-                .count(),
-            1
-        );
-        assert_eq!(layout.hidden_on(date(13), capacity).len(), 4);
-        let hidden = layout.hidden_on(date(13), capacity)[0].id;
-        layout.promote(hidden, &mut cache);
-        assert_eq!(lane(&layout, hidden), 0);
-        assert_eq!(layout.hidden_on(date(13), capacity).len(), 4);
-        assert_eq!(layout.visible_lanes_on(date(13), capacity), 1);
-        assert_no_overlap(&layout);
-        for span in layout.week(date(11)) {
-            assert_eq!(span.dates, InclusiveDateRange::new(date(11), date(15)));
+        entries.push(trip.clone());
+        let layout = layout(&entries, &[], &mut MarkerReveal::default());
+        let capacity = 2;
+        for day in 12..=16 {
+            assert_eq!(layout.lane_on(trip.0.id, date(day)), Some(0));
         }
+        assert_eq!(layout.visible_lanes_on(date(12), capacity), 1);
+        assert_eq!(layout.visible_lanes_on(date(14), capacity), 2);
+        let hidden = layout.hidden_on(date(14), capacity);
+        assert_eq!(hidden.len(), 4);
+        assert!(hidden.iter().all(|marker| marker.id != trip.0.id));
+        assert!(layout.hidden_on(date(12), capacity).is_empty());
+        assert_no_overlap(&layout);
     }
 
-    fn assert_no_overlap(layout: &MarkerLayout) {
-        for (index, entry) in layout.markers.iter().enumerate() {
-            for other in &layout.markers[index + 1..] {
-                if entry.lane == other.lane {
-                    assert!(
-                        entry.marker.end_date.unwrap_or(entry.marker.date) < other.marker.date
-                            || other.marker.end_date.unwrap_or(other.marker.date)
-                                < entry.marker.date
-                    );
-                }
-            }
-        }
+    #[test]
+    fn rows_are_packed_independently_in_each_week() {
+        let long = span("Long", 5, 10);
+        let crossing = span("Crossing", 9, 13);
+        let layout = layout(&[crossing.clone(), long], &[], &mut MarkerReveal::default());
+        assert_eq!(layout.lane_on(crossing.0.id, date(9)), Some(1));
+        assert_eq!(layout.lane_on(crossing.0.id, date(12)), Some(0));
+        assert_eq!(layout.visible_lanes_on(date(12), 3), 1);
+        assert_no_overlap(&layout);
+    }
+
+    #[test]
+    fn revealing_lifts_a_marker_only_in_its_own_week() {
+        let mut entries: Vec<_> = (0..5)
+            .map(|index| span(&format!("Marker {index}"), 11, 15))
+            .collect();
+        let elsewhere = span("Elsewhere", 19, 21);
+        entries.push(elsewhere.clone());
+        let mut reveal = MarkerReveal::default();
+        let capacity = 1;
+        let hidden = layout(&entries, &[], &mut reveal).hidden_on(date(13), capacity)[0].id;
+
+        reveal.reveal(hidden);
+        let revealed = layout(&entries, &[], &mut reveal);
+        assert_eq!(revealed.lane_on(hidden, date(13)), Some(0));
+        assert_eq!(revealed.hidden_on(date(13), capacity).len(), 4);
+        assert_eq!(revealed.lane_on(elsewhere.0.id, date(20)), Some(0));
+        assert_no_overlap(&revealed);
+
+        let extended = entries
+            .iter()
+            .position(|(marker, _)| marker.id != hidden && marker.id != elsewhere.0.id)
+            .unwrap();
+        entries[extended].0 = entries[extended].0.clone().with_end_date(date(17));
+        let changed = layout(&entries, &[], &mut reveal);
+        assert_eq!(changed.lane_on(entries[extended].0.id, date(13)), Some(0));
+        assert!(changed.is_hidden_anywhere(hidden, capacity));
+    }
+
+    #[test]
+    fn pinned_markers_lead_their_weeks() {
+        let short = single("Editing", 14);
+        let long = span("Long", 12, 16);
+        let unpinned = layout(
+            &[short.clone(), long.clone()],
+            &[],
+            &mut MarkerReveal::default(),
+        );
+        assert!(unpinned.is_hidden_anywhere(short.0.id, 1));
+
+        let pinned = layout(
+            &[short.clone(), long.clone()],
+            &[short.0.id],
+            &mut MarkerReveal::default(),
+        );
+        assert_eq!(pinned.lane_on(short.0.id, date(14)), Some(0));
+        assert_eq!(pinned.lane_on(long.0.id, date(14)), Some(1));
+        assert!(!pinned.is_hidden_anywhere(short.0.id, 1));
     }
 
     #[test]
     fn drag_regions_register_the_pressed_day_across_week_boundaries() {
         let marker = Marker::new("Trip", date(10)).with_end_date(date(13));
-        let layout = MarkerLayout::new([(marker.clone(), false)], &mut MarkerLanes::default());
+        let layout = layout(
+            &[(marker.clone(), false)],
+            &[],
+            &mut MarkerReveal::default(),
+        );
         let first = marker_drag_regions(layout.week(date(4))[0].dates, px(100.), END_INSET, px(0.));
         assert_eq!(
             (first[0].date, first[0].left, first[0].width),
@@ -646,130 +736,23 @@ mod tests {
     }
 
     #[test]
-    fn surviving_markers_keep_lanes_when_projections_change() {
-        let projected = Marker::new("Occurrence", date(5)).with_end_date(date(6));
-        let marker = Marker::new("Long marker", date(6)).with_end_date(date(20));
-        let next = Marker::new("Next occurrence", date(12)).with_end_date(date(13));
-        let mut cache = MarkerLanes::default();
-        let first = MarkerLayout::new(
-            [(projected.clone(), true), (marker.clone(), false)],
-            &mut cache,
-        );
-        assert_eq!(lane(&first, marker.id), 1);
-
-        let scrolled =
-            MarkerLayout::new([(marker.clone(), false), (next.clone(), true)], &mut cache);
-        assert_eq!(lane(&scrolled, marker.id), lane(&first, marker.id));
-        assert_eq!(lane(&scrolled, next.id), 0);
-        assert!(cache.lane(projected.id).is_none());
-        assert_no_overlap(&scrolled);
-
-        let returned = MarkerLayout::new(
-            [
-                (next.clone(), true),
-                (projected, true),
-                (marker.clone(), false),
-            ],
-            &mut cache,
-        );
-        assert_eq!(lane(&returned, marker.id), lane(&first, marker.id));
-        assert_eq!(lane(&returned, next.id), lane(&scrolled, next.id));
-        assert_no_overlap(&returned);
-    }
-
-    #[test]
-    fn hidden_markers_reappear_after_resize_move_deletion_and_undo() {
-        let blocker = Marker::new("Blocker", date(11)).with_end_date(date(17));
-        let hidden = Marker::new("Hidden", date(12)).with_end_date(date(13));
-        let mut cache = MarkerLanes::default();
-        let original = [(blocker.clone(), false), (hidden.clone(), false)];
-        let initial = MarkerLayout::new(original.clone(), &mut cache);
-        assert_eq!(initial.hidden_on(date(12), 1)[0].id, hidden.id);
-
-        let resized = blocker.clone().with_end_date(date(11));
-        let moved = blocker.clone().with_date(date(20)).with_end_date(date(26));
-        for changed in [
-            vec![(resized, false), (hidden.clone(), false)],
-            vec![(moved, false), (hidden.clone(), false)],
-            vec![(hidden.clone(), false)],
-        ] {
-            let layout = MarkerLayout::new(changed, &mut cache);
-            assert_eq!(lane(&layout, hidden.id), 0);
-            assert!(layout.hidden_on(date(12), 1).is_empty());
-            assert_no_overlap(&layout);
-
-            let restored = MarkerLayout::new(original.clone(), &mut cache);
-            assert_eq!(restored.hidden_on(date(12), 1)[0].id, hidden.id);
-            assert_no_overlap(&restored);
-        }
-    }
-
-    #[test]
-    fn title_changes_preserve_manual_reveal_but_cancelled_drafts_release_lanes() {
-        let a = Marker::new("A", date(11)).with_end_date(date(17));
-        let mut b = Marker::new("B", date(12));
-        let mut cache = MarkerLanes::default();
-        let mut layout = MarkerLayout::new([(a.clone(), false), (b.clone(), false)], &mut cache);
-        layout.promote(b.id, &mut cache);
-        b.title = "Renamed".into();
-        let renamed = MarkerLayout::new([(a, false), (b.clone(), false)], &mut cache);
-        assert_eq!(lane(&renamed, b.id), 0);
-
-        let draft = Marker::new("", date(10)).with_end_date(date(16));
-        let drafting = MarkerLayout::new([(draft.clone(), false), (b.clone(), false)], &mut cache);
-        assert_eq!(drafting.hidden_on(date(12), 1)[0].id, b.id);
-        let cancelled = MarkerLayout::new([(b.clone(), false)], &mut cache);
-        assert_eq!(lane(&cancelled, b.id), 0);
-        assert!(cancelled.hidden_on(date(12), 1).is_empty());
-        assert!(cache.lane(draft.id).is_none());
-    }
-
-    #[test]
-    fn geometry_changes_repack_lanes_without_overlaps() {
-        let a = Marker::new("A", date(5)).with_end_date(date(6));
-        let b = Marker::new("B", date(8)).with_end_date(date(9));
-        let c = Marker::new("C", date(6)).with_end_date(date(8));
-        let mut cache = MarkerLanes::default();
-        let first = MarkerLayout::new(
-            [(a.clone(), false), (b.clone(), false), (c.clone(), false)],
-            &mut cache,
-        );
-        assert_eq!(
-            (lane(&first, a.id), lane(&first, b.id), lane(&first, c.id)),
-            (0, 0, 1)
-        );
-        assert_no_overlap(&first);
-
-        let a = a.with_end_date(date(10));
-        let changed = MarkerLayout::new(
-            [(a.clone(), false), (b.clone(), false), (c.clone(), false)],
-            &mut cache,
-        );
-        assert_eq!(
+    fn mixed_markers_never_overlap() {
+        let entries = [
+            span("A", 5, 6),
+            span("B", 8, 9),
+            span("C", 6, 8),
+            span("D", 4, 12),
+            single("E", 7),
+            span("F", 10, 19),
             (
-                lane(&changed, a.id),
-                lane(&changed, b.id),
-                lane(&changed, c.id)
+                Marker::new("Projected", date(7)).with_end_date(date(8)),
+                true,
             ),
-            (0, 2, 1)
-        );
-        assert_no_overlap(&changed);
-
-        let added = Marker::new("Earlier new marker", date(4)).with_end_date(date(12));
-        let with_new = MarkerLayout::new(
-            [
-                (added.clone(), false),
-                (c.clone(), false),
-                (b.clone(), false),
-                (a.clone(), false),
-            ],
-            &mut cache,
-        );
-        assert_eq!(lane(&with_new, added.id), 0);
-        assert_eq!(lane(&with_new, a.id), 1);
-        assert_eq!(lane(&with_new, c.id), 2);
-        assert_eq!(lane(&with_new, b.id), 3);
-        assert_no_overlap(&with_new);
+        ];
+        let layout = layout(&entries, &[], &mut MarkerReveal::default());
+        assert_eq!(layout.lane_on(entries[5].0.id, date(10)), Some(0));
+        assert_eq!(layout.lane_on(entries[3].0.id, date(7)), Some(1));
+        assert_no_overlap(&layout);
     }
 
     #[test]
@@ -777,7 +760,10 @@ mod tests {
         let marker = Marker::new("Trip", date(9)).with_end_date(date(19));
         let layout = MarkerLayout::new(
             [(marker.clone(), false), (marker.clone(), false)],
-            &mut MarkerLanes::default(),
+            date(4),
+            4,
+            &[],
+            &mut MarkerReveal::default(),
         );
         for (week, first, last) in [(4, 9, 10), (11, 11, 17), (18, 18, 19)] {
             let spans = layout.week(date(week));
@@ -787,7 +773,7 @@ mod tests {
                 InclusiveDateRange::new(date(first), date(last))
             );
             assert_eq!(spans[0].entry.marker.date, marker.date);
-            assert_eq!(spans[0].entry.lane, 0);
+            assert_eq!(spans[0].lane, 0);
         }
         assert!(layout.week(date(25)).is_empty());
     }

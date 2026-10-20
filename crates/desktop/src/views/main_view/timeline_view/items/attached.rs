@@ -569,7 +569,7 @@ impl TimelineView {
             .details(self.item_details.get(item_id))
             .compact(item_w < MIN_ITEM_WIDTH)
             .title_only(item_title_only(&item, card_height))
-            .large_title(!details_open && uses_large_item_title(card_height, item_w))
+            .large_title(uses_large_item_title(card_height, item_w))
             .with_focus_handle(item_focus_handle)
             .next_focus(next_focus)
             .selectable(order)

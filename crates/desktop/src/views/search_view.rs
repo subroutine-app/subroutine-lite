@@ -732,7 +732,15 @@ impl DynamicListDelegate for SearchDelegate {
 
     fn item_height(&self, ix: usize, _cx: &App) -> Pixels {
         self.results.get(ix).map_or(RESULT_HEIGHT, |entry| {
-            self.cards.height(entry.id(), RESULT_HEIGHT)
+            let notes = match entry {
+                SourceEntry::Live(item) => item.content(),
+                SourceEntry::SavedAction(template) => template.content.clone(),
+                SourceEntry::SavedEvent(template) => template.content.clone(),
+            };
+            self.cards.height(
+                entry.id(),
+                crate::components::expandable_card_height(notes.as_deref(), RESULT_HEIGHT),
+            )
         })
     }
 

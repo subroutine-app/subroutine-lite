@@ -50,6 +50,20 @@ pub(super) fn init(cx: &mut App) {
 pub const DEFAULT_ITEM_HEIGHT: Pixels = px(16. * 4.);
 pub const DEFAULT_ITEM_WIDTH: Pixels = px(64. * 4.);
 
+const DETAILS_FOOTER_HEIGHT_PX: f32 = 20.;
+const DETAILS_FOOTER_INSET_PX: f32 = 2.;
+const DETAILS_FOOTER_HEIGHT: Pixels = px(DETAILS_FOOTER_HEIGHT_PX);
+const DETAILS_FOOTER_INSET: Pixels = px(DETAILS_FOOTER_INSET_PX);
+const DETAILS_FOOTER_EXTENT: Pixels = px(DETAILS_FOOTER_HEIGHT_PX + DETAILS_FOOTER_INSET_PX);
+
+pub fn expandable_card_height(notes: Option<&str>, collapsed: Pixels) -> Pixels {
+    if notes.is_some_and(|notes| !notes.trim().is_empty()) {
+        collapsed + DETAILS_FOOTER_EXTENT
+    } else {
+        collapsed
+    }
+}
+
 type ItemCardClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 fn neutral_card_colors(theme: &Theme) -> ButtonColors {

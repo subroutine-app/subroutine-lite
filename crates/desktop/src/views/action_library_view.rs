@@ -260,7 +260,10 @@ impl DynamicListDelegate for ActionLibraryDelegate {
 
     fn item_height(&self, ix: usize, _cx: &App) -> Pixels {
         self.items.get(ix).map_or(ITEM_HEIGHT, |action| {
-            self.cards.height(action.id, ITEM_HEIGHT)
+            self.cards.height(
+                action.id,
+                crate::components::expandable_card_height(action.content.as_deref(), ITEM_HEIGHT),
+            )
         })
     }
 

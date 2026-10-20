@@ -167,6 +167,14 @@ pub(super) fn init(cx: &mut App) {
         key("shift-right", ExtendDateSelectionRight, idle),
         key("shift-up", ExtendDateSelectionUp, idle),
         key("shift-down", ExtendDateSelectionDown, idle),
+        key("h", MoveDateSelectionLeft, idle),
+        key("l", MoveDateSelectionRight, idle),
+        key("k", MoveDateSelectionUp, idle),
+        key("j", MoveDateSelectionDown, idle),
+        key("shift-h", ExtendDateSelectionLeft, idle),
+        key("shift-l", ExtendDateSelectionRight, idle),
+        key("shift-k", ExtendDateSelectionUp, idle),
+        key("shift-j", ExtendDateSelectionDown, idle),
     ]);
 }
 
@@ -357,7 +365,7 @@ pub struct CalendarView {
     items: Vec<AnyItem>,
 
     markers: Vec<Marker>,
-    marker_lanes: markers::MarkerLanes,
+    marker_reveal: markers::MarkerReveal,
     marker_resize: Option<marker_resize::MarkerResize>,
     signals: Vec<Signal>,
     current_date: NaiveDate,
@@ -517,7 +525,7 @@ impl CalendarView {
             items: Vec::new(),
 
             markers: Vec::new(),
-            marker_lanes: markers::MarkerLanes::default(),
+            marker_reveal: markers::MarkerReveal::default(),
             marker_resize: None,
             signals: Vec::new(),
             current_date: now.date_naive(),
@@ -1294,7 +1302,12 @@ impl CalendarView {
         cx.notify();
     }
 
-    fn reveal_grid_marker_edit(&mut self, content_top: Pixels, cx: &mut Context<Self>) {
+    fn reveal_grid_marker_edit(
+        &mut self,
+        content_top: Pixels,
+        markers: &markers::MarkerLayout,
+        cx: &mut Context<Self>,
+    ) {
         let manager = ItemManager::global(cx);
         let marker =
             manager
@@ -1313,7 +1326,7 @@ impl CalendarView {
         let (Some((id, date)), Some(bounds)) = (marker, self.bounds) else {
             return;
         };
-        let lane = self.marker_lanes.lane(id).unwrap_or(0);
+        let lane = markers.lane_on(id, date).unwrap_or(0);
         let current = self.scroll_target.unwrap_or_else(|| self.scroll_weeks());
         let top = self.week_to_offset(date.week(Weekday::Sun))
             + self.week_height * current

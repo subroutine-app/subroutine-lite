@@ -70,6 +70,7 @@ struct DetailsState {
     expanded: bool,
     expansion: Transition<f32>,
     height: Option<Transition<Pixels>>,
+    collapsed_top: Option<Pixels>,
     last_frame: Option<Instant>,
 }
 
@@ -79,6 +80,7 @@ impl Default for DetailsState {
             expanded: false,
             expansion: Transition::new(0.0, transition::QUICK),
             height: None,
+            collapsed_top: None,
             last_frame: None,
         }
     }
@@ -120,6 +122,14 @@ impl ItemCardDetails {
 
     pub(crate) fn progress(&self) -> f32 {
         self.0.borrow().progress()
+    }
+
+    pub(super) fn collapsed_top(&self) -> Option<Pixels> {
+        self.0.borrow().collapsed_top
+    }
+
+    pub(super) fn record_collapsed_top(&self, top: Pixels) {
+        self.0.borrow_mut().collapsed_top = Some(top);
     }
 
     pub(super) fn toggle(

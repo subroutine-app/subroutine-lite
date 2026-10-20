@@ -1,9 +1,10 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    App, Bounds, Corners, Edges, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyContext,
-    MouseButton, ParentElement, PathBuilder, Pixels, RenderOnce, StatefulInteractiveElement,
-    Styled, Window, canvas, div, point, prelude::FluentBuilder, px,
+    App, Bounds, Corners, DispatchPhase, Edges, EntityId, FocusHandle, HitboxBehavior, Hsla,
+    InteractiveElement, IntoElement, KeyContext, MouseButton, MouseExitEvent, MouseMoveEvent,
+    ParentElement, PathBuilder, Pixels, RenderOnce, StatefulInteractiveElement, Styled, Window,
+    canvas, div, point, prelude::FluentBuilder, px,
 };
 
 use gpui_kit::foundation::FocusRing as _;
@@ -124,6 +125,40 @@ fn item_card_key_context(navigation_context: Option<&'static str>, actionable: b
         context.add(ITEM_CARD_KEY_CONTEXT);
     }
     context
+}
+
+fn pointer_presence(inside: Rc<Cell<bool>>, owner: EntityId) -> impl IntoElement {
+    canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            let update = {
+                let inside = Rc::clone(&inside);
+                move |now: bool, cx: &mut App| {
+                    if inside.replace(now) != now {
+                        cx.notify(owner);
+                    }
+                }
+            };
+            let now = hitbox.should_handle_scroll(window);
+            if inside.get() != now {
+                let update = update.clone();
+                window.on_next_frame(move |_, cx| update(now, cx));
+            }
+            let moved = update.clone();
+            window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
+                if phase == DispatchPhase::Bubble {
+                    moved(hitbox.should_handle_scroll(window), cx);
+                }
+            });
+            window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                if phase == DispatchPhase::Bubble {
+                    update(false, cx);
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 fn item_card_skin(color: Hsla) -> impl IntoElement {
@@ -262,17 +297,9 @@ impl RenderOnce for ItemCard {
                 .read(cx)
                 .is_selected_in(scope, item_id)
         });
-        let is_marked =
-            is_editing || is_multi_selected || (self.list_position.is_none() && has_focus);
+        let is_marked = is_editing || (self.list_position.is_none() && has_focus);
         let neighbor_marks = self.neighbors.map(|neighbor| {
-            neighbor.is_some_and(|id| {
-                ItemManager::global(cx).read(cx).is_being_edited(id)
-                    || selection_scope.is_some_and(|scope| {
-                        SelectionManager::global(cx)
-                            .read(cx)
-                            .is_selected_in(scope, id)
-                    })
-            })
+            neighbor.is_some_and(|id| ItemManager::global(cx).read(cx).is_being_edited(id))
         });
         let position = self.list_position.unwrap_or_default();
         let horizontal = self.horizontal_position.is_some();
@@ -316,6 +343,7 @@ impl RenderOnce for ItemCard {
         let bounds_for_prepaint = Rc::clone(&measured_bounds);
         let bounds_for_keyboard_menu = Rc::clone(&measured_bounds);
 
+        let compact_title = self.compact;
         if let Some(details) = &self.details {
             if !has_notes && details.reset() {
                 let owner = window.current_view();
@@ -354,10 +382,18 @@ impl RenderOnce for ItemCard {
             .as_ref()
             .map_or_default(|geometry| *geometry.read(cx));
         let owner = window.current_view();
+        let pointer_inside = window
+            .use_keyed_state((self.element_id.clone(), "pointer-inside"), cx, |_, _| {
+                Rc::new(Cell::new(false))
+            })
+            .read(cx)
+            .clone();
         let content = self.render_content(
             colors,
             geometry,
             menu_enabled,
+            pointer_inside.get(),
+            compact_title,
             notes_focus.as_ref(),
             window,
             cx,
@@ -488,6 +524,7 @@ impl RenderOnce for ItemCard {
                 })
             })
             .children(skin)
+            .child(pointer_presence(pointer_inside, owner))
             .when_some(inspector_action, |card, action| {
                 card.on_double_click(move |_, window, cx| {
                     if dragged_since_press.get()

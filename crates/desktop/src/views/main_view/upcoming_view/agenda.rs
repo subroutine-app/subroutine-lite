@@ -132,11 +132,12 @@ impl UpcomingRow {
 }
 
 pub(super) fn item_card_height(item: &AnyItem) -> Pixels {
-    if item.recurrence().is_some() || super::super::format_item_meta(item).is_some() {
+    let base = if item.recurrence().is_some() || super::super::format_item_meta(item).is_some() {
         ITEM_CARD_HEIGHT
     } else {
         TITLE_ONLY_ITEM_CARD_HEIGHT
-    }
+    };
+    crate::components::expandable_card_height(item.content().as_deref(), base)
 }
 
 #[derive(Default)]
