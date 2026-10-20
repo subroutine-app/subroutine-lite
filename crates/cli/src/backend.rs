@@ -180,7 +180,16 @@ impl RemoteBackend {
             !timeout.is_zero() && Instant::now().checked_add(timeout).is_some(),
             "HTTP timeout must be positive and representable"
         );
-        let token = access_token(token_file)?;
+        let token = match access_token(token_file)? {
+            Some(token) => token,
+            None => crate::auth::saved_token(&origin).await?.with_context(|| {
+                format!(
+                    "not logged in to {}; run `sr login --server {0}`, or set SUBROUTINE_LITE_ACCESS_TOKEN",
+                    origin.origin().ascii_serialization()
+                )
+            })?,
+        };
+        let token = bearer_token(&token)?;
         let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|_| anyhow!("access token is not a valid bearer token"))?;
         authorization.set_sensitive(true);
@@ -379,7 +388,7 @@ impl RemoteBackend {
     }
 }
 
-fn server_origin(value: &str) -> Result<Url> {
+pub(crate) fn server_origin(value: &str) -> Result<Url> {
     let (scheme, authority) = value
         .split_once("://")
         .context("server must be an absolute HTTPS origin or literal-loopback HTTP origin")?;
@@ -410,7 +419,7 @@ fn server_origin(value: &str) -> Result<Url> {
     Ok(origin)
 }
 
-fn access_token(path: Option<&Path>) -> Result<String> {
+fn access_token(path: Option<&Path>) -> Result<Option<String>> {
     let token = match path {
         Some(path) => {
             ensure!(
@@ -429,10 +438,18 @@ fn access_token(path: Option<&Path>) -> Result<String> {
             );
             String::from_utf8(bytes).map_err(|_| anyhow!("access token file must contain UTF-8"))?
         }
-        None => std::env::var("SUBROUTINE_LITE_ACCESS_TOKEN").map_err(|_| {
-            anyhow!("set SUBROUTINE_LITE_ACCESS_TOKEN or supply --token-file for remote access")
-        })?,
+        None => match std::env::var("SUBROUTINE_LITE_ACCESS_TOKEN") {
+            Ok(token) => token,
+            Err(std::env::VarError::NotPresent) => return Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("SUBROUTINE_LITE_ACCESS_TOKEN must be valid Unicode")
+            }
+        },
     };
+    Ok(Some(token))
+}
+
+fn bearer_token(token: &str) -> Result<String> {
     let token = token.trim();
     ensure!(!token.is_empty(), "access token must not be empty");
     ensure!(token.len() <= MAX_TOKEN_BYTES, "access token is too large");
@@ -555,7 +572,7 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     path.into()
 }
 
-fn private_directory(path: &Path) -> Result<()> {
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -579,7 +596,7 @@ fn new_private_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-fn private_file(path: &Path) -> Result<File> {
+pub(crate) fn private_file(path: &Path) -> Result<File> {
     match new_private_file(path) {
         Ok(file) => Ok(file),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {

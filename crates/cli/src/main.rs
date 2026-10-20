@@ -1,4 +1,5 @@
 mod args;
+mod auth;
 mod backend;
 mod commands;
 mod create;
@@ -11,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use chrono::Local;
 use clap::Parser;
 use serde_json::json;
@@ -44,16 +45,28 @@ async fn run(cli: Cli) -> Result<()> {
         .now
         .map(|time| time.with_timezone(&Local))
         .unwrap_or_else(Local::now);
-    if let Command::Parse(args) = &cli.command {
-        let value = create::parsed_value(args.kind, &args.text, now)?;
-        return output(&value, cli.pretty, cli.quiet);
+    let timeout = Duration::from_secs(cli.timeout);
+    match &cli.command {
+        Command::Parse(args) => {
+            let value = create::parsed_value(args.kind, &args.text, now)?;
+            return output(&value, cli.pretty, cli.quiet);
+        }
+        Command::Login(args) => {
+            let value = auth::login(&login_server(&cli)?, args, timeout).await?;
+            return output(&value, cli.pretty, cli.quiet);
+        }
+        Command::Logout => {
+            let value = auth::logout(&login_server(&cli)?)?;
+            return output(&value, cli.pretty, cli.quiet);
+        }
+        _ => {}
     }
     let input = cli.command.input_path().map(input::json).transpose()?;
     let (backend, data) = Backend::open(
         cli.db.as_deref(),
         cli.server.as_deref(),
         cli.token_file.as_deref(),
-        Duration::from_secs(cli.timeout),
+        timeout,
         cli.dry_run,
     )
     .await?;
@@ -73,6 +86,18 @@ async fn run(cli: Cli) -> Result<()> {
         stdout.flush()?;
     }
     Ok(())
+}
+
+fn login_server(cli: &Cli) -> Result<url::Url> {
+    ensure!(
+        !cli.dry_run && cli.token_file.is_none(),
+        "login and logout do not accept --dry-run or --token-file"
+    );
+    backend::server_origin(
+        cli.server
+            .as_deref()
+            .context("login and logout require --server")?,
+    )
 }
 
 fn encode(value: &serde_json::Value, pretty: bool) -> Result<Vec<u8>> {

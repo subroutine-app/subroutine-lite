@@ -80,6 +80,10 @@ pub enum Command {
     Parse(ParseArgs),
     #[command(subcommand, about = "Export or merge JSON snapshots")]
     Data(DataCommand),
+    #[command(about = "Sign in to --server in the browser and save the login")]
+    Login(LoginArgs),
+    #[command(about = "Remove the saved login for --server")]
+    Logout,
 }
 
 impl Command {
@@ -90,6 +94,25 @@ impl Command {
             _ => None,
         }
     }
+}
+
+#[derive(Args)]
+pub struct LoginArgs {
+    #[arg(
+        long,
+        env = "SUBROUTINE_LITE_OIDC_ISSUER",
+        default_value = "https://auth.subroutineapp.com/auth/v1/",
+        value_name = "URL"
+    )]
+    pub issuer: String,
+    #[arg(
+        long,
+        env = "SUBROUTINE_LITE_OIDC_CLIENT_ID",
+        default_value = "subroutine-desktop"
+    )]
+    pub client_id: String,
+    #[arg(long, help = "Print the sign-in URL without opening a browser")]
+    pub no_browser: bool,
 }
 
 #[derive(Subcommand)]

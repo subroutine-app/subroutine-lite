@@ -93,6 +93,7 @@ pub fn execute(
             import(input.context("missing snapshot input")?)
         }
         Command::Parse(args) => Plan::read(create::parsed_value(args.kind, &args.text, now)?),
+        Command::Login(_) | Command::Logout => anyhow::bail!("login and logout do not use storage"),
     }?;
     for resource in &plan.patch.writes {
         resources::validate(resource, settings).with_context(|| {
