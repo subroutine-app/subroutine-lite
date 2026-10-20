@@ -31,6 +31,38 @@ def install-linux [feature_args: list<string>] {
     rm --recursive --force $staging
 }
 
+def install-cli [] {
+    let build = (
+        ^cargo build --release --package cli --bin subroutine --message-format=json-render-diagnostics
+        | complete
+    )
+    if not ($build.stderr | is-empty) {
+        print --stderr --no-newline $build.stderr
+    }
+    if $build.exit_code != 0 {
+        error make {msg: $'CLI build failed with exit code ($build.exit_code).'}
+    }
+    let executable = (
+        $build.stdout
+        | from json --objects
+        | where reason == 'compiler-artifact'
+        | where target.name == 'subroutine'
+        | get -o 0.executable
+    )
+    if $executable == null {
+        error make {msg: 'Cargo did not report the CLI executable.'}
+    }
+    let bin_dir = ($nu.home-dir | path join '.local' 'bin')
+    let name = if $nu.os-info.name == 'windows' { 'sr.exe' } else { 'sr' }
+    let destination = ($bin_dir | path join $name)
+    mkdir $bin_dir
+    cp --force $executable $destination
+    if $nu.os-info.name != 'windows' {
+        checked chmod +x $destination
+    }
+    print $'Installed ($destination)'
+}
+
 def main [
     --offline
     --features: string = ""
@@ -49,4 +81,5 @@ def main [
         }
         _ => { error make {msg: $'Unsupported platform: ($nu.os-info.name). Expected macOS, Linux, or Windows.'} }
     }
+    install-cli
 }

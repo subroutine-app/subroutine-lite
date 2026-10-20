@@ -1,0 +1,26 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "subroutine"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+chronoutil.workspace = true
+clap = { workspace = true, features = ["env"] }
+dirs.workspace = true
+local-store = { path = "../local-store" }
+parser = { path = "../parser" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subroutine-core = { package = "core", path = "../core" }
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
