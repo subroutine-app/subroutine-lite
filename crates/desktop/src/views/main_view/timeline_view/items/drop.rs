@@ -12,10 +12,7 @@ use crate::{
     haptics::HapticsExt as _,
     settings::Settings,
     stores::AppDatabaseStore,
-    views::{
-        TOP_EDGE_INSET,
-        drop_confirmation::{confirm_drop, resolve_dragged, scheduled_item_count},
-    },
+    views::drop_confirmation::{confirm_drop, resolve_dragged, scheduled_item_count},
 };
 
 use super::super::{
@@ -228,10 +225,7 @@ impl TimelineView {
         mouse_pos: Point<Pixels>,
         cx: &App,
     ) -> Option<ActiveDropState> {
-        let pos = self
-            .bounds
-            .and_then(|bounds| bounds.localize(&mouse_pos))
-            .filter(|position| position.y >= TOP_EDGE_INSET)?;
+        let pos = self.bounds?.localize(&mouse_pos)?;
         let grab_offset = self
             .item_drag_anchor
             .filter(|anchor| anchor.item_id == dragged.primary.id())
@@ -346,16 +340,12 @@ impl TimelineView {
         cx: &mut Context<Self>,
     ) {
         let mouse_pos = window.mouse_position();
-        let local_pos = self
-            .bounds
-            .and_then(|bounds| bounds.localize(&mouse_pos))
-            .filter(|position| position.y >= TOP_EDGE_INSET);
         self.drop_dragged = Some(event.drag(cx).data.clone());
         self.retarget_drop_preview_at(mouse_pos, cx);
 
-        let new_speed = self.bounds.and_then(|b| {
-            let local_y = local_pos.map(|p| p.y)?;
-            compute_edge_scroll_speed(local_y, b.size.height)
+        let new_speed = self.bounds.and_then(|bounds| {
+            let local_pos = bounds.localize(&mouse_pos)?;
+            compute_edge_scroll_speed(local_pos.y, bounds.size.height)
         });
         if self.edge_scroll.hover(new_speed) {
             cx.notify();

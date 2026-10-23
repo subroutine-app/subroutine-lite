@@ -26,8 +26,8 @@ use crate::{
 };
 
 use super::{
-    CardMeta, CardPresentation, DraggedItems, ItemCard, ItemCardPosition, ItemCardTitleScale,
-    PREVIEW_HOVER_GROUP, ToggleItemDetails,
+    CARD_HOVER_GROUP, CardMeta, CardPresentation, DraggedItems, ItemCard, ItemCardPosition,
+    ItemCardTitleScale, ToggleItemDetails,
     availability::projected_event_availability_target,
     card_background,
     content::CardContentGeometry,
@@ -35,7 +35,7 @@ use super::{
     draft_type::open_type_menu,
     menu::card_context_menu,
     neutral_card_colors,
-    notes::{NotesFocus, item_content},
+    notes::{NotesFocus, NotesSurface, item_content},
 };
 
 pub(super) const ITEM_CARD_BORDER: Pixels = px(2.);
@@ -388,13 +388,30 @@ impl RenderOnce for ItemCard {
             })
             .read(cx)
             .clone();
+        let buttons_revealed = pointer_inside.get()
+            || (window.focus_is_visible() && self.focus_handle.contains_focused(window, cx));
+        let selection_tint = cx.theme().colors.focus.alpha(0.10);
+        let hover_bg = if is_multi_selected {
+            colors.hover.blend(selection_tint)
+        } else {
+            colors.hover
+        };
+        let rest_bg = if is_multi_selected {
+            bg.blend(selection_tint)
+        } else if preview || !subtle || is_marked {
+            bg
+        } else {
+            gpui::transparent_black()
+        };
+        let notes_surface = NotesSurface::opaque(rest_bg, hover_bg);
         let content = self.render_content(
             colors,
             geometry,
             menu_enabled,
-            pointer_inside.get(),
+            buttons_revealed,
             compact_title,
             notes_focus.as_ref(),
+            notes_surface,
             window,
             cx,
         );
@@ -418,20 +435,13 @@ impl RenderOnce for ItemCard {
             content
         };
 
-        let selection_tint = cx.theme().colors.focus.alpha(0.10);
-        let hover_bg = if is_multi_selected {
-            colors.hover.blend(selection_tint)
-        } else {
-            colors.hover
-        };
         let row_focus = self.focus_handle.clone();
         let mut card = self
             .base
+            .group(CARD_HOVER_GROUP)
             .border(ITEM_CARD_BORDER)
             .when(preview, |card| {
-                card.group(PREVIEW_HOVER_GROUP)
-                    .border_color(gpui::transparent_black())
-                    .shadow_none()
+                card.border_color(gpui::transparent_black()).shadow_none()
             })
             .when(self.border && !preview, |this| {
                 this.when_some(colors.border, |this, color| this.border_color(color))
@@ -440,7 +450,7 @@ impl RenderOnce for ItemCard {
             .opacity(draft_opacity)
             .hover(|style| style.bg(hover_bg))
             .when(is_marked, |this| this.border_color(cx.theme().colors.focus))
-            .when(is_multi_selected, |this| this.bg(bg.blend(selection_tint)))
+            .when(is_multi_selected, |this| this.bg(rest_bg))
             .when_else(
                 self.compact,
                 |this| this.rounded_lg(),

@@ -148,7 +148,7 @@ impl RootView {
             navigation_drawer: NavigationDrawer::Closed,
             navigation_drawer_extent: gpui::px(0.),
             navigation_pointer: None,
-            navigation_dismiss_task: None,
+            navigation_hover_task: None,
             navigation_focus: cx.focus_handle(),
             sidebar_scroll: gpui::ScrollHandle::new(),
             current_overlay: None,

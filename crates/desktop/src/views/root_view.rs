@@ -187,7 +187,7 @@ pub struct RootView {
     navigation_drawer: NavigationDrawer,
     navigation_drawer_extent: gpui::Pixels,
     navigation_pointer: Option<gpui::Point<gpui::Pixels>>,
-    navigation_dismiss_task: Option<Task<()>>,
+    navigation_hover_task: Option<Task<()>>,
     navigation_focus: FocusHandle,
     sidebar_scroll: gpui::ScrollHandle,
     current_overlay: Option<(CurrentOverlay, Option<FocusHandle>)>,

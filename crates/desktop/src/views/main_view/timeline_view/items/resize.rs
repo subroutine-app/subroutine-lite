@@ -10,11 +10,8 @@ use uuid::Uuid;
 use crate::{
     haptics::HapticsExt as _,
     stores::AppDatabaseStore,
-    views::{
-        TOP_EDGE_INSET,
-        main_view::timeline_view::{
-            FALLBACK_ITEM_DURATION, measure_from, timeline::compute_edge_scroll_speed,
-        },
+    views::main_view::timeline_view::{
+        FALLBACK_ITEM_DURATION, measure_from, timeline::compute_edge_scroll_speed,
     },
 };
 
@@ -130,10 +127,7 @@ impl TimelineView {
         if self.item_details.is_open(item_id) {
             return None;
         }
-        let local_pos = self
-            .bounds
-            .and_then(|bounds| bounds.localize(&mouse_pos))
-            .filter(|position| position.y >= TOP_EDGE_INSET)?;
+        let local_pos = self.bounds?.localize(&mouse_pos)?;
         let ti = self.items.iter().find(|i| i.item.id() == item_id)?;
         let original_time = ti.item.start_datetime()?;
         let durationless_action = is_durationless_action(&ti.item);
@@ -202,12 +196,7 @@ impl TimelineView {
         cx: &mut Context<Self>,
     ) {
         let mouse_pos = window.mouse_position();
-        let local_pos = self
-            .bounds
-            .and_then(|bounds| bounds.localize(&mouse_pos))
-            .filter(|position| position.y >= TOP_EDGE_INSET);
-
-        let Some(local_pos) = local_pos else {
+        let Some(local_pos) = self.bounds.and_then(|bounds| bounds.localize(&mouse_pos)) else {
             if self.active_resize.is_some() || self.edge_scroll.is_active() {
                 self.active_resize = None;
                 self.edge_scroll.clear();

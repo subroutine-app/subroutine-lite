@@ -586,9 +586,7 @@ impl TimelineView {
             .on_pinch(cx.listener(|view, event, _window, cx| view.handle_pinch(event, cx)))
             .on_drag_move(cx.listener(
                 |this, event: &DragMoveEvent<DragData<DraggedItems>>, window, cx| {
-                    let position = window.mouse_position();
-                    let is_over = event.bounds.contains(&position)
-                        && position.y >= event.bounds.origin.y + TOP_EDGE_INSET;
+                    let is_over = event.bounds.contains(&window.mouse_position());
                     if is_over != this.drop_active {
                         this.drop_active = is_over;
                         cx.notify();

@@ -266,13 +266,7 @@ impl HomeView {
             .when(draft, |card| card.actionable(false).editable(true))
             .with_focus_handle(self.action_focus.clone())
             .details(self.details.get(item.id()))
-            .h(self.details.height(
-                item.id(),
-                crate::components::expandable_card_height(
-                    item.content().as_deref(),
-                    HOME_PREVIEW_HEIGHT,
-                ),
-            ));
+            .h(self.details.height(item.id(), HOME_PREVIEW_HEIGHT));
 
         home_action_frame(card, cx)
     }
@@ -295,13 +289,7 @@ impl HomeView {
                 cx,
             )
             .details(self.details.get(moment.notice_id()))
-            .h(self.details.height(
-                moment.notice_id(),
-                crate::components::expandable_card_height(
-                    item.content().as_deref(),
-                    HOME_PREVIEW_HEIGHT,
-                ),
-            ));
+            .h(self.details.height(moment.notice_id(), HOME_PREVIEW_HEIGHT));
         let (label, timing, card) = match moment {
             EventMoment::InProgress { remaining, .. } => {
                 let view = cx.entity().downgrade();

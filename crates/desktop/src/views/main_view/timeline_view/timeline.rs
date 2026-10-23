@@ -102,9 +102,7 @@ pub(super) fn compute_edge_scroll_speed(local_y: Pixels, height: Pixels) -> Opti
     const MAX_SPEED: f32 = 22.0;
     let y = local_y;
     let h = height;
-    if y < TOP_EDGE_INSET {
-        None
-    } else if y < ZONE + TOP_EDGE_INSET {
+    if y < ZONE + TOP_EDGE_INSET {
         let t = 1.0 - ((y - TOP_EDGE_INSET) / ZONE).clamp(0.0, 1.0);
         Some(px(t * t * MAX_SPEED))
     } else if y > h - ZONE {

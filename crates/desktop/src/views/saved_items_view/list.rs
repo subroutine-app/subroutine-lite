@@ -423,10 +423,7 @@ impl SavedItemsList {
         let focus_order = order.clone();
         let keyboard_view = view.clone();
         let item: AnyItem = saved_item.into();
-        let height = self.details.height(
-            id,
-            crate::components::expandable_card_height(item.content().as_deref(), ITEM_HEIGHT),
-        );
+        let height = self.details.height(id, ITEM_HEIGHT);
         let scroll_focus = ScrollFocus::new(gpui::ElementId::View(view.entity_id()), window, cx);
         let scroll_view = view.clone();
 

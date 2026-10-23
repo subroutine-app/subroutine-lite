@@ -20,18 +20,26 @@ use crate::{
 };
 
 use super::{
-    CardMeta, CardPresentation, DETAILS_FOOTER_EXTENT, DETAILS_FOOTER_HEIGHT, DETAILS_FOOTER_INSET,
-    ItemCard, ItemCardDetails, ItemCardTitleScale, PREVIEW_HOVER_GROUP,
+    CARD_HOVER_GROUP, CardMeta, CardPresentation, ItemCard, ItemCardDetails, ItemCardTitleScale,
     availability::event_availability_indicator,
     item_icon,
     menu::{RESTORE_ACTION_LABEL, card_context_menu, restore_action_label},
-    notes::{item_content, render_item_card_notes},
+    notes::{NotesSurface, item_content, render_item_card_notes},
     render::ITEM_CARD_BORDER,
     render_dynamic_title,
 };
 
 const ITEM_CARD_END_INSET: Pixels = px(6.);
 const ITEM_HEADER_CONTENT_GAP: Pixels = px(3.);
+const DETAILS_FOOTER_HEIGHT: Pixels = px(16.);
+const DETAILS_FOOTER_INSET: Pixels = px(2.);
+
+#[derive(Clone, Copy, PartialEq)]
+enum DisclosurePlacement {
+    BelowNotes,
+    Squeezed,
+    Inline,
+}
 
 #[derive(Clone, Copy, Default, PartialEq)]
 pub(super) struct CardContentGeometry {
@@ -102,27 +110,13 @@ impl ItemCard {
         )
     }
 
-    fn render_more_action(
-        &self,
-        menu_enabled: bool,
-        pointer_inside: bool,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Option<AnyElement> {
+    fn render_more_action(&self, menu_enabled: bool, cx: &App) -> Option<AnyElement> {
         menu_enabled.then(|| {
             let item = self.item.clone();
             let item_id = item.id();
             let selection_scope = self.selection.as_ref().map(|order| order.scope);
             let schedule_navigation = self.schedule_navigation;
             let availability_store = self.projected_availability_store.clone();
-            let reveal = window.keyed_transition(
-                (self.element_id.clone(), "more-actions-reveal"),
-                cx,
-                transition::QUICK,
-                || 0.0,
-            );
-            reveal.set(if pointer_inside { 1.0 } else { 0.0 }, cx);
-            let opacity = reveal.animate(window, cx);
             Button::new((self.element_id.clone(), "more-actions"))
                 .tab_stop(self.tab_stop)
                 .ghost()
@@ -132,8 +126,6 @@ impl ItemCard {
                 .icon(AppIcon::Ellipsis)
                 .tooltip("More actions")
                 .text_color(cx.theme().colors.text_muted)
-                .opacity(opacity)
-                .focus(|style| style.opacity(1.0))
                 .when(self.presentation != CardPresentation::Preview, |button| {
                     button.block_mouse_except_scroll()
                 })
@@ -238,8 +230,29 @@ impl ItemCard {
             } else {
                 0.0
             })
-            .group_hover(PREVIEW_HOVER_GROUP, |style| style.opacity(1.0))
+            .group_hover(CARD_HOVER_GROUP, |style| style.opacity(1.0))
             .child(controls)
+            .into_any_element()
+    }
+
+    fn reveal_buttons(
+        &self,
+        buttons: impl IntoElement,
+        revealed: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let reveal = window.keyed_transition(
+            (self.element_id.clone(), "buttons-reveal"),
+            cx,
+            transition::QUICK,
+            || 0.0,
+        );
+        reveal.set(if revealed { 1.0 } else { 0.0 }, cx);
+        div()
+            .flex_none()
+            .opacity(reveal.animate(window, cx))
+            .child(buttons)
             .into_any_element()
     }
 
@@ -249,9 +262,10 @@ impl ItemCard {
         colors: ButtonColors,
         geometry: CardContentGeometry,
         menu_enabled: bool,
-        pointer_inside: bool,
+        buttons_revealed: bool,
         compact_title: bool,
         notes_focus: Option<&FocusHandle>,
+        notes_surface: Option<NotesSurface>,
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -286,11 +300,16 @@ impl ItemCard {
         )
         .into_any_element();
 
-        let more_action =
-            self.render_more_action(menu_enabled && !narrow_details, pointer_inside, window, cx);
+        let more_action = self.render_more_action(menu_enabled && !narrow_details, cx);
 
         if self.compact {
             let details_toggle = self.render_details_toggle(false, false, notes_focus, window, cx);
+            let buttons = more_action
+                .filter(|_| self.projected_availability_store.is_some())
+                .map(|more| {
+                    let more = self.reveal_buttons(more, buttons_revealed, window, cx);
+                    self.preview_controls(more, window, cx)
+                });
             let completion = draft_picker.or_else(|| {
                 (!narrow_details || preview)
                     .then(|| self.completion_checkbox(cx))
@@ -341,12 +360,8 @@ impl ItemCard {
                         availability.map(|control| self.preview_controls(control, window, cx)),
                     )
                 })
-                .children(details_toggle.map(|control| self.preview_controls(control, window, cx)))
-                .when(self.projected_availability_store.is_some(), |row| {
-                    row.children(
-                        more_action.map(|control| self.preview_controls(control, window, cx)),
-                    )
-                });
+                .children(buttons)
+                .children(details_toggle);
             return div().relative().size_full().child(row).into_any_element();
         }
 
@@ -463,12 +478,8 @@ impl ItemCard {
             })
             .flatten();
 
-        let mut trailing: Vec<AnyElement> =
-            event_availability_indicator(&self.item, &self.element_id, cx)
-                .filter(|_| !narrow_details)
-                .into_iter()
-                .chain(quick_action)
-                .collect();
+        let availability = event_availability_indicator(&self.item, &self.element_id, cx)
+            .filter(|_| !narrow_details);
 
         let mut meta: Vec<CardMeta> = Vec::new();
         if !collapsed_preview && let Some(rule) = self.item.recurrence() {
@@ -519,12 +530,33 @@ impl ItemCard {
             .map_or(px(0.), |height| *height.read(cx));
 
         let box_height = geometry.size.height;
-        let in_footer = expandable
-            && (open
-                || box_height <= px(0.)
-                || box_height >= self.content_offset.y + measured_header + DETAILS_FOOTER_EXTENT);
+        let footer_extent = ITEM_HEADER_CONTENT_GAP + DETAILS_FOOTER_HEIGHT + DETAILS_FOOTER_INSET;
+        let preview_fits = content_source.is_some()
+            && geometry
+                .notes_size(
+                    self.content_offset.y,
+                    measured_header,
+                    footer_extent,
+                    self.content_offset.x,
+                )
+                .height
+                >= px(cx.theme().typography.body.line_height);
+        let disclosure = expandable.then(|| {
+            if open || preview_fits {
+                DisclosurePlacement::BelowNotes
+            } else if box_height <= px(0.) || box_height >= measured_header + DETAILS_FOOTER_HEIGHT
+            {
+                DisclosurePlacement::Squeezed
+            } else {
+                DisclosurePlacement::Inline
+            }
+        });
+        let in_footer = matches!(
+            disclosure,
+            Some(DisclosurePlacement::BelowNotes | DisclosurePlacement::Squeezed)
+        );
         let bottom_inset = if in_footer {
-            DETAILS_FOOTER_EXTENT
+            footer_extent
         } else {
             ITEM_CARD_END_INSET
         };
@@ -538,6 +570,23 @@ impl ItemCard {
             open_top
         } else {
             self.content_offset.y
+        };
+        let (padding_top, padding_bottom, gap) = match disclosure {
+            Some(DisclosurePlacement::BelowNotes) => {
+                (top, DETAILS_FOOTER_INSET, ITEM_HEADER_CONTENT_GAP)
+            }
+            Some(DisclosurePlacement::Squeezed) => {
+                let gaps = if content_source.is_some() { 2. } else { 1. };
+                let slack = (box_height - measured_header - DETAILS_FOOTER_HEIGHT).max(px(0.));
+                (
+                    px(0.),
+                    px(0.),
+                    (slack / (gaps + 2.)).min(ITEM_HEADER_CONTENT_GAP),
+                )
+            }
+            Some(DisclosurePlacement::Inline) | None => {
+                (top, ITEM_CARD_END_INSET, ITEM_HEADER_CONTENT_GAP)
+            }
         };
         let labelled = if in_footer {
             !narrow_details
@@ -555,11 +604,12 @@ impl ItemCard {
                 self.details.clone(),
                 self.tab_stop,
                 self.inspector_action(),
+                notes_surface,
                 open_top
                     + measured_header
                     + ITEM_HEADER_CONTENT_GAP
                     + if expandable {
-                        DETAILS_FOOTER_EXTENT
+                        footer_extent
                     } else {
                         ITEM_CARD_END_INSET
                     }
@@ -589,9 +639,15 @@ impl ItemCard {
         {
             let panel = content_panel
                 .as_ref()
-                .map_or(px(0.), |(_, height)| ITEM_HEADER_CONTENT_GAP + *height);
-            let slack = box_height - top - bottom_inset - measured_header - panel;
-            details.record_collapsed_top(top + (slack / 2.).max(px(0.)));
+                .map_or(px(0.), |(_, height)| gap + *height);
+            let footer = if in_footer {
+                gap + DETAILS_FOOTER_HEIGHT
+            } else {
+                px(0.)
+            };
+            let slack =
+                box_height - padding_top - padding_bottom - measured_header - panel - footer;
+            details.record_collapsed_top(padding_top + (slack / 2.).max(px(0.)));
         }
         let content_panel = content_panel.map(|(notes, _)| notes);
         let (inline_toggle, footer_toggle) = if in_footer {
@@ -600,30 +656,21 @@ impl ItemCard {
             (details_toggle, None)
         };
 
-        trailing.extend(inline_toggle);
-        trailing.extend(more_action);
-        let trailing_controls = (!trailing.is_empty()).then(|| {
-            self.preview_controls(
-                div().row().flex_none().gap(px(2.)).children(
-                    trailing
-                        .into_iter()
-                        .map(|control| div().flex_none().child(control)),
-                ),
-                window,
-                cx,
-            )
-        });
+        let buttons: Vec<AnyElement> = quick_action.into_iter().chain(more_action).collect();
+        let buttons = (!buttons.is_empty())
+            .then(|| self.reveal_buttons(trailing_row(buttons), buttons_revealed, window, cx));
+        let trailing: Vec<AnyElement> = availability.into_iter().chain(buttons).collect();
+        let trailing_controls = (!trailing.is_empty())
+            .then(|| self.preview_controls(trailing_row(trailing), window, cx));
         let footer = footer_toggle.map(|toggle| {
             div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .bottom(DETAILS_FOOTER_INSET)
-                .h(DETAILS_FOOTER_HEIGHT)
                 .row()
+                .w_full()
+                .flex_none()
+                .h(DETAILS_FOOTER_HEIGHT)
                 .items_center()
                 .justify_center()
-                .child(self.preview_controls(toggle, window, cx))
+                .child(toggle)
         });
         let header = div()
             .row()
@@ -670,6 +717,7 @@ impl ItemCard {
                     .children(meta_line),
             )
             .children(trailing_controls)
+            .children(inline_toggle.map(|toggle| div().flex_none().child(toggle)))
             .when_some(header_height, |header, height| {
                 let owner = window.current_view();
                 header.on_children_prepainted(move |children, window, cx| {
@@ -690,18 +738,26 @@ impl ItemCard {
             .w_full()
             .h_full()
             .when_else(
-                top_aligned || open,
+                (top_aligned || open) && disclosure != Some(DisclosurePlacement::Squeezed),
                 |this| this.justify_start(),
                 |this| this.justify_center(),
             )
-            .gap(ITEM_HEADER_CONTENT_GAP)
+            .gap(gap)
             .pl(self.content_offset.x)
             .pr(ITEM_CARD_END_INSET)
-            .pt(top)
-            .pb(bottom_inset)
+            .pt(padding_top)
+            .pb(padding_bottom)
             .child(header)
             .children(content_panel)
             .children(footer)
             .into_any_element()
     }
+}
+
+fn trailing_row(controls: Vec<AnyElement>) -> impl IntoElement {
+    div().row().flex_none().gap(px(2.)).children(
+        controls
+            .into_iter()
+            .map(|control| div().flex_none().child(control)),
+    )
 }

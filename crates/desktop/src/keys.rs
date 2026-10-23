@@ -356,7 +356,7 @@ impl ConfigurableCommand {
             Self::CompleteSelected => &["cmd-enter"],
             Self::ToggleQueuedSelected => &["cmd-shift-enter"],
             Self::TogglePinnedSelected => &["cmd-p"],
-            Self::DeleteSelected => &["delete", "backspace"],
+            Self::DeleteSelected => &["delete"],
             Self::CopySelected => &["cmd-c"],
             Self::CutSelected => &["cmd-x"],
             Self::PasteItems => &["cmd-v"],

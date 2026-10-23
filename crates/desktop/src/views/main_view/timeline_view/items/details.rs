@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use gpui::{
-    AnyElement, Bounds, Context, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    ParentElement, Pixels, Styled, Window, div, point, px, size,
+    AnyElement, Bounds, BoxShadow, Context, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Styled, Window, div, point, px, size,
 };
-use gpui_kit_theme::ActiveTheme;
+use gpui_kit_theme::{ActiveTheme, Elevation, Theme};
 use uuid::Uuid;
 
 use crate::{
@@ -37,6 +37,9 @@ impl DetailsAnchor {
     }
 }
 
+const EXPANDED_MIN_WIDTH: Pixels = px(360.);
+const EXPANDED_OUTSET: Pixels = px(16.);
+
 fn details_bounds(
     anchor: Bounds<Pixels>,
     viewport: Bounds<Pixels>,
@@ -44,13 +47,15 @@ fn details_bounds(
     progress: f32,
     placement: DetailsAnchor,
 ) -> Bounds<Pixels> {
-    let width = (anchor.size.width
-        + (anchor.size.width.max(px(360.)) - anchor.size.width) * progress.clamp(0., 1.))
-    .min(viewport.size.width);
+    let progress = progress.clamp(0., 1.);
+    let outset = EXPANDED_OUTSET * progress;
+    let expanded_width = (anchor.size.width + EXPANDED_OUTSET * 2.).max(EXPANDED_MIN_WIDTH);
+    let width = (anchor.size.width + (expanded_width - anchor.size.width) * progress)
+        .min(viewport.size.width);
     let height = desired_height.min(px(520.)).min(viewport.size.height);
     let left = match placement {
-        DetailsAnchor::TopLeft | DetailsAnchor::BottomLeft => anchor.left(),
-        DetailsAnchor::TopRight | DetailsAnchor::BottomRight => anchor.right() - width,
+        DetailsAnchor::TopLeft | DetailsAnchor::BottomLeft => anchor.left() - outset,
+        DetailsAnchor::TopRight | DetailsAnchor::BottomRight => anchor.right() + outset - width,
     }
     .clamp(viewport.left(), viewport.right() - width);
     let top = match placement {
@@ -59,6 +64,21 @@ fn details_bounds(
     }
     .clamp(viewport.top(), viewport.bottom() - height);
     Bounds::new(point(left, top), size(width, height))
+}
+
+fn lifted_shadow(theme: &Theme, progress: f32) -> Vec<BoxShadow> {
+    let progress = progress.clamp(0., 1.);
+    theme
+        .shadow(Elevation::Modal)
+        .iter()
+        .map(|shadow| BoxShadow {
+            color: shadow.color.opacity(progress),
+            offset: shadow.offset.map(|offset| offset * progress),
+            blur_radius: shadow.blur_radius * progress,
+            spread_radius: shadow.spread_radius * progress,
+            ..shadow.clone()
+        })
+        .collect()
 }
 
 impl TimelineView {
@@ -132,6 +152,7 @@ impl TimelineView {
             point(viewport_size.width - inset, bottom),
         );
         let details = self.item_details.get(id);
+        let progress = details.progress();
         let placement = *self
             .item_details_anchors
             .entry(id)
@@ -140,7 +161,7 @@ impl TimelineView {
             anchor,
             viewport,
             self.item_details.height(id, anchor.size.height),
-            details.progress(),
+            progress,
             placement,
         );
 
@@ -153,7 +174,7 @@ impl TimelineView {
             .h(bounds.size.height)
             .rounded_xl()
             .bg(cx.theme().colors.panel)
-            .shadow_lg()
+            .shadow(lifted_shadow(cx.theme(), progress))
             .block_mouse_except_scroll()
             .capture_any_mouse_down(cx.listener(move |view, event: &MouseDownEvent, _, _| {
                 view.force_press = None;

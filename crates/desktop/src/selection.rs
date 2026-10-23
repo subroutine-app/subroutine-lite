@@ -920,7 +920,6 @@ pub fn init(cx: &mut App) {
         key("cmd-shift-enter", ToggleQueuedSelected, Some(KEY_CONTEXT)),
         key("cmd-p", TogglePinnedSelected, Some(KEY_CONTEXT)),
         key("delete", DeleteSelected, Some(KEY_CONTEXT)),
-        key("backspace", DeleteSelected, Some(KEY_CONTEXT)),
         key("cmd-c", CopySelected, Some(KEY_CONTEXT)),
         key("cmd-x", CutSelected, Some(KEY_CONTEXT)),
         key("cmd-v", PasteItems, Some(KEY_CONTEXT)),

@@ -4,8 +4,9 @@ use gpui::{
 };
 use std::time::Duration;
 
-const REVEAL_EDGE_WIDTH: Pixels = px(8.);
+const REVEAL_EDGE_WIDTH: Pixels = px(12.);
 const HOVER_EXIT_GUTTER: Pixels = px(24.);
+const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(300);
 const HOVER_CLOSE_DELAY: Duration = Duration::from_millis(180);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,29 @@ impl RootView {
             .is_some_and(|pointer| hover_bounds(viewport, width, library_width).contains(&pointer))
     }
 
+    fn navigation_reveal_edge_contains_pointer(&self, window: &Window, cx: &App) -> bool {
+        let viewport = window.viewport_size();
+        let edge = Bounds::new(
+            point(px(0.), TOP_EDGE_INSET),
+            size(
+                REVEAL_EDGE_WIDTH,
+                (viewport.height - TOP_EDGE_INSET).max(px(0.)),
+            ),
+        );
+        self.layout_state.read(cx).animated_left_px <= px(0.)
+            && self
+                .navigation_pointer
+                .is_some_and(|pointer| edge.contains(&pointer))
+    }
+
+    fn navigation_hover_suspended(&self, window: &Window, cx: &App) -> bool {
+        self.layout_state.read(cx).is_resizing()
+            || self.navigation_panel_open(cx)
+            || self.current_overlay.is_some()
+            || self.context_menu.entity().read(cx).is_open()
+            || !window.is_window_active()
+    }
+
     pub(super) fn observe_navigation_pointer(
         &mut self,
         pointer: Option<Point<Pixels>>,
@@ -58,43 +82,41 @@ impl RootView {
         cx: &mut Context<Self>,
     ) {
         self.navigation_pointer = pointer;
-        let layout = self.layout_state.read(cx);
-        if layout.is_resizing()
-            || self.navigation_panel_open(cx)
-            || self.current_overlay.is_some()
-            || self.context_menu.entity().read(cx).is_open()
-            || !window.is_window_active()
-        {
-            self.navigation_dismiss_task = None;
+        if self.navigation_hover_suspended(window, cx) {
+            self.navigation_hover_task = None;
             return;
         }
 
         match self.navigation_drawer {
             NavigationDrawer::Closed => {
-                let viewport = window.viewport_size();
-                let edge = Bounds::new(
-                    point(px(0.), TOP_EDGE_INSET),
-                    size(
-                        REVEAL_EDGE_WIDTH,
-                        (viewport.height - TOP_EDGE_INSET).max(px(0.)),
-                    ),
-                );
-                if layout.animated_left_px <= px(0.)
-                    && pointer.is_some_and(|pointer| edge.contains(&pointer))
-                {
-                    self.navigation_drawer = NavigationDrawer::Hover;
-                    cx.notify();
+                if !self.navigation_reveal_edge_contains_pointer(window, cx) {
+                    self.navigation_hover_task = None;
+                } else if self.navigation_hover_task.is_none() {
+                    self.navigation_hover_task =
+                        Some(cx.spawn_in(window, async move |view, cx| {
+                            cx.background_executor().timer(HOVER_REVEAL_DELAY).await;
+                            let _ = view.update_in(cx, |view, window, cx| {
+                                view.navigation_hover_task = None;
+                                if view.navigation_drawer == NavigationDrawer::Closed
+                                    && !view.navigation_hover_suspended(window, cx)
+                                    && view.navigation_reveal_edge_contains_pointer(window, cx)
+                                {
+                                    view.navigation_drawer = NavigationDrawer::Hover;
+                                    cx.notify();
+                                }
+                            });
+                        }));
                 }
             }
             NavigationDrawer::Hover => {
                 if self.navigation_hover_contains_pointer(window, cx) {
-                    self.navigation_dismiss_task = None;
-                } else if self.navigation_dismiss_task.is_none() {
-                    self.navigation_dismiss_task =
+                    self.navigation_hover_task = None;
+                } else if self.navigation_hover_task.is_none() {
+                    self.navigation_hover_task =
                         Some(cx.spawn_in(window, async move |view, cx| {
                             cx.background_executor().timer(HOVER_CLOSE_DELAY).await;
                             let _ = view.update_in(cx, |view, window, cx| {
-                                view.navigation_dismiss_task = None;
+                                view.navigation_hover_task = None;
                                 if view.navigation_drawer == NavigationDrawer::Hover
                                     && !view.layout_state.read(cx).is_resizing()
                                     && view.current_overlay.is_none()

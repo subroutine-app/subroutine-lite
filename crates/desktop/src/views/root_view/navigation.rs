@@ -223,7 +223,7 @@ impl RootView {
         {
             return;
         }
-        self.navigation_dismiss_task = None;
+        self.navigation_hover_task = None;
         if !compact {
             self.navigation_drawer = NavigationDrawer::Hover;
             cx.notify();
@@ -244,7 +244,7 @@ impl RootView {
     }
 
     pub(super) fn dismiss_navigation_drawer(&mut self, cx: &mut Context<Self>) {
-        self.navigation_dismiss_task = None;
+        self.navigation_hover_task = None;
         if self.navigation_drawer != NavigationDrawer::Closed {
             self.navigation_drawer = NavigationDrawer::Closed;
             self.cancel_drag_navigation();

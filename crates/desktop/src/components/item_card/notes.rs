@@ -1,10 +1,10 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, MouseButton,
-    MouseCancelEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, ScrollHandle,
-    SharedString, Size, StatefulInteractiveElement, Styled, Window, canvas, div, point,
-    prelude::FluentBuilder as _, px,
+    AnyElement, App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    MouseButton, MouseCancelEvent, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point,
+    ScrollHandle, SharedString, Size, StatefulInteractiveElement, Styled, Window, canvas, div,
+    linear_color_stop, linear_gradient_stops, point, prelude::FluentBuilder as _, px,
 };
 use gpui_kit::{
     content::{Markdown, MarkdownEvent, MarkdownTabNavigation},
@@ -23,7 +23,7 @@ use crate::{
     settings::Settings,
 };
 
-use super::ItemCardDetails;
+use super::{CARD_HOVER_GROUP, ItemCardDetails};
 
 pub(super) struct NotesFocus {
     handle: FocusHandle,
@@ -125,11 +125,64 @@ fn scroll_fade_edges(offset: Pixels, max_offset: Pixels) -> FadeEdges {
     }
 }
 
-fn fade_band(theme_band: Pixels, line_height: Pixels, viewport_height: Pixels) -> Pixels {
-    theme_band
-        .min(line_height)
-        .min(viewport_height / 2.0)
-        .max(px(0.0))
+fn fade_band(line_height: Pixels, viewport_height: Pixels) -> Pixels {
+    (line_height * 1.5).min(viewport_height / 2.0).max(px(0.0))
+}
+
+#[derive(Clone, Copy)]
+enum FadeEdge {
+    Top,
+    Bottom,
+}
+
+/// The card colour behind the notes, which a scrim must match to read as the text fading out.
+#[derive(Clone, Copy)]
+pub(super) struct NotesSurface {
+    rest: Hsla,
+    hover: Hsla,
+}
+
+impl NotesSurface {
+    pub(super) fn opaque(rest: Hsla, hover: Hsla) -> Option<Self> {
+        (rest.a >= 1.0 && hover.a >= 1.0).then_some(Self { rest, hover })
+    }
+
+    fn scrims(self, edges: FadeEdges, band: Pixels) -> impl Iterator<Item = Div> {
+        [
+            edges.top.then_some(FadeEdge::Top),
+            edges.bottom.then_some(FadeEdge::Bottom),
+        ]
+        .into_iter()
+        .flatten()
+        .map(move |edge| self.scrim(edge, band))
+    }
+
+    fn scrim(self, edge: FadeEdge, band: Pixels) -> Div {
+        let angle = match edge {
+            FadeEdge::Top => 0.0,
+            FadeEdge::Bottom => 180.0,
+        };
+        let gradient = move |color: Hsla| {
+            linear_gradient_stops(
+                angle,
+                (0..=4).map(|step| {
+                    let t = step as f32 / 4.0;
+                    linear_color_stop(color.alpha(t * t * (3.0 - 2.0 * t)), t)
+                }),
+            )
+        };
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .h(band)
+            .map(|scrim| match edge {
+                FadeEdge::Top => scrim.top_0(),
+                FadeEdge::Bottom => scrim.bottom_0(),
+            })
+            .bg(gradient(self.rest))
+            .group_hover(CARD_HOVER_GROUP, |style| style.bg(gradient(self.hover)))
+    }
 }
 
 fn compact_markdown_spacing(mut spacing: Spacing) -> Spacing {
@@ -281,6 +334,7 @@ pub(super) fn render_item_card_notes(
     details: Option<ItemCardDetails>,
     tab_stop: bool,
     inspector_action: Option<Box<dyn gpui::Action>>,
+    surface: Option<NotesSurface>,
     header_height: Pixels,
     window: &mut Window,
     cx: &mut App,
@@ -408,6 +462,7 @@ pub(super) fn render_item_card_notes(
                 })
         });
     let scroll_for_fade = scroll_handle.clone();
+    let band = fade_band(line_height, viewport_height);
     let inspectable = inspector_action.is_some();
     let double_click = window
         .use_keyed_state((element_id.clone(), "notes-double-click"), cx, |_, _| {
@@ -498,17 +553,18 @@ pub(super) fn render_item_card_notes(
                     }
                 }
             })
-            .child(
-                ScrollFade::new(ident.child("fade"))
-                    .fit_height()
-                    .edges(paint.edges)
-                    .band(f32::from(fade_band(
-                        px(theme.effects.edge_fade_band),
-                        line_height,
-                        viewport_height,
-                    )))
-                    .child(viewport),
-            )
+            .map(|notes| match surface {
+                Some(surface) => notes
+                    .child(viewport)
+                    .children(surface.scrims(paint.edges, band)),
+                None => notes.child(
+                    ScrollFade::new(ident.child("fade"))
+                        .fit_height()
+                        .edges(paint.edges)
+                        .band(f32::from(band))
+                        .child(viewport),
+                ),
+            })
             .child(
                 canvas(
                     |_, _, _| (),
