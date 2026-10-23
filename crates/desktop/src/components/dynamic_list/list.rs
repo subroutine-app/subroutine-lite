@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::components::{
-    MarqueeSelection,
+    EdgeScroll, MarqueeSelection,
     elastic_overscroll::ElasticOverscroll,
     scroll_motion::{ScrollMotion, scroll_ranges},
     scrollbar::Scrollbar,
@@ -31,13 +31,13 @@ const EDGE_MAX_SPEED: f32 = 18.0;
 
 const FALLBACK_PREVIEW_WIDTH: Pixels = px(240.);
 
-fn edge_scroll_speed(local_y: f32, viewport_height: f32) -> Option<f32> {
+fn edge_scroll_speed(local_y: f32, viewport_height: f32) -> Option<Pixels> {
     if local_y < EDGE_ZONE {
         let t = (1.0 - (local_y / EDGE_ZONE)).clamp(0.0, 1.0);
-        Some(t * t * EDGE_MAX_SPEED)
+        Some(px(t * t * EDGE_MAX_SPEED))
     } else if local_y > viewport_height - EDGE_ZONE {
         let t = (1.0 - ((viewport_height - local_y) / EDGE_ZONE)).clamp(0.0, 1.0);
-        Some(-(t * t * EDGE_MAX_SPEED))
+        Some(px(-(t * t * EDGE_MAX_SPEED)))
     } else {
         None
     }
@@ -302,7 +302,7 @@ pub struct DynamicListState<D: DynamicListDelegate> {
     dragging_from: Option<usize>,
     hover_gap: Option<usize>,
     drag_amount: f32,
-    edge_scroll_speed: Option<f32>,
+    edge_scroll: EdgeScroll,
     motions: HashMap<ElementId, Motion>,
     departing: Vec<DepartingRow<D>>,
     initialized: bool,
@@ -334,7 +334,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
             dragging_from: None,
             hover_gap: None,
             drag_amount: 0.0,
-            edge_scroll_speed: None,
+            edge_scroll: EdgeScroll::default(),
             motions: HashMap::new(),
             departing: Vec::new(),
             initialized: false,
@@ -512,7 +512,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         self.scroll_motion.cancel();
         self.dragging_from = None;
         self.hover_gap = None;
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         self.marquee_active = false;
         self.scroll_handle.set_offset(Default::default());
         self.pending_scroll = None;
@@ -856,7 +856,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         self.hover_gap = Some(ix);
         self.drag_amount =
             self.rows.get(ix).map(|row| row.height).unwrap_or(0.0) + f32::from(self.gap);
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         cx.emit(DynamicListEvent::DragStarted { ix });
         cx.notify();
     }
@@ -876,10 +876,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
         let viewport = self.viewport;
         let local_y = f32::from(pointer_y - viewport.origin.y);
         let speed = edge_scroll_speed(local_y, f32::from(viewport.size.height));
-        if self.edge_scroll_speed != speed {
-            self.edge_scroll_speed = speed;
-            changed = true;
-        }
+        changed |= self.edge_scroll.hover(speed);
 
         if changed {
             cx.notify();
@@ -887,7 +884,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
 
         if let (Some(from), Some(gap)) = (self.dragging_from.take(), self.hover_gap.take()) {
             let to = self.commit_slot(from, gap);
@@ -918,18 +915,18 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
     fn cancel_drag(&mut self, cx: &mut Context<Self>) {
         if self.dragging_from.take().is_some() {
             self.hover_gap = None;
-            self.edge_scroll_speed = None;
+            self.edge_scroll.clear();
             cx.emit(DynamicListEvent::DragEnded);
             cx.notify();
         }
     }
 
     fn apply_edge_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(speed) = self.edge_scroll_speed else {
+        let Some(speed) = self.edge_scroll.speed() else {
             return;
         };
         let viewport = self.viewport;
-        let moved = self.scroll_by_y(px(speed));
+        let moved = self.scroll_by_y(speed);
         if moved != px(0.) {
             let content_top = viewport.origin.y + self.scroll_handle.offset().y;
             self.drag_moved(window.mouse_position().y, content_top, cx);
@@ -1217,7 +1214,7 @@ impl<D: DynamicListDelegate> DynamicListState<D> {
 
         let departing_rows = self.render_departing_rows(overscroll_y, window, cx);
 
-        if self.edge_scroll_speed.is_some()
+        if self.edge_scroll.is_active()
             || self.is_settling()
             || (self.elastic_overscroll && self.overscroll.needs_frame(cx))
         {

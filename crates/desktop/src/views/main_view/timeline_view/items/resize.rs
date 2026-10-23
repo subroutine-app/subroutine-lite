@@ -208,9 +208,9 @@ impl TimelineView {
             .filter(|position| position.y >= TOP_EDGE_INSET);
 
         let Some(local_pos) = local_pos else {
-            if self.active_resize.is_some() || self.edge_scroll_speed.is_some() {
+            if self.active_resize.is_some() || self.edge_scroll.is_active() {
                 self.active_resize = None;
-                self.edge_scroll_speed = None;
+                self.edge_scroll.clear();
                 cx.notify();
             }
             return;
@@ -227,14 +227,13 @@ impl TimelineView {
         let new_speed = self
             .bounds
             .and_then(|b| compute_edge_scroll_speed(local_pos.y, b.size.height));
-        if new_speed != self.edge_scroll_speed {
-            self.edge_scroll_speed = new_speed;
+        if self.edge_scroll.hover(new_speed) {
             cx.notify();
         }
     }
 
     pub(crate) fn commit_resize_state(&mut self, cx: &mut Context<Self>) {
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         let Some(resize) = self.active_resize.take() else {
             return;
         };

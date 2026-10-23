@@ -15,7 +15,8 @@ use gpui::{
 
 use crate::{
     components::{
-        DragData, DraggedItems, DropZone, ItemCardStates, MarqueeSelection, MarqueeView, marquee,
+        DragData, DraggedItems, DropZone, EdgeScroll, ItemCardStates, MarqueeSelection,
+        MarqueeView, marquee,
     },
     item_manager::{DiscardDraft, DraftSubmitted, DraftView, ItemManager},
     keys::{force_click_modifier, key},
@@ -187,7 +188,7 @@ pub(super) struct TimelineView {
 
     drop_active: bool,
 
-    edge_scroll_speed: Option<Pixels>,
+    edge_scroll: EdgeScroll,
 }
 
 impl TimelineView {
@@ -248,7 +249,7 @@ impl TimelineView {
         self.pending_item_focus = None;
         self.marker_panel = None;
         self.expanded_bin = None;
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
     }
 
     pub(super) fn finish_item_drag(&mut self, cx: &mut Context<Self>) {
@@ -256,7 +257,7 @@ impl TimelineView {
         self.drop_dragged = None;
         self.item_drag_anchor = None;
         self.drop_active = false;
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         cx.notify();
     }
 
@@ -413,7 +414,7 @@ impl TimelineView {
             suppress_force_click: false,
             marquee: MarqueeSelection::new(SelectionScope::Timeline),
             loaded: false,
-            edge_scroll_speed: None,
+            edge_scroll: EdgeScroll::default(),
         }
     }
 
@@ -523,16 +524,16 @@ impl MarqueeView for TimelineView {
         let Some(bounds) = self.bounds else {
             return;
         };
-        self.edge_scroll_speed = if self.marquee.has_scroll_region() {
+        self.edge_scroll.hover(if self.marquee.has_scroll_region() {
             None
         } else {
             compute_edge_scroll_speed(position.y - bounds.origin.y, bounds.size.height)
-        };
+        });
         cx.notify();
     }
 
     fn marquee_ended(&mut self, cx: &mut Context<Self>) {
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         cx.notify();
     }
 }

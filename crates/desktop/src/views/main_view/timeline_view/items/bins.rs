@@ -158,7 +158,7 @@ impl TimelineView {
             .bounds
             .map_or(size(px(800.), px(800.)), |bounds| bounds.size);
         self.marquee.end();
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         self.expanded_bin = Some(ExpandedBin {
             anchor,
             members: self.bin_members(bin),
@@ -194,7 +194,7 @@ impl TimelineView {
                 self.pending_item_focus = None;
             }
             self.marquee.end();
-            self.edge_scroll_speed = None;
+            self.edge_scroll.clear();
             cx.notify();
         }
     }
@@ -290,7 +290,7 @@ impl TimelineView {
             let editing = self.is_being_edited(id, cx);
             self.expanded_bin = None;
             self.marquee.end();
-            self.edge_scroll_speed = None;
+            self.edge_scroll.clear();
             if !editing {
                 self.pending_item_focus = Some(id);
             }
@@ -338,14 +338,14 @@ impl TimelineView {
             if expanded.members != members {
                 expanded.members = members;
                 self.marquee.end();
-                self.edge_scroll_speed = None;
+                self.edge_scroll.clear();
             }
         } else if let Some(expanded) = self.expanded_bin.take() {
             if expanded.focus.is_focused(window) {
                 self.focus_handle.focus(window, cx);
             }
             self.marquee.end();
-            self.edge_scroll_speed = None;
+            self.edge_scroll.clear();
         }
     }
 

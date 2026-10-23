@@ -235,7 +235,7 @@ impl TimelineView {
             return false;
         }
         self.marquee.end();
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         self.force_press = None;
         self.inspect_press_item = None;
         self.inspect_force_item = None;

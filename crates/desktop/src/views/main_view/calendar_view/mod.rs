@@ -6,7 +6,7 @@ use crate::components::CloseOverlay;
 use crate::components::ext::ElementExt;
 use crate::components::menu::MenuBuilder;
 
-use crate::components::{Button, ButtonVariants, Label};
+use crate::components::{Button, ButtonVariants, EdgeScroll, Label};
 use chrono::{DateTime, Datelike, Local, Month, NaiveDate, NaiveWeek, Weekday};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use gpui::AnyElement;
@@ -406,7 +406,7 @@ pub struct CalendarView {
     pending_scroll_week: Option<NaiveWeek>,
     scroll_cancelled: bool,
     marquee: MarqueeSelection,
-    edge_scroll_speed: Option<Pixels>,
+    edge_scroll: EdgeScroll,
     edge_scroll_task: Option<Task<()>>,
 }
 
@@ -569,18 +569,17 @@ impl CalendarView {
             pending_scroll_week: None,
             scroll_cancelled: false,
             marquee: MarqueeSelection::new(SelectionScope::Calendar),
-            edge_scroll_speed: None,
+            edge_scroll: EdgeScroll::default(),
             edge_scroll_task: None,
         }
     }
 
     fn set_edge_scroll_speed(&mut self, speed: Option<Pixels>, cx: &mut Context<Self>) -> bool {
-        if self.edge_scroll_speed == speed {
+        if !self.edge_scroll.hover(speed) {
             return false;
         }
 
-        self.edge_scroll_speed = speed;
-        if speed.is_some() {
+        if self.edge_scroll.is_active() {
             if self.edge_scroll_task.is_none() {
                 let interval = Duration::from_secs_f64(1.0 / AUTOSCROLL_REFRESH_RATE);
                 self.edge_scroll_task = Some(cx.spawn(async move |view, cx: &mut AsyncApp| {
@@ -757,7 +756,7 @@ impl CalendarView {
     }
 
     pub(super) fn finish_date_range_drag(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
-        let was_scrolling = self.edge_scroll_speed.is_some();
+        let was_scrolling = self.edge_scroll.is_active();
         self.set_edge_scroll_speed(None, cx);
         if let Some(mut drag) = self.date_range_drag.take()
             && drag.engaged
@@ -920,7 +919,7 @@ impl CalendarView {
     }
 
     pub(super) fn apply_edge_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(speed) = self.edge_scroll_speed else {
+        let Some(speed) = self.edge_scroll.speed() else {
             return;
         };
         if self.inspector_date.is_some() && self.marquee.is_active() {

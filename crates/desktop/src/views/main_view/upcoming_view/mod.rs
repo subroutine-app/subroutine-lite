@@ -33,8 +33,8 @@ use sections::{UpcomingSection, UpcomingSections};
 
 use crate::{
     components::{
-        DragData, DraggedItems, EmptyState, ItemCardStates, MarqueeSelection, MarqueeView,
-        ext::ElementExt as _, marquee,
+        DragData, DraggedItems, EdgeScroll, EmptyState, ItemCardStates, MarqueeSelection,
+        MarqueeView, ext::ElementExt as _, marquee,
     },
     icons::{AppIcon, Icon},
     selection::{
@@ -164,7 +164,7 @@ pub struct UpcomingView {
     drop_target: Option<UpcomingDropTarget>,
     dragged_items: Option<UpcomingDrag>,
     marquee: MarqueeSelection,
-    edge_scroll_speed: Option<Pixels>,
+    edge_scroll: EdgeScroll,
     edge_scroll_task: Option<Task<()>>,
 }
 
@@ -283,7 +283,7 @@ impl UpcomingView {
             drop_target: None,
             dragged_items: None,
             marquee: MarqueeSelection::new(SelectionScope::Upcoming),
-            edge_scroll_speed: None,
+            edge_scroll: EdgeScroll::default(),
             edge_scroll_task: None,
         };
         view.rebuild(cx);
@@ -740,12 +740,11 @@ impl UpcomingView {
     }
 
     fn set_edge_scroll_speed(&mut self, speed: Option<Pixels>, cx: &mut Context<Self>) -> bool {
-        if self.edge_scroll_speed == speed {
+        if !self.edge_scroll.hover(speed) {
             return false;
         }
 
-        self.edge_scroll_speed = speed;
-        if speed.is_some() {
+        if self.edge_scroll.is_active() {
             if self.edge_scroll_task.is_none() {
                 let interval = StdDuration::from_secs_f64(1.0 / AUTOSCROLL_REFRESH_RATE);
                 self.edge_scroll_task = Some(cx.spawn(async move |view, cx: &mut AsyncApp| {
@@ -786,7 +785,7 @@ impl UpcomingView {
             self.set_edge_scroll_speed(None, cx);
             return;
         }
-        let Some(speed) = self.edge_scroll_speed else {
+        let Some(speed) = self.edge_scroll.speed() else {
             return;
         };
         let moved = self.scroll_handle.scroll_by_y(speed);

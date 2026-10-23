@@ -357,8 +357,7 @@ impl TimelineView {
             let local_y = local_pos.map(|p| p.y)?;
             compute_edge_scroll_speed(local_y, b.size.height)
         });
-        if new_speed != self.edge_scroll_speed {
-            self.edge_scroll_speed = new_speed;
+        if self.edge_scroll.hover(new_speed) {
             cx.notify();
         }
     }

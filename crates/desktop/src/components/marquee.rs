@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use crate::components::ext::ElementExt;
+use crate::components::{EdgeScroll, ext::ElementExt};
 use gpui::{
     App, Bounds, Context, CursorStyle, Entity, FocusHandle, InteractiveElement, IntoElement,
     MouseButton, MouseCancelEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
@@ -52,22 +52,24 @@ impl Band {
     }
 }
 
-fn scroll_velocity(position: Point<Pixels>, viewport: Bounds<Pixels>) -> f32 {
+fn scroll_velocity(position: Point<Pixels>, viewport: Bounds<Pixels>) -> Option<Pixels> {
     const EDGE_ZONE: f32 = 56.;
     const MAX_SPEED: f32 = 1080.;
 
     if viewport.is_empty() || position.x < viewport.left() || position.x > viewport.right() {
-        return 0.;
+        return None;
     }
     let zone = EDGE_ZONE.min(f32::from(viewport.size.height) / 2.);
     let y = f32::from(position.y - viewport.top());
     let height = f32::from(viewport.size.height);
     if y < zone {
-        (1. - y / zone).clamp(0., 1.).powi(2) * MAX_SPEED
+        Some(px((1. - y / zone).clamp(0., 1.).powi(2) * MAX_SPEED))
     } else if y > height - zone {
-        -(1. - (height - y) / zone).clamp(0., 1.).powi(2) * MAX_SPEED
+        Some(px(
+            -(1. - (height - y) / zone).clamp(0., 1.).powi(2) * MAX_SPEED
+        ))
     } else {
-        0.
+        None
     }
 }
 
@@ -75,6 +77,7 @@ struct ScrollTracking {
     handle: ScrollHandle,
     offset: Point<Pixels>,
     last_frame: Option<Instant>,
+    edge: EdgeScroll,
 }
 
 impl ScrollTracking {
@@ -83,6 +86,7 @@ impl ScrollTracking {
             offset: handle.offset(),
             handle,
             last_frame: None,
+            edge: EdgeScroll::default(),
         }
     }
 
@@ -101,11 +105,12 @@ impl ScrollTracking {
                 now.saturating_duration_since(last)
                     .min(Duration::from_millis(50))
             });
-        let speed = if band.engaged {
-            scroll_velocity(band.current, viewport)
-        } else {
-            0.
-        };
+        self.edge.hover(
+            band.engaged
+                .then(|| scroll_velocity(band.current, viewport))
+                .flatten(),
+        );
+        let speed = self.edge.speed().map_or(0., f32::from);
         let next = point(
             offset.x,
             (offset.y + px(speed * elapsed.as_secs_f32())).clamp(-max_scroll.max(px(0.)), px(0.)),
@@ -337,6 +342,9 @@ impl MarqueeSelection {
             card.bounds.origin += next - previous;
         }
         if next == offset {
+            if scroll.edge.is_waiting() {
+                window.request_animation_frame();
+            }
             return false;
         }
         handle.set_offset(next);

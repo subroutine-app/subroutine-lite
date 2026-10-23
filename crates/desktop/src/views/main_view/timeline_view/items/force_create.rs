@@ -125,7 +125,7 @@ impl TimelineView {
 
         self.marquee.end();
         SelectionManager::clear_global(cx);
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         self.drop_dragged = None;
         self.suppress_force_click = true;
         self.force_create = Some(state);
@@ -163,8 +163,8 @@ impl TimelineView {
             let local_y = position.y - bounds.origin.y;
             super::super::timeline::compute_edge_scroll_speed(local_y, bounds.size.height)
         });
-        if self.edge_scroll_speed != next_speed || before != boundary || divider_changed {
-            self.edge_scroll_speed = next_speed;
+        let speed_changed = self.edge_scroll.hover(next_speed);
+        if speed_changed || before != boundary || divider_changed {
             cx.notify();
         }
     }
@@ -184,7 +184,7 @@ impl TimelineView {
             return;
         };
         self.active_drop = None;
-        self.edge_scroll_speed = None;
+        self.edge_scroll.clear();
         self.force_press = None;
         match state.commit() {
             ForceCreateCommit::Signal(time) => self.add_draft_signal(time, window, cx),

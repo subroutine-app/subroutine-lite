@@ -659,8 +659,10 @@ impl TimelineView {
             self.scroll_target = None;
         }
 
-        if let Some(speed) = self.edge_scroll_speed {
+        if let Some(speed) = self.edge_scroll.speed() {
             self.scroll_by_px(speed, cx);
+        } else if self.edge_scroll.is_active() {
+            window.request_animation_frame();
         }
 
         if let Some(anchor_time) = self.zoom_anchor
@@ -700,7 +702,7 @@ impl TimelineView {
                 .scrolled_by(point(px(0.), self.display_scroll_delta));
             self.marquee.drag_to(pointer, cx);
         }
-        if self.edge_scroll_speed.is_some() {
+        if self.edge_scroll.is_active() {
             if self.force_create.is_some() {
                 self.update_force_create(pointer, cx);
             } else if self.active_resize.is_some() {
