@@ -18,7 +18,7 @@ use crate::{
     item_manager::ItemManager,
     selection::{SelectionGesture, SelectionManager, SelectionScope},
     settings::Settings,
-    views::TOP_EDGE_INSET,
+    views::{OVERLAY_BORDER_WIDTH, TOP_EDGE_INSET},
 };
 
 use super::super::{CloseTimelineBin, TimelineView};
@@ -56,7 +56,7 @@ fn expanded_bounds(
         .max(px(360.))
         .min(px(520.))
         .min((viewport.width - inset * 2.).max(px(0.)));
-    let height = (HEADER_HEIGHT + HEADER_GAP + content_height)
+    let height = (HEADER_HEIGHT + HEADER_GAP + OVERLAY_BORDER_WIDTH * 2. + content_height)
         .min(MAX_HEIGHT)
         .min((viewport.height - visible_top - inset).max(px(0.)));
     let left = if expands_left {
@@ -564,7 +564,7 @@ impl TimelineView {
                     frame
                         .gap(HEADER_GAP)
                         .rounded(px(cx.theme().radius(Radius::Dialog)))
-                        .border_1()
+                        .border(OVERLAY_BORDER_WIDTH)
                         .border_color(hairline)
                 },
                 |frame| {

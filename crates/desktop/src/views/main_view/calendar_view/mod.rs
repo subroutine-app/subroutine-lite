@@ -24,6 +24,8 @@ use gpui_kit::overlay::GlassExt as _;
 use gpui_kit::overlay::GlassPreset;
 use gpui_kit_theme::ActiveTheme;
 use gpui_kit_theme::{Radius, Surface};
+
+use crate::views::OVERLAY_BORDER_WIDTH;
 use subroutine_core::{Action, AnyItem, ItemType, Marker, SchedulePoint, Signal};
 
 mod borders;
@@ -1776,6 +1778,7 @@ impl CalendarView {
         let desired_height = DAY_INSPECTOR_HEADER_HEIGHT
             + DAY_INSPECTOR_HEADER_GAP
             + DAY_INSPECTOR_PADDING * 2.
+            + OVERLAY_BORDER_WIDTH * 2.
             + list_height.max(crate::components::SIDEBAR_ITEM_HEIGHT);
         let visible_top = self.visible_top().min(viewport.size.height);
         let visible_height = (viewport.size.height - visible_top).max(px(0.));
@@ -1869,7 +1872,7 @@ impl CalendarView {
             .p(DAY_INSPECTOR_PADDING)
             .overflow_hidden()
             .rounded(px(cx.theme().radius(Radius::Dialog)))
-            .border_1()
+            .border(OVERLAY_BORDER_WIDTH)
             .border_color(cx.theme().colors.hairline)
             .text_color(cx.theme().colors.text)
             .block_mouse_except_scroll()

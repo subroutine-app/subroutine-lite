@@ -30,7 +30,10 @@ use crate::{
         SelectAllItems, SelectionManager, SelectionOrder, SelectionScope, focus_item,
         focus_item_extending,
     },
-    views::{FocusNext, FocusPrevious, TOP_EDGE_INSET, format_item_meta, frosted_overlay_tint},
+    views::{
+        FocusNext, FocusPrevious, OVERLAY_BORDER_WIDTH, TOP_EDGE_INSET, format_item_meta,
+        frosted_overlay_tint,
+    },
 };
 
 use super::super::{self as timeline, TimelineView};
@@ -182,7 +185,8 @@ fn panel_bounds(
     let reveal = reveal.clamp(0., 1.);
     let target_width = anchor.size.width.clamp(px(400.), px(520.));
     let target_height =
-        (HEADER_HEIGHT + HEADER_GAP + PADDING * 2. + content_height).min(MAX_HEIGHT);
+        (HEADER_HEIGHT + HEADER_GAP + PADDING * 2. + OVERLAY_BORDER_WIDTH * 2. + content_height)
+            .min(MAX_HEIGHT);
     let width = (anchor.size.width + (target_width - anchor.size.width) * reveal)
         .min((viewport.width - horizontal_inset * 2.).max(px(0.)));
     let height = (anchor.size.height + (target_height - anchor.size.height) * reveal)
@@ -546,7 +550,7 @@ impl TimelineView {
             .p(PADDING)
             .overflow_hidden()
             .rounded(px(cx.theme().radius(Radius::Dialog)))
-            .border_1()
+            .border(OVERLAY_BORDER_WIDTH)
             .border_color(cx.theme().colors.hairline)
             .text_color(cx.theme().colors.text)
             .block_mouse_except_scroll()

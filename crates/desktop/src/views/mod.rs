@@ -10,6 +10,8 @@ pub(crate) const LIST_VIEW_MAX_WIDTH: Pixels = px(760.);
 pub(crate) const LIBRARY_HEADER_HEIGHT: Pixels = px(96.);
 pub(crate) const SEARCH_HEADER_HEIGHT: Pixels = px(216.);
 
+pub(crate) const OVERLAY_BORDER_WIDTH: Pixels = px(1.);
+
 pub(crate) fn platform_material_scope(child: impl IntoElement) -> AnyElement {
     #[cfg(target_os = "macos")]
     {
