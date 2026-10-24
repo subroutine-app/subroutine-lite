@@ -4,9 +4,9 @@ use gpui::{
 };
 use std::time::Duration;
 
-const REVEAL_EDGE_WIDTH: Pixels = px(12.);
+const REVEAL_EDGE_WIDTH: Pixels = px(16.);
 const HOVER_EXIT_GUTTER: Pixels = px(24.);
-const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(300);
+const HOVER_REVEAL_DELAY: Duration = Duration::from_millis(180);
 const HOVER_CLOSE_DELAY: Duration = Duration::from_millis(180);
 
 #[derive(Clone, Copy, PartialEq, Eq)]

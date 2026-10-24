@@ -33,12 +33,20 @@ const ITEM_CARD_END_INSET: Pixels = px(6.);
 const ITEM_HEADER_CONTENT_GAP: Pixels = px(3.);
 const DETAILS_FOOTER_HEIGHT: Pixels = px(16.);
 const DETAILS_FOOTER_INSET: Pixels = px(2.);
+const META_LINE_GAP: Pixels = px(1.);
 
 #[derive(Clone, Copy, PartialEq)]
 enum DisclosurePlacement {
     BelowNotes,
-    Squeezed,
-    Inline,
+    MetaLine,
+    TitleLine,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DisclosureLabel {
+    IconOnly,
+    ShowMore,
+    ShowDetails,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -150,8 +158,8 @@ impl ItemCard {
 
     fn render_details_toggle(
         &self,
-        in_footer: bool,
-        labelled: bool,
+        line_sized: bool,
+        label: DisclosureLabel,
         notes_focus: Option<&FocusHandle>,
         window: &Window,
         cx: &mut App,
@@ -169,7 +177,7 @@ impl ItemCard {
                 .ghost()
                 .xsmall()
                 .when_else(
-                    in_footer,
+                    line_sized,
                     |button| button.h(DETAILS_FOOTER_HEIGHT),
                     |button| button.compact(),
                 )
@@ -178,9 +186,15 @@ impl ItemCard {
                 } else {
                     AppIcon::ChevronDown
                 })
-                .when(labelled, |button| {
-                    button.label(if expanded { "Show less" } else { "Show more" })
-                })
+                .when_some(
+                    match (label, expanded) {
+                        (DisclosureLabel::IconOnly, _) => None,
+                        (_, true) => Some("Show less"),
+                        (DisclosureLabel::ShowMore, false) => Some("Show more"),
+                        (DisclosureLabel::ShowDetails, false) => Some("Show details"),
+                    },
+                    |button, label| button.label(label),
+                )
                 .tooltip(if expanded {
                     "Collapse details"
                 } else {
@@ -303,7 +317,13 @@ impl ItemCard {
         let more_action = self.render_more_action(menu_enabled && !narrow_details, cx);
 
         if self.compact {
-            let details_toggle = self.render_details_toggle(false, false, notes_focus, window, cx);
+            let details_toggle = self.render_details_toggle(
+                false,
+                DisclosureLabel::IconOnly,
+                notes_focus,
+                window,
+                cx,
+            );
             let buttons = more_action
                 .filter(|_| self.projected_availability_store.is_some())
                 .map(|more| {
@@ -488,10 +508,11 @@ impl ItemCard {
         meta.extend(self.meta.iter().cloned());
 
         let muted = cx.theme().colors.text_muted;
-        let meta_line = (!self.title_only && !meta.is_empty()).then(|| {
+        let meta_facts = (!self.title_only && !meta.is_empty()).then(|| {
             div()
                 .row()
-                .w_full()
+                .flex_1()
+                .min_w_0()
                 .gap_2()
                 .overflow_hidden()
                 .children(meta.into_iter().map(move |fact| {
@@ -531,34 +552,28 @@ impl ItemCard {
 
         let box_height = geometry.size.height;
         let footer_extent = ITEM_HEADER_CONTENT_GAP + DETAILS_FOOTER_HEIGHT + DETAILS_FOOTER_INSET;
-        let preview_fits = content_source.is_some()
-            && geometry
-                .notes_size(
-                    self.content_offset.y,
-                    measured_header,
-                    footer_extent,
-                    self.content_offset.x,
-                )
-                .height
-                >= px(cx.theme().typography.body.line_height);
+        let meta_line_fits = meta_facts.is_some()
+            || box_height <= px(0.)
+            || box_height
+                >= self.content_offset.y
+                    + self.title_scale.line_height()
+                    + META_LINE_GAP
+                    + DETAILS_FOOTER_HEIGHT
+                    + ITEM_CARD_END_INSET;
         let disclosure = expandable.then(|| {
-            if open || preview_fits {
+            if open {
                 DisclosurePlacement::BelowNotes
-            } else if box_height <= px(0.) || box_height >= measured_header + DETAILS_FOOTER_HEIGHT
-            {
-                DisclosurePlacement::Squeezed
+            } else if meta_line_fits {
+                DisclosurePlacement::MetaLine
             } else {
-                DisclosurePlacement::Inline
+                DisclosurePlacement::TitleLine
             }
         });
-        let in_footer = matches!(
-            disclosure,
-            Some(DisclosurePlacement::BelowNotes | DisclosurePlacement::Squeezed)
-        );
-        let bottom_inset = if in_footer {
-            footer_extent
+        let in_footer = disclosure == Some(DisclosurePlacement::BelowNotes);
+        let (bottom_inset, bottom_padding) = if in_footer {
+            (footer_extent, DETAILS_FOOTER_INSET)
         } else {
-            ITEM_CARD_END_INSET
+            (ITEM_CARD_END_INSET, ITEM_CARD_END_INSET)
         };
         let held_top = self
             .details
@@ -571,30 +586,6 @@ impl ItemCard {
         } else {
             self.content_offset.y
         };
-        let (padding_top, padding_bottom, gap) = match disclosure {
-            Some(DisclosurePlacement::BelowNotes) => {
-                (top, DETAILS_FOOTER_INSET, ITEM_HEADER_CONTENT_GAP)
-            }
-            Some(DisclosurePlacement::Squeezed) => {
-                let gaps = if content_source.is_some() { 2. } else { 1. };
-                let slack = (box_height - measured_header - DETAILS_FOOTER_HEIGHT).max(px(0.));
-                (
-                    px(0.),
-                    px(0.),
-                    (slack / (gaps + 2.)).min(ITEM_HEADER_CONTENT_GAP),
-                )
-            }
-            Some(DisclosurePlacement::Inline) | None => {
-                (top, ITEM_CARD_END_INSET, ITEM_HEADER_CONTENT_GAP)
-            }
-        };
-        let labelled = if in_footer {
-            !narrow_details
-        } else {
-            geometry.size.width >= px(360.0)
-        };
-        let details_toggle =
-            self.render_details_toggle(in_footer, labelled, notes_focus, window, cx);
 
         let content_panel = content_source.and_then(|source| {
             render_item_card_notes(
@@ -639,22 +630,46 @@ impl ItemCard {
         {
             let panel = content_panel
                 .as_ref()
-                .map_or(px(0.), |(_, height)| gap + *height);
-            let footer = if in_footer {
-                gap + DETAILS_FOOTER_HEIGHT
-            } else {
-                px(0.)
-            };
-            let slack =
-                box_height - padding_top - padding_bottom - measured_header - panel - footer;
-            details.record_collapsed_top(padding_top + (slack / 2.).max(px(0.)));
+                .map_or(px(0.), |(_, height)| ITEM_HEADER_CONTENT_GAP + *height);
+            let slack = box_height - top - bottom_inset - measured_header - panel;
+            details.record_collapsed_top(top + (slack / 2.).max(px(0.)));
         }
-        let content_panel = content_panel.map(|(notes, _)| notes);
-        let (inline_toggle, footer_toggle) = if in_footer {
-            (None, details_toggle)
-        } else {
-            (details_toggle, None)
+        let notes_visible = content_panel
+            .as_ref()
+            .is_some_and(|(_, height)| *height > px(0.));
+        let labelled = match disclosure {
+            Some(DisclosurePlacement::TitleLine) => geometry.size.width >= px(360.0),
+            _ => !narrow_details,
         };
+        let label = match (labelled, notes_visible) {
+            (false, _) => DisclosureLabel::IconOnly,
+            (true, true) => DisclosureLabel::ShowMore,
+            (true, false) => DisclosureLabel::ShowDetails,
+        };
+        let details_toggle = self.render_details_toggle(
+            disclosure != Some(DisclosurePlacement::TitleLine),
+            label,
+            notes_focus,
+            window,
+            cx,
+        );
+        let content_panel = content_panel.map(|(notes, _)| notes);
+        let (mut footer_toggle, mut meta_toggle, mut title_toggle) = (None, None, None);
+        match disclosure {
+            Some(DisclosurePlacement::BelowNotes) => footer_toggle = details_toggle,
+            Some(DisclosurePlacement::MetaLine) => meta_toggle = details_toggle,
+            Some(DisclosurePlacement::TitleLine) => title_toggle = details_toggle,
+            None => {}
+        }
+        let meta_line = (meta_facts.is_some() || meta_toggle.is_some()).then(|| {
+            div()
+                .row()
+                .w_full()
+                .items_center()
+                .gap_2()
+                .children(meta_facts)
+                .children(meta_toggle.map(|toggle| div().flex_none().ml_auto().child(toggle)))
+        });
 
         let buttons: Vec<AnyElement> = quick_action.into_iter().chain(more_action).collect();
         let buttons = (!buttons.is_empty())
@@ -704,7 +719,7 @@ impl ItemCard {
                     .column()
                     .flex_1()
                     .min_w(px(0.))
-                    .gap(px(1.))
+                    .gap(META_LINE_GAP)
                     .overflow_hidden()
                     .child(
                         div()
@@ -717,7 +732,7 @@ impl ItemCard {
                     .children(meta_line),
             )
             .children(trailing_controls)
-            .children(inline_toggle.map(|toggle| div().flex_none().child(toggle)))
+            .children(title_toggle.map(|toggle| div().flex_none().child(toggle)))
             .when_some(header_height, |header, height| {
                 let owner = window.current_view();
                 header.on_children_prepainted(move |children, window, cx| {
@@ -738,15 +753,15 @@ impl ItemCard {
             .w_full()
             .h_full()
             .when_else(
-                (top_aligned || open) && disclosure != Some(DisclosurePlacement::Squeezed),
+                top_aligned || open,
                 |this| this.justify_start(),
                 |this| this.justify_center(),
             )
-            .gap(gap)
+            .gap(ITEM_HEADER_CONTENT_GAP)
             .pl(self.content_offset.x)
             .pr(ITEM_CARD_END_INSET)
-            .pt(padding_top)
-            .pb(padding_bottom)
+            .pt(top)
+            .pb(bottom_padding)
             .child(header)
             .children(content_panel)
             .children(footer)
