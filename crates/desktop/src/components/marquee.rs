@@ -24,6 +24,7 @@ struct Band {
 
 impl Band {
     const THRESHOLD: Pixels = px(4.);
+    const MIN_EXTENT: Pixels = px(1.);
 
     fn new(origin: Point<Pixels>) -> Self {
         Self {
@@ -45,9 +46,17 @@ impl Band {
 
     fn bounds(&self) -> Bounds<Pixels> {
         let left = self.origin.x.min(self.current.x);
-        let right = self.origin.x.max(self.current.x);
+        let right = self
+            .origin
+            .x
+            .max(self.current.x)
+            .max(left + Self::MIN_EXTENT);
         let top = self.origin.y.min(self.current.y);
-        let bottom = self.origin.y.max(self.current.y);
+        let bottom = self
+            .origin
+            .y
+            .max(self.current.y)
+            .max(top + Self::MIN_EXTENT);
         Bounds::from_corners(point(left, top), point(right, bottom))
     }
 }
