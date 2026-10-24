@@ -144,6 +144,12 @@ pub const TOP_EDGE_INSET: gpui::Pixels = if cfg!(target_os = "macos") {
     px(40.)
 };
 
+fn titlebar_input<E: InteractiveElement + FluentBuilder>(titlebar: E, cx: &App) -> E {
+    titlebar.when(!cx.has_active_drag(), |titlebar| {
+        titlebar.block_mouse_except_scroll()
+    })
+}
+
 pub enum CurrentOverlay {
     CommandPalette(Entity<AppCommandPalette>),
     ItemCreator(Entity<ItemCreator>),
@@ -280,7 +286,7 @@ impl Render for RootView {
             .children(library_drawer)
             .children(navigation_drawer)
             .when(cfg!(not(target_os = "windows")), |root| {
-                root.child(
+                root.child(titlebar_input(
                     div()
                         .absolute()
                         .top_0()
@@ -291,7 +297,8 @@ impl Render for RootView {
                         .on_mouse_down(MouseButton::Left, |_event, window, _cx| {
                             window.start_window_move();
                         }),
-                )
+                    cx,
+                ))
                 .when(show_navigation_toggle, |root| {
                     root.child(
                         div()
@@ -312,6 +319,7 @@ impl Render for RootView {
                 root.child(Self::render_windows_titlebar(
                     left_panel_width,
                     self.current_overlay.is_some(),
+                    cx,
                 ))
                 .child(Self::render_windows_title(Self::windows_title_left(
                     left_panel_width,

@@ -545,6 +545,9 @@ impl TimelineView {
             .gap(HEADER_GAP)
             .p(PADDING)
             .overflow_hidden()
+            .rounded(px(cx.theme().radius(Radius::Dialog)))
+            .border_1()
+            .border_color(cx.theme().colors.hairline)
             .text_color(cx.theme().colors.text)
             .block_mouse_except_scroll()
             .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {

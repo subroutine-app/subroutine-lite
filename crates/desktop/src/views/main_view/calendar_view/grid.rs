@@ -672,7 +672,7 @@ impl CalendarView {
             && self.date_range_drag.is_none()
             && !self.marquee.is_active()
             && self.inspector_date.is_none()
-            && !self.month_selector_open;
+            && !self.time_selector_open;
 
         div()
             .absolute()
@@ -1100,6 +1100,7 @@ impl CalendarView {
                                                                 ),
                                                                 drag_data,
                                                             )
+                                                            .hold_to_drag(true)
                                                             .absolute()
                                                             .size_full(),
                                                         )

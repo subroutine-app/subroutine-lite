@@ -335,6 +335,7 @@ impl RenderOnce for ItemCard {
             }
         });
         let drag_size = self.drag_size;
+        let hold_to_drag = self.hold_to_drag;
         let dragged_since_press = Rc::new(Cell::new(false));
         let dragged_for_start = Rc::clone(&dragged_since_press);
         let dragged_for_press = Rc::clone(&dragged_since_press);
@@ -626,6 +627,7 @@ impl RenderOnce for ItemCard {
                 let drag_data = create_drag_data(dragged, drag_size, cx);
                 this.child(
                     Draggable::new(("item-card-draggable", item.id_u64()), drag_data)
+                        .hold_to_drag(hold_to_drag)
                         .on_drag_start(move |_, _| dragged_for_start.set(true))
                         .absolute()
                         .size_full(),

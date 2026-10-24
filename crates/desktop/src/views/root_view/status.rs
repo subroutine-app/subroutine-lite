@@ -204,7 +204,7 @@ impl RootView {
             )
             .when(cfg!(target_os = "windows"), |screen| {
                 screen
-                    .child(Self::render_windows_titlebar(px(0.), true))
+                    .child(Self::render_windows_titlebar(px(0.), true, cx))
                     .child(Self::render_windows_title(px(10.)))
             })
             .child(self.toasts.clone())

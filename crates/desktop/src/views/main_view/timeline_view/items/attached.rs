@@ -17,7 +17,7 @@ use gpui_kit_theme::ActiveTheme;
 use subroutine_core::{AnyItem, StartPrecision};
 
 use crate::AppIcon;
-use crate::components::ItemCard;
+use crate::components::{DRAG_HOLD, ItemCard};
 use crate::item_manager::ItemManager;
 use crate::keys::force_click_modifier;
 use crate::selection::{SelectionManager, SelectionOrder, SelectionScope};
@@ -492,6 +492,7 @@ impl TimelineView {
                 },
                 |_, _, _, cx| cx.new(|_| ResizeGhost),
             )
+            .drag_hold(DRAG_HOLD)
             .opacity(0.)
             .hover(|s| s.opacity(0.5))
             .justify_center()
@@ -524,6 +525,7 @@ impl TimelineView {
                 },
                 |_, _, _, cx| cx.new(|_| ResizeGhost),
             )
+            .drag_hold(DRAG_HOLD)
             .opacity(0.)
             .hover(|s| s.opacity(0.5))
             .items_end()
@@ -575,7 +577,8 @@ impl TimelineView {
             .selectable(order)
             .size_full()
             .bg(cx.theme().colors.panel)
-            .draggable(true, None);
+            .draggable(true, None)
+            .hold_to_drag();
         let card = self
             .wire_timeline_item_card(card, &item, cx)
             .capture_any_mouse_down(cx.listener(move |view, event: &MouseDownEvent, _, _| {

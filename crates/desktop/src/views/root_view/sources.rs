@@ -1,7 +1,7 @@
 use super::{
     RootView, TOP_EDGE_INSET,
     navigation::WorkspaceRoute,
-    panels::{WORKSPACE_PANEL_BORDER_WIDTH, WORKSPACE_PANEL_GAP},
+    panels::{WORKSPACE_PANEL_BORDER_WIDTH, WORKSPACE_PANEL_GAP, top_edge_scrim},
 };
 use crate::{
     AppIcon,
@@ -22,7 +22,7 @@ use gpui::{
 use gpui_kit::{
     controls::search::{SearchInput, SearchInputEvent},
     foundation::{Sizable as _, StyledExt as _},
-    layout::{ScrollEdgeEffect, ScrollFade},
+    layout::ScrollFade,
     overlay::{GlassExt as _, GlassPreset},
 };
 use gpui_kit_theme::{ActiveTheme, Elevation, Surface};
@@ -444,7 +444,12 @@ impl RootView {
         let header_frame = div()
             .id(format!("{route_ident}.header"))
             .size_full()
-            .when(in_drawer, |frame| frame.overflow_hidden())
+            .when(in_drawer, |frame| {
+                frame
+                    .overflow_hidden()
+                    .border_b(WORKSPACE_PANEL_BORDER_WIDTH)
+                    .border_color(cx.theme().colors.hairline)
+            })
             .child(header);
         if cfg!(any(target_os = "macos", target_os = "windows")) && !in_drawer {
             return header_frame.into_any_element();
@@ -507,38 +512,35 @@ impl RootView {
             .size_full()
             .overflow_hidden()
             .child(
-                ScrollEdgeEffect::new(format!("{route_ident}.header-edge"))
+                ScrollFade::new(format!("{route_ident}.header-fade"))
                     .top(true)
-                    .soft()
                     .band(edge_band)
-                    .when(cfg!(target_os = "windows") && !in_drawer, |edge| {
-                        edge.blur(0.)
-                    })
+                    .text_only()
                     .child(
-                        ScrollFade::new(format!("{route_ident}.header-fade"))
-                            .top(true)
-                            .band(edge_band)
-                            .text_only()
-                            .child(
-                                div().size_full().overflow_hidden().child(
-                                    div()
-                                        .absolute()
-                                        .top(header_height - full_header_height)
-                                        .bottom_0()
-                                        .left_0()
-                                        .right_0()
-                                        .max_w(if searching {
-                                            px(840.)
-                                        } else {
-                                            LIST_VIEW_MAX_WIDTH
-                                        })
-                                        .when(!searching, |body| body.min_w(LIST_VIEW_MIN_WIDTH))
-                                        .mx_auto()
-                                        .child(route_body),
-                                ),
-                            ),
+                        div().size_full().overflow_hidden().child(
+                            div()
+                                .absolute()
+                                .top(header_height - full_header_height)
+                                .bottom_0()
+                                .left_0()
+                                .right_0()
+                                .max_w(if searching {
+                                    px(840.)
+                                } else {
+                                    LIST_VIEW_MAX_WIDTH
+                                })
+                                .when(!searching, |body| body.min_w(LIST_VIEW_MIN_WIDTH))
+                                .mx_auto()
+                                .child(route_body),
+                        ),
                     ),
             )
+            .when(!in_drawer && cfg!(not(target_os = "windows")), |view| {
+                view.child(top_edge_scrim(
+                    header_height,
+                    cx.theme().colors.canvas.alpha(1.0),
+                ))
+            })
             .when_some(local_header, |view, header| {
                 view.child(
                     div()

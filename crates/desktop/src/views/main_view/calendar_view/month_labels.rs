@@ -241,7 +241,7 @@ impl CalendarView {
             .aria_label(format!("Choose month · {}", month.format("%B %Y")))
             .on_click(cx.listener(|view, _, _, cx| {
                 cx.stop_propagation();
-                view.toggle_month_selector(cx);
+                view.toggle_time_selector(cx);
             }));
         // Keep the button in flow so its glass wrapper measures the full control.
         let sticky = div().row().absolute().top(top).right(INSET).child(sticky);

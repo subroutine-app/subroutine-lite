@@ -86,7 +86,7 @@ fn resolve_local_floor<Tz: TimeZone>(
     }
 }
 
-fn resolve_calendar_boundary<Tz: TimeZone>(
+pub(super) fn resolve_calendar_boundary<Tz: TimeZone>(
     timezone: &Tz,
     mut naive: NaiveDateTime,
 ) -> DateTime<Tz> {

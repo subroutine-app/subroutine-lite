@@ -8,15 +8,16 @@ use crate::components::ext::ElementExt;
 
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate};
 use gpui::{
-    App, AsyncApp, Bounds, Context, DragMoveEvent, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
-    Render, Styled, Window, actions, container_query, div, prelude::FluentBuilder, px,
+    App, AppContext as _, AsyncApp, Bounds, Context, DragMoveEvent, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, Point, Render, Styled, Window, actions, container_query, div,
+    prelude::FluentBuilder, px,
 };
 
 use crate::{
     components::{
         DragData, DraggedItems, DropZone, EdgeScroll, ItemCardStates, MarqueeSelection,
-        MarqueeView, marquee,
+        MarqueeView, TimeSelectEvent, TimeSelectState, TimeUnit, marquee,
     },
     item_manager::{DiscardDraft, DraftSubmitted, DraftView, ItemManager},
     keys::{force_click_modifier, key},
@@ -185,6 +186,9 @@ pub(super) struct TimelineView {
     suppress_force_click: bool,
     marquee: MarqueeSelection,
     loaded: bool,
+
+    time_selector_open: bool,
+    time_select: Entity<TimeSelectState>,
 
     drop_active: bool,
 
@@ -356,6 +360,25 @@ impl TimelineView {
         )
         .detach();
 
+        let time_select = cx.new(|cx| TimeSelectState::new(TimeUnit::Hour, cx));
+        cx.subscribe(
+            &time_select,
+            |view, _, event: &TimeSelectEvent, cx| match event {
+                TimeSelectEvent::Selected(period) => {
+                    let local = |time| resolve_calendar_boundary(&Local, time);
+                    view.zoom_to_span(local(period.start()), local(period.end()), cx);
+                    if period.unit() == TimeUnit::Hour {
+                        view.time_selector_open = false;
+                    }
+                }
+                TimeSelectEvent::Now => {
+                    view.scroll_reset(cx);
+                    view.time_selector_open = false;
+                }
+            },
+        )
+        .detach();
+
         Self {
             focus_handle,
             toolbar_position,
@@ -414,6 +437,8 @@ impl TimelineView {
             suppress_force_click: false,
             marquee: MarqueeSelection::new(SelectionScope::Timeline),
             loaded: false,
+            time_selector_open: false,
+            time_select,
             edge_scroll: EdgeScroll::default(),
         }
     }
@@ -547,6 +572,7 @@ impl TimelineView {
     ) -> impl IntoElement {
         self.apply_pending_fit(viewport_height, cx);
         self.update_geometry(window, cx);
+        self.sync_time_in_view(cx);
         self.animate_card_details(window, cx);
         SelectionManager::report_order(&self.selection_order(), cx);
         self.apply_completion_focus(window, cx);
@@ -572,6 +598,7 @@ impl TimelineView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseDownEvent, _, cx| {
+                    view.close_time_selector(cx);
                     if force_click_modifier(&event.modifiers) {
                         view.pressure_changed(gpui::PressureStage::Force, event.position, cx);
                     }
@@ -623,7 +650,8 @@ impl TimelineView {
             .child(force_create_hook(hook_entity.clone()))
             .children(self.render_outer_labels(window, cx))
             .children(self.render_now_shortcut(TOP_EDGE_INSET + STICKY_OUTER_LABEL_INSET, cx))
-            .children(self.render_marker_panel(window, cx));
+            .children(self.render_marker_panel(window, cx))
+            .children(self.render_time_selection(window));
         let body = marquee(body, self, cx);
 
         self.tab_root(div().column(), cx)
@@ -710,6 +738,11 @@ impl MainViewTab for TimelineView {
     }
 
     fn dismissed(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.time_selector_open {
+            self.close_time_selector(cx);
+            self.focus_handle.focus(window, cx);
+            return true;
+        }
         if self.expanded_bin.is_some() {
             self.close_bin(window, cx);
             return true;

@@ -16,12 +16,12 @@ mod item_card;
 mod label;
 mod marquee;
 pub mod menu;
-mod month_selector;
 mod overlay;
 pub(crate) mod scroll_motion;
 pub mod scrollbar;
 mod sidebar_panel;
 pub mod text_input;
+mod time_selector;
 mod toast;
 pub mod transition;
 pub mod virtual_list;
@@ -37,9 +37,9 @@ pub use empty_state::*;
 pub use item_card::*;
 pub use label::*;
 pub use marquee::*;
-pub use month_selector::*;
 pub use overlay::*;
 pub use sidebar_panel::*;
+pub use time_selector::*;
 pub(crate) use toast::timed_toast;
 
 pub fn init(cx: &mut App) {

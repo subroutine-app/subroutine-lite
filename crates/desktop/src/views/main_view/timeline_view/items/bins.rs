@@ -6,7 +6,7 @@ use gpui::{
     Window, div, point, prelude::FluentBuilder, px, size,
 };
 use gpui_kit::foundation::{FocusRing as _, Sizable as _, StyledExt as _};
-use gpui_kit_theme::ActiveTheme;
+use gpui_kit_theme::{ActiveTheme, Radius};
 use uuid::Uuid;
 
 use crate::{
@@ -560,7 +560,13 @@ impl TimelineView {
             .overflow_hidden()
             .when_else(
                 open,
-                |frame| frame.gap(HEADER_GAP),
+                |frame| {
+                    frame
+                        .gap(HEADER_GAP)
+                        .rounded(px(cx.theme().radius(Radius::Dialog)))
+                        .border_1()
+                        .border_color(hairline)
+                },
                 |frame| {
                     frame
                         .rounded_xl()

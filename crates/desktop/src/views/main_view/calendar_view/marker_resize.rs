@@ -238,7 +238,7 @@ impl CalendarView {
         self.hovered_date = None;
         self.force_click_opened = false;
         self.suppress_date_click = false;
-        self.month_selector_open = false;
+        self.time_selector_open = false;
         if self.inspector_date.is_some() {
             self.close_day_inspector(window, cx);
         }

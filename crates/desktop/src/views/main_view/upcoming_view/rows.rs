@@ -3,9 +3,9 @@ use crate::components::{Button, ButtonVariants, Label};
 use crate::icons::Icon;
 use chrono::{Datelike, NaiveDate};
 use gpui::{
-    AnyElement, Context, Div, ElementId, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement, Pixels, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    Window, div, prelude::FluentBuilder, px, size,
+    AnyElement, Context, Div, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, ParentElement, Pixels, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, size,
 };
 use gpui_kit::foundation::{Disableable as _, Selectable as _, StyledExt as _};
 use gpui_kit_theme::ActiveTheme;
@@ -30,6 +30,8 @@ use super::{
         CHEVRON_WIDTH, CONTROLS_HEIGHT, HEADER_GAP, HEADER_PADDING, MARKER_GAP, MARKER_HEIGHT,
     },
 };
+
+const FOLDED_DAY_LABEL_OPACITY: f32 = 0.75;
 
 fn card_row(id: impl Into<ElementId>, height: Pixels) -> Stateful<Div> {
     div().id(id).relative().w_full().h(height).px_4()
@@ -283,14 +285,40 @@ impl UpcomingView {
         )
     }
 
+    fn day_label_color(
+        &self,
+        date: NaiveDate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Hsla {
+        if date == self.today {
+            return UxColor::CurrentTime.text(cx.theme());
+        }
+        let section = UpcomingSection::Day(date);
+        let opacity = if self.sections.can_expand(section) && self.sections.is_expanded(section) {
+            1.0
+        } else {
+            FOLDED_DAY_LABEL_OPACITY
+        };
+        let fade = window.keyed_transition(
+            ("upcoming-day-label", date.num_days_from_ce() as u64),
+            cx,
+            transition::QUICK,
+            || opacity,
+        );
+        fade.set(opacity, cx);
+        let opacity = fade.animate(window, cx);
+        cx.theme().colors.text.opacity(opacity)
+    }
+
     fn section_label(
         &self,
         section: UpcomingSection,
         label: String,
+        color: Hsla,
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let colors = &cx.theme().colors;
-        let today = section == UpcomingSection::Day(self.today);
         let expandable = self.sections.can_expand(section);
         let expanded = self.sections.is_expanded(section);
         let id = match section {
@@ -330,11 +358,7 @@ impl UpcomingView {
                     .truncate()
                     .text_sm()
                     .font_weight(FontWeight::BOLD)
-                    .text_color(if today {
-                        UxColor::CurrentTime.text(cx.theme())
-                    } else {
-                        colors.text
-                    }),
+                    .text_color(color),
             )
             .when_some(
                 match section {
@@ -468,6 +492,7 @@ impl UpcomingView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let inline_add = self.sections.add_in_header(&self.agenda, date);
+        let label_color = self.day_label_color(date, window, cx);
         let header = &self.headers.days[&date];
         let marker_rows: Vec<_> = header
             .marker_rows
@@ -526,6 +551,7 @@ impl UpcomingView {
                     .child(self.section_label(
                         UpcomingSection::Day(date),
                         header.label.clone(),
+                        label_color,
                         cx,
                     )),
             )
@@ -786,7 +812,12 @@ impl UpcomingView {
         self.section_header(UpcomingSection::Missed, cx)
             .items_center()
             .justify_between()
-            .child(self.section_label(UpcomingSection::Missed, "Missed actions".into(), cx))
+            .child(self.section_label(
+                UpcomingSection::Missed,
+                "Missed actions".into(),
+                cx.theme().colors.text,
+                cx,
+            ))
             .child(self.section_chevron(UpcomingSection::Missed, cx))
             .into_any_element()
     }

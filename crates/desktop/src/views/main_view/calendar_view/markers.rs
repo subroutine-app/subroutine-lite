@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     components::{
-        Button, ButtonVariants, DragData, DraggedItems, ItemCard, ItemCardPosition,
+        Button, ButtonVariants, DRAG_HOLD, DragData, DraggedItems, ItemCard, ItemCardPosition,
         create_drag_data, menu::MenuBuilder,
     },
     dates::InclusiveDateRange,
@@ -466,6 +466,7 @@ impl CalendarView {
                     .on_drag(drag, |drag, position, _, cx| {
                         cx.new(|_| drag.clone().with_position(position))
                     })
+                    .drag_hold(DRAG_HOLD)
                     .on_drop::<DragData<DraggedItems>>(cx.listener(
                         |view, data: &DragData<DraggedItems>, window, cx| {
                             if let Some(date) = view.date_at_position(window.mouse_position()) {

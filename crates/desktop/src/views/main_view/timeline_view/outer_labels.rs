@@ -1,13 +1,13 @@
 use chrono::{DateTime, Duration, Local};
 use gpui::{
     Context, Div, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels, Role,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_kit::foundation::StyledExt as _;
+use gpui_kit::foundation::{Sizable as _, StyledExt as _};
 use gpui_kit_theme::ActiveTheme as _;
 
 use crate::{
-    components::{Button, ButtonVariants, Label},
+    components::{Button, ButtonVariants, Label, TimeSelect, TimeUnit},
     views::TOP_EDGE_INSET,
 };
 
@@ -19,9 +19,21 @@ use super::{
 
 const BORDER: Pixels = px(1.);
 const LABEL_PARALLAX_RATE: f32 = 0.82;
+const COMPACT_WIDTH: Pixels = px(560.);
 
 fn sticky_center() -> Pixels {
     TOP_EDGE_INSET + STICKY_OUTER_LABEL_HEIGHT / 2.
+}
+
+fn selector_unit(outer: BaseTimeDivision) -> TimeUnit {
+    match outer {
+        BaseTimeDivision::Minute | BaseTimeDivision::FiveMinutes | BaseTimeDivision::Hour => {
+            TimeUnit::Hour
+        }
+        BaseTimeDivision::Day => TimeUnit::Day,
+        BaseTimeDivision::Month => TimeUnit::Month,
+        BaseTimeDivision::Year => TimeUnit::Year,
+    }
 }
 
 fn boundary_center(geometry: &TimelineGeometry, time: DateTime<Local>) -> Pixels {
@@ -65,7 +77,7 @@ pub(super) struct OuterLabelLayout {
 
 impl OuterLabelLayout {
     fn new(viewport_width: Pixels, window: &Window) -> Self {
-        let compact = viewport_width < px(560.);
+        let compact = viewport_width < COMPACT_WIDTH;
         Self {
             height: if compact {
                 px(32.)
@@ -274,7 +286,9 @@ impl TimelineView {
             &period
         };
         let start = target.start;
-        let end = target.end;
+        let unit = division
+            .outer_division()
+            .map_or(TimeUnit::Year, selector_unit);
 
         let sticky = Button::new("timeline-fit-sticky-period")
             .glass_pill()
@@ -284,10 +298,10 @@ impl TimelineView {
             .gap_0()
             .block_mouse_except_scroll()
             .role(Role::Button)
-            .aria_label(format!("Zoom to {}", target.text))
+            .aria_label(format!("Choose time · {}", target.text))
             .on_click(cx.listener(move |view, _, _, cx| {
                 cx.stop_propagation();
-                view.zoom_to_span(start, end, cx);
+                view.toggle_time_selector(unit, cx);
             }));
 
         let day_context = |period: &OuterPeriodLabel| {
@@ -411,6 +425,54 @@ impl TimelineView {
                 .child(outgoing)
                 .children(outgoing_context)
                 .children(attached),
+        )
+    }
+
+    // A fit in flight reports its destination, so the selector does not
+    // sweep through the periods the animation passes.
+    fn time_in_view(&self) -> DateTime<Local> {
+        self.scroll_target.unwrap_or_else(|| self.scroll_position())
+    }
+
+    pub(super) fn sync_time_in_view(&self, cx: &mut Context<Self>) {
+        let time = self.time_in_view().naive_local();
+        self.time_select
+            .update(cx, |select, cx| select.set_viewed(time, cx));
+    }
+
+    fn toggle_time_selector(&mut self, unit: TimeUnit, cx: &mut Context<Self>) {
+        if !self.time_selector_open {
+            let time = self.time_in_view().naive_local();
+            self.time_select
+                .update(cx, |select, cx| select.show(unit, time, cx));
+        }
+        self.time_selector_open = !self.time_selector_open;
+        cx.notify();
+    }
+
+    pub(super) fn close_time_selector(&mut self, cx: &mut Context<Self>) {
+        if self.time_selector_open {
+            self.time_selector_open = false;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn render_time_selection(&self, window: &Window) -> Option<impl IntoElement> {
+        let bounds = self.bounds.filter(|_| self.time_selector_open)?;
+        let layout = self.outer_label_layout(window);
+        let top = sticky_center() + layout.height / 2. + STICKY_OUTER_LABEL_GAP;
+        let available_width = (bounds.size.width - STICKY_OUTER_LABEL_INSET * 2.).max(px(0.));
+        let available_height = (bounds.size.height - top - STICKY_OUTER_LABEL_INSET).max(px(0.));
+
+        Some(
+            TimeSelect::new(&self.time_select)
+                .when(bounds.size.width < COMPACT_WIDTH, |this| this.small())
+                .popover()
+                .absolute()
+                .top(top)
+                .right(STICKY_OUTER_LABEL_INSET)
+                .max_w(available_width)
+                .max_h(available_height),
         )
     }
 }

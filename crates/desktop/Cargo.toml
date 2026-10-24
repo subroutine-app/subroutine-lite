@@ -17,36 +17,16 @@ private-workiq = ["subroutine-import/workiq"]
 find-msvc-tools = "0.1.14"
 
 [dev-dependencies]
-gpui = { package = "gpui-box", git = "https://github.com/subroutine-app/gpui-box.git", rev = "ed17f536092975982dc82d248ca0b4883342fa30", features = ["test-support"] }
+gpui = { package = "gpui-box", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a", features = ["test-support"] }
 
 [dependencies]
 anyhow = { workspace = true }
-gpui = {
-    package = "gpui-box",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
+gpui = { package = "gpui-box", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
 
-gpui_kit = {
-    package = "gpui-box-kit",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
-gpui_kit_theme = {
-    package = "gpui-box-kit-theme",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
-gpui_kit_assets = {
-    package = "gpui-box-kit-assets",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
-gpui_kit_semantics = {
-    package = "gpui-box-kit-semantics",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
+gpui_kit = { package = "gpui-box-kit", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
+gpui_kit_theme = { package = "gpui-box-kit-theme", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
+gpui_kit_assets = { package = "gpui-box-kit-assets", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
+gpui_kit_semantics = { package = "gpui-box-kit-semantics", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
 
 subroutine-core = { package = "core", path = "../core" }
 subroutine-holidays = { path = "../holidays" }
@@ -81,17 +61,8 @@ sha2 = "0.10"
 [target.'cfg(target_os = "windows")'.dependencies]
 zeroize = "1"
 raw-window-handle = { version = "0.6", features = ["std"] }
-gpui = {
-    package = "gpui-box",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-    features = ["windows-manifest"],
-}
-gpui_windows = {
-    package = "gpui-box-windows",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
+gpui = { package = "gpui-box", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a", features = ["windows-manifest"] }
+gpui_windows = { package = "gpui-box-windows", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
 windows = { version = "0.61", features = [
     "Foundation",
     "System_Power",
@@ -107,20 +78,11 @@ windows = { version = "0.61", features = [
 ] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-gpui_linux = {
-    package = "gpui-box-linux",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-}
+gpui_linux = { package = "gpui-box-linux", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 subroutine-import = { package = "import", path = "../import", features = ["eventkit"] }
-gpui_macos = {
-    package = "gpui-box-macos",
-    git = "https://github.com/subroutine-app/gpui-box.git",
-    rev = "ed17f536092975982dc82d248ca0b4883342fa30",
-    features = ["font-kit"],
-}
+gpui_macos = { package = "gpui-box-macos", git = "https://github.com/subroutine-app/gpui-box.git", rev = "893dc1c94b1b0c9bba9e2185dc1fa4f4f535197a", features = ["font-kit"] }
 
 
 block2 = "0.6"
@@ -137,4 +99,3 @@ icon = ["crates/desktop/resources/Subroutine.icns"]
 identifier = "com.subroutine.SubroutineLite"
 name = "Subroutine Lite"
 osx_minimum_system_version = "10.15.7"
-

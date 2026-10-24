@@ -14,13 +14,13 @@ use crate::{
     views::SelectedMainView,
 };
 use gpui::{
-    AnyElement, AppContext as _, Context, DragMoveEvent, Empty, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea, div,
-    prelude::FluentBuilder, px,
+    AnyElement, App, AppContext as _, Context, Div, DragMoveEvent, Empty, Hsla, InteractiveElement,
+    IntoElement, MouseButton, ParentElement, Pixels, Render, Styled, Window, WindowControlArea,
+    div, linear_color_stop, linear_gradient_stops, prelude::FluentBuilder, px,
 };
 use gpui_kit::{
     foundation::{StyledExt as _, ThemeOverlay},
-    layout::{DesktopTitlebar, ScrollEdgeEffect, ScrollFade},
+    layout::{DesktopTitlebar, ScrollFade},
     overlay::{GlassExt as _, GlassPreset},
 };
 use gpui_kit_theme::{ActiveTheme, Appearance, Elevation, Radius, Surface};
@@ -35,6 +35,22 @@ const LIBRARY_DRAWER_MIN_WIDTH: Pixels = px(320.);
 const LIBRARY_DRAWER_MAX_WIDTH: Pixels = px(640.);
 
 struct LibraryDrawerResize;
+
+pub(super) fn top_edge_scrim(band: Pixels, color: Hsla) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(band)
+        .bg(linear_gradient_stops(
+            0.0,
+            (0..=4).map(|step| {
+                let t = step as f32 / 4.0;
+                linear_color_stop(color.alpha(t * t * (3.0 - 2.0 * t)), t)
+            }),
+        ))
+}
 
 impl Render for LibraryDrawerResize {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -192,8 +208,10 @@ impl RootView {
             .w(width)
             .h(height)
             .occlude()
-            .p(WORKSPACE_PANEL_BORDER_WIDTH)
             .overflow_hidden()
+            .rounded(px(cx.theme().radius(Radius::Dialog)))
+            .border(WORKSPACE_PANEL_BORDER_WIDTH)
+            .border_color(cx.theme().colors.hairline)
             .child(self.render_source_route(route, true, cx));
         let panel = div()
             .absolute()
@@ -343,7 +361,11 @@ impl RootView {
             .debug_selector(|| "workspace.header".into())
     }
 
-    pub(super) fn render_windows_titlebar(left: Pixels, with_material: bool) -> impl IntoElement {
+    pub(super) fn render_windows_titlebar(
+        left: Pixels,
+        with_material: bool,
+        cx: &App,
+    ) -> impl IntoElement {
         let frame = div()
             .id("window.titlebar-material")
             .debug_selector(|| "window.titlebar".into())
@@ -373,32 +395,26 @@ impl RootView {
         } else {
             frame.into_any_element()
         };
-        div()
-            .absolute()
-            .top_0()
-            .left(left)
-            .right_0()
-            .block_mouse_except_scroll()
-            .child(frame)
+        super::titlebar_input(
+            div().absolute().top_0().left(left).right_0().child(frame),
+            cx,
+        )
     }
 
-    fn render_top_edge(content: impl IntoElement) -> impl IntoElement {
-        let content = ScrollFade::new("window.top-edge.fade")
-            .top(true)
-            .band(f32::from(TOP_EDGE_INSET))
-            .text_only()
-            .child(content);
-        if cfg!(target_os = "windows") {
-            content.into_any_element()
-        } else {
-            ScrollEdgeEffect::new("window.top-edge")
-                .top(true)
-                .soft()
-                .band(40.)
-                .blur(12.)
-                .child(content)
-                .into_any_element()
-        }
+    fn render_top_edge(content: impl IntoElement, scrim: Hsla) -> impl IntoElement {
+        div()
+            .relative()
+            .size_full()
+            .child(
+                ScrollFade::new("window.top-edge.fade")
+                    .top(true)
+                    .band(f32::from(TOP_EDGE_INSET))
+                    .text_only()
+                    .child(content),
+            )
+            .when(cfg!(not(target_os = "windows")), |edge| {
+                edge.child(top_edge_scrim(TOP_EDGE_INSET, scrim))
+            })
     }
 
     pub(super) fn content_owns_top_material(&self, cx: &gpui::App) -> bool {
@@ -444,7 +460,10 @@ impl RootView {
         if content_owns_top_material {
             workspace
         } else {
-            workspace.content_wrapper(|content| Self::render_top_edge(content).into_any_element())
+            let scrim = cx.theme().colors.canvas.alpha(1.0);
+            workspace.content_wrapper(move |content| {
+                Self::render_top_edge(content, scrim).into_any_element()
+            })
         }
     }
 

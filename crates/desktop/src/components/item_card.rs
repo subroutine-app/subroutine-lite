@@ -164,6 +164,7 @@ pub struct ItemCard {
     content_offset: Point<Pixels>,
     positioned_content: bool,
     draggable: bool,
+    hold_to_drag: bool,
     drag_payload: Option<DraggedItems>,
     drag_size: Size<Pixels>,
     selection: Option<SelectionOrder>,
@@ -290,6 +291,7 @@ impl ItemCard {
             content_offset,
             positioned_content: false,
             draggable: false,
+            hold_to_drag: false,
             drag_payload: None,
             drag_size: size(DEFAULT_ITEM_WIDTH, DEFAULT_ITEM_HEIGHT),
             selection: None,
@@ -321,6 +323,11 @@ impl ItemCard {
         if let Some(size) = size_opt {
             self.drag_size = size;
         }
+        self
+    }
+
+    pub fn hold_to_drag(mut self) -> Self {
+        self.hold_to_drag = true;
         self
     }
 

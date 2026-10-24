@@ -3,8 +3,13 @@ use gpui_kit_theme::ActiveTheme;
 use std::cell::Cell;
 use std::fmt::Debug;
 use std::rc::Rc;
+use std::time::Duration;
 
 type DragListener = dyn Fn(&mut Window, &mut App) + 'static;
+
+/// How long a press on a spatially placed item must be held before it drags,
+/// so clicks near its edges can't nudge it by accident. List rows drag at once.
+pub const DRAG_HOLD: Duration = Duration::from_millis(200);
 
 pub struct DragData<T: Clone + Debug> {
     pub data: T,
@@ -163,6 +168,7 @@ pub struct Draggable<T: Clone + Debug + 'static> {
     children: Vec<AnyElement>,
     style: StyleRefinement,
     on_drag_listener: Option<Box<DragListener>>,
+    hold: Duration,
 }
 
 impl<T: Clone + Debug + 'static> Draggable<T> {
@@ -173,11 +179,17 @@ impl<T: Clone + Debug + 'static> Draggable<T> {
             children: Vec::new(),
             style: StyleRefinement::default(),
             on_drag_listener: None,
+            hold: Duration::ZERO,
         }
     }
 
     pub fn on_drag_start(mut self, listener: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_drag_listener = Some(Box::new(listener));
+        self
+    }
+
+    pub fn hold_to_drag(mut self, hold: bool) -> Self {
+        self.hold = if hold { DRAG_HOLD } else { Duration::ZERO };
         self
     }
 }
@@ -220,6 +232,7 @@ impl<T: Clone + Debug + 'static> RenderOnce for Draggable<T> {
                     cx.new(|_| data.clone().with_position(position))
                 },
             )
+            .drag_hold(self.hold)
             .map(|this| {
                 let mut div = this;
                 div.style().refine(&user_style);

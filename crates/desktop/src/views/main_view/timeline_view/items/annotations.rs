@@ -468,6 +468,7 @@ impl TimelineView {
                 .title_only(true)
                 .actionable(!is_projection)
                 .draggable(!is_projection, None)
+                .hold_to_drag()
                 .block_mouse_except_scroll();
                 if !is_projection {
                     card = card.details(self.signal_details.get(signal.id));
